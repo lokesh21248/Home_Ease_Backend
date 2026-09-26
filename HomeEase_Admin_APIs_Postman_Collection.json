@@ -1,0 +1,595 @@
+{
+  "info": {
+    "_postman_id": "homeease-admin-apis-only",
+    "name": "HomeEase Admin APIs (No JWT)",
+    "description": "Comprehensive Postman collection containing ONLY the Admin APIs for HomeEase Backend. Fully ready for local testing with MySQL and no JWT.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080/api/v1/admin"
+    },
+    {
+      "key": "serviceId",
+      "value": ""
+    },
+    {
+      "key": "subServiceId",
+      "value": ""
+    },
+    {
+      "key": "bannerId",
+      "value": ""
+    },
+    {
+      "key": "couponId",
+      "value": ""
+    },
+    {
+      "key": "workerId",
+      "value": ""
+    },
+    {
+      "key": "userId",
+      "value": ""
+    },
+    {
+      "key": "paymentId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Admin Auth",
+      "item": [
+        {
+          "name": "Admin Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@homeease.com\",\n  \"password\": \"admin\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8080/api/v1/admin/auth/login",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8080",
+              "path": ["api", "v1", "admin", "auth", "login"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Dashboard & Analytics",
+      "item": [
+        {
+          "name": "Get Dashboard Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/dashboard/stats",
+              "host": ["{{baseUrl}}"],
+              "path": ["dashboard", "stats"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Service Categories (Verticals)",
+      "item": [
+        {
+          "name": "Get All Services (Admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/services",
+              "host": ["{{baseUrl}}"],
+              "path": ["services"]
+            }
+          }
+        },
+        {
+          "name": "Create Service Category",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Electrician Services\",\n  \"description\": \"Comprehensive electrical repairs, wiring, switches, and appliance installations\",\n  \"imageUrl\": \"https://images.unsplash.com/photo-1621905251189-08b45d6a269e\",\n  \"isActive\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/services",
+              "host": ["{{baseUrl}}"],
+              "path": ["services"]
+            }
+          }
+        },
+        {
+          "name": "Update Service Category",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Electrician & Electronics\",\n  \"description\": \"Updated electrical repairs and installations\",\n  \"imageUrl\": \"https://images.unsplash.com/photo-1621905251189-08b45d6a269e\",\n  \"isActive\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/services/{{serviceId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["services", "{{serviceId}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete Service (Soft Delete)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/services/{{serviceId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["services", "{{serviceId}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Sub-Services Management",
+      "item": [
+        {
+          "name": "Get All Sub-Services (Admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/sub-services",
+              "host": ["{{baseUrl}}"],
+              "path": ["sub-services"]
+            }
+          }
+        },
+        {
+          "name": "Create Sub-Service",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"service\": {\n    \"serviceId\": \"{{serviceId}}\"\n  },\n  \"name\": \"Ceiling Fan Repair & Install\",\n  \"pricingType\": \"FIXED\",\n  \"basePrice\": 199.00,\n  \"unitLabel\": \"per appliance\",\n  \"estimatedMins\": 30,\n  \"imageUrl\": \"https://images.unsplash.com/photo-1581092160607-ee22621dd758\",\n  \"isActive\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/sub-services",
+              "host": ["{{baseUrl}}"],
+              "path": ["sub-services"]
+            }
+          }
+        },
+        {
+          "name": "Update Sub-Service",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Ceiling Fan Complete Overhaul\",\n  \"pricingType\": \"FIXED\",\n  \"basePrice\": 249.00,\n  \"unitLabel\": \"per fan\",\n  \"estimatedMins\": 45,\n  \"imageUrl\": \"https://images.unsplash.com/photo-1581092160607-ee22621dd758\",\n  \"isActive\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/sub-services/{{subServiceId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["sub-services", "{{subServiceId}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete Sub-Service (Soft Delete)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/sub-services/{{subServiceId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["sub-services", "{{subServiceId}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Banners Management",
+      "item": [
+        {
+          "name": "Create Promotional Banner",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Diwali Home Makeover\",\n  \"imageUrl\": \"https://images.unsplash.com/photo-1513694203232-719a280e022f\",\n  \"targetType\": \"SERVICE\",\n  \"targetId\": \"{{serviceId}}\",\n  \"isActive\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/banners",
+              "host": ["{{baseUrl}}"],
+              "path": ["banners"]
+            }
+          }
+        },
+        {
+          "name": "Patch Banner",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Updated Diwali Mega Sale\",\n  \"isActive\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/banners/{{bannerId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["banners", "{{bannerId}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete Banner",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/banners/{{bannerId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["banners", "{{bannerId}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Coupons Management",
+      "item": [
+        {
+          "name": "Get All Coupons",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/coupons",
+              "host": ["{{baseUrl}}"],
+              "path": ["coupons"]
+            }
+          }
+        },
+        {
+          "name": "Create Percentage Coupon",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"SAVE20\",\n  \"discountType\": \"PERCENTAGE\",\n  \"discountVal\": 20.00,\n  \"minOrderValue\": 499.00,\n  \"maxDiscountAmount\": 150.00,\n  \"validFrom\": \"2026-01-01T00:00:00Z\",\n  \"validUntil\": \"2026-12-31T23:59:59Z\",\n  \"usageLimit\": 500,\n  \"isActive\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/coupons",
+              "host": ["{{baseUrl}}"],
+              "path": ["coupons"]
+            }
+          }
+        },
+        {
+          "name": "Create Fixed Coupon",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"FLAT100\",\n  \"discountType\": \"FIXED\",\n  \"discountVal\": 100.00,\n  \"minOrderValue\": 399.00,\n  \"maxDiscountAmount\": 100.00,\n  \"validFrom\": \"2026-01-01T00:00:00Z\",\n  \"validUntil\": \"2026-12-31T23:59:59Z\",\n  \"usageLimit\": 200,\n  \"isActive\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/coupons",
+              "host": ["{{baseUrl}}"],
+              "path": ["coupons"]
+            }
+          }
+        },
+        {
+          "name": "Patch Coupon",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"minOrderValue\": 350.00,\n  \"usageLimit\": 1000\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/coupons/{{couponId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["coupons", "{{couponId}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete Coupon",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/coupons/{{couponId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["coupons", "{{couponId}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Worker Partner Governance",
+      "item": [
+        {
+          "name": "Get All Workers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/workers",
+              "host": ["{{baseUrl}}"],
+              "path": ["workers"]
+            }
+          }
+        },
+        {
+          "name": "Get Worker By ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/workers/{{workerId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["workers", "{{workerId}}"]
+            }
+          }
+        },
+        {
+          "name": "Verify Worker KYC",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/workers/{{workerId}}/verify-kyc",
+              "host": ["{{baseUrl}}"],
+              "path": ["workers", "{{workerId}}", "verify-kyc"]
+            }
+          }
+        },
+        {
+          "name": "Block Worker Partner",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/workers/{{workerId}}/block?hours=24",
+              "host": ["{{baseUrl}}"],
+              "path": ["workers", "{{workerId}}", "block"],
+              "query": [
+                {
+                  "key": "hours",
+                  "value": "24",
+                  "description": "Duration in hours to block"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Unblock Worker Partner",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/workers/{{workerId}}/unblock",
+              "host": ["{{baseUrl}}"],
+              "path": ["workers", "{{workerId}}", "unblock"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "8. User & Customer Management",
+      "item": [
+        {
+          "name": "Get All Users (Filtered or All)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users?role=CUSTOMER",
+              "host": ["{{baseUrl}}"],
+              "path": ["users"],
+              "query": [
+                {
+                  "key": "role",
+                  "value": "CUSTOMER",
+                  "description": "Optional: CUSTOMER, WORKER, or ADMIN"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get User By ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/{{userId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "{{userId}}"]
+            }
+          }
+        },
+        {
+          "name": "Update User Role",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"ADMIN\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/users/{{userId}}/role",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "{{userId}}", "role"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "9. Live GPS Map & Tracking",
+      "item": [
+        {
+          "name": "Get Live Map Combined Overview",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/locations/live-map",
+              "host": ["{{baseUrl}}"],
+              "path": ["locations", "live-map"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "10. Push Notifications",
+      "item": [
+        {
+          "name": "Send Instant Notification",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Festive Announcement\",\n  \"body\": \"Book electrical or plumbing services at special discounted rates!\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/notifications/instant",
+              "host": ["{{baseUrl}}"],
+              "path": ["notifications", "instant"]
+            }
+          }
+        },
+        {
+          "name": "Schedule Notification",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Upcoming Service Reminder\",\n  \"message\": \"Your booked cleaning service will commence tomorrow morning.\",\n  \"type\": \"REMINDER\",\n  \"scheduledAt\": \"2026-10-01T10:00:00Z\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/notifications/schedule",
+              "host": ["{{baseUrl}}"],
+              "path": ["notifications", "schedule"]
+            }
+          }
+        },
+        {
+          "name": "Get All Notifications History",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/notifications",
+              "host": ["{{baseUrl}}"],
+              "path": ["notifications"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "11. Payments & Financial Transactions",
+      "item": [
+        {
+          "name": "Get All Payments",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/payments",
+              "host": ["{{baseUrl}}"],
+              "path": ["payments"]
+            }
+          }
+        },
+        {
+          "name": "Get Payment By ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/payments/{{paymentId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["payments", "{{paymentId}}"]
+            }
+          }
+        },
+        {
+          "name": "Update Payment Transaction Status",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"SETTLED\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/payments/{{paymentId}}/status",
+              "host": ["{{baseUrl}}"],
+              "path": ["payments", "{{paymentId}}", "status"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

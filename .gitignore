@@ -1,0 +1,31 @@
+# Compiled class files
+target/
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# Maven wrapper
+.mvn/wrapper/maven-wrapper.jar
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment / Secrets
+*.env
+firebase-service-account.json
+src/main/resources/firebase-service-account.json
+
+# Logs
+*.log
+logs/
+
+# Package files
+*.jar
+*.war
+*.ear
