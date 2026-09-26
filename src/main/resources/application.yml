@@ -8,10 +8,10 @@ spring:
     name: homeease-backend
 
   datasource:
-    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:homeease_db}?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
-    username: ${DB_USER:root}
-    password: ${DB_PASS:root}
-    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:postgresql://${DB_HOST:aws-0-ap-south-1.pooler.supabase.com}:${DB_PORT:5432}/${DB_NAME:postgres}?sslmode=require
+    username: ${DB_USER:postgres.gheiuyygjssqatziviix}
+    password: ${DB_PASS:HomeEase@Supa2026#Secure!}
+    driver-class-name: org.postgresql.Driver
     hikari:
       maximum-pool-size: 20
       minimum-idle: 5
@@ -19,22 +19,20 @@ spring:
       connection-timeout: 20000
 
   jpa:
-    database-platform: org.hibernate.dialect.MySQLDialect
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
     hibernate:
-      ddl-auto: update
+      ddl-auto: none
     show-sql: false
     properties:
       hibernate:
         format_sql: true
         jdbc:
           batch_size: 50
-        type:
-          preferred_uuid_jdbc_type: CHAR
 
   flyway:
     enabled: true
     baseline-on-migrate: true
-    locations: classpath:db/migration/mysql
+    locations: classpath:db/migration/postgresql
 
   data:
     redis:
@@ -47,6 +45,21 @@ spring:
     multipart:
       max-file-size: 10MB
       max-request-size: 10MB
+
+# Supabase Storage (S3-compatible) Configuration
+supabase:
+  storage:
+    endpoint: ${SUPABASE_STORAGE_ENDPOINT:https://gheiuyygjssqatziviix.storage.supabase.co/storage/v1/s3}
+    region: ${SUPABASE_REGION:ap-south-1}
+    access-key: ${SUPABASE_S3_ACCESS_KEY:your-access-key}
+    secret-key: ${SUPABASE_S3_SECRET_KEY:your-secret-key}
+    public-url: ${SUPABASE_PUBLIC_URL:https://gheiuyygjssqatziviix.supabase.co/storage/v1/object/public}
+    buckets:
+      services: homeease-services
+      sub-services: homeease-sub-services
+      banners: homeease-banners
+      worker-kyc: homeease-worker-kyc
+      worker-profile: homeease-worker-profile
 
 # App Configuration
 homeease:

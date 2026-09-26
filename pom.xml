@@ -50,8 +50,8 @@
 
         <!-- Database & Migration -->
         <dependency>
-            <groupId>com.mysql</groupId>
-            <artifactId>mysql-connector-j</artifactId>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
         <dependency>
@@ -64,7 +64,15 @@
         </dependency>
         <dependency>
             <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-mysql</artifactId>
+            <artifactId>flyway-database-postgresql</artifactId>
+            <version>10.8.1</version>
+        </dependency>
+
+        <!-- Supabase Storage (S3-compatible) -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+            <version>2.25.16</version>
         </dependency>
 
         <!-- Firebase Admin SDK for Auth & FCM -->
