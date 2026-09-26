@@ -7,11 +7,13 @@ HomeEase connects customers with verified service professionals for home mainten
 ## 🏗️ Tech Stack
 
 - **Framework:** Spring Boot 3.2 (Spring Web, Security, Data JPA, WebSocket, Validation)
-- **Database:** MySQL with Flyway migrations & Hibernate Spatial
-- **Caching:** Redis
+- **Database:** Supabase PostgreSQL 17 with Flyway auto-migrations
+- **Cloud Storage:** Supabase S3-Compatible Storage
+- **Caching & Geolocation:** Redis 7
+- **Deployment:** Docker & Docker Compose on AWS EC2
+- **CI/CD:** Automated GitHub Actions Pipeline
 - **Auth & Notifications:** Firebase Admin SDK (Authentication + FCM Push Notifications)
-- **Build Tool:** Maven
-- **Java Version:** 17
+- **Build Tool:** Maven (Java 17)
 
 ## ✨ Key Features
 
