@@ -29,3 +29,10 @@ logs/
 *.jar
 *.war
 *.ear
+
+# Documentation markdown files
+*.md
+
+# Postman collections
+*Postman*.json
+*postman*.json
