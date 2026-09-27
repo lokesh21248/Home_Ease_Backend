@@ -76,3 +76,12 @@ logging:
     root: INFO
     com.homeease.backend: DEBUG
     org.hibernate.SQL: WARN
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always

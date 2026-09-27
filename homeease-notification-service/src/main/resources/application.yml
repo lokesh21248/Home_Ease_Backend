@@ -19,3 +19,13 @@ spring:
 homeease:
   firebase:
     credentials-path: ${FIREBASE_CREDENTIALS_PATH:classpath:firebase-service-account.json}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+

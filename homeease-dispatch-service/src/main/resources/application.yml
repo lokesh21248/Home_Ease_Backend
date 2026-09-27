@@ -26,3 +26,13 @@ homeease:
   dispatch:
     radius-meters: 5000
     response-timeout-seconds: 180
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+

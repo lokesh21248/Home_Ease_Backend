@@ -14,7 +14,7 @@ services:
       timeout: 3s
       retries: 5
 
-  # HomeEase Core Backend
+  # HomeEase Core Backend (Monolith)
   backend:
     build: .
     container_name: homeease-backend
@@ -29,16 +29,75 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/api/v1/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
-  # -------------------------------------------------------------
-  # Template for your upcoming 3 microservices:
-  # -------------------------------------------------------------
-  # service-auth:
-  #   image: your-auth-service
-  #   ports:
-  #     - "8081:8081"
-  #
-  # service-notifications:
-  #   image: your-notification-service
-  #   ports:
-  #     - "8082:8082"
+  # Microservice 1: Spatial Dispatch & Worker Matching
+  dispatch-service:
+    build: ./homeease-dispatch-service
+    container_name: homeease-dispatch
+    restart: always
+    ports:
+      - "8081:8081"
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8081/api/v1/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Microservice 2: Live Location Tracking (WebSockets)
+  tracking-service:
+    build: ./homeease-tracking-service
+    container_name: homeease-tracking
+    restart: always
+    ports:
+      - "8082:8082"
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8082/api/v1/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Microservice 3: Notification & FCM Push
+  notification-service:
+    build: ./homeease-notification-service
+    container_name: homeease-notification
+    restart: always
+    ports:
+      - "8083:8083"
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8083/api/v1/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s

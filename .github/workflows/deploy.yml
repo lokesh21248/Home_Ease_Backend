@@ -24,9 +24,21 @@ jobs:
             cd ~/Home_Ease_Backend
             echo "📥 Pulling latest changes from GitHub..."
             git pull origin main
-            echo "📦 Building application JAR..."
+
+            echo "📦 Building Core Backend JAR..."
             mvn clean package -DskipTests
-            echo "🐳 Rebuilding and restarting Docker containers..."
+
+            echo "📦 Building Dispatch Microservice JAR..."
+            cd homeease-dispatch-service && mvn clean package -DskipTests && cd ..
+
+            echo "📦 Building Tracking Microservice JAR..."
+            cd homeease-tracking-service && mvn clean package -DskipTests && cd ..
+
+            echo "📦 Building Notification Microservice JAR..."
+            cd homeease-notification-service && mvn clean package -DskipTests && cd ..
+
+            echo "🐳 Rebuilding and restarting all Docker containers..."
             docker compose up -d --build
             echo "✅ Deployment successful! Running containers:"
             docker ps
+
