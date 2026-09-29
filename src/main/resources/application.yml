@@ -7,8 +7,13 @@ spring:
   application:
     name: homeease-backend
 
+  jackson:
+    serialization:
+      fail-on-empty-beans: false
+
+
   datasource:
-    url: jdbc:postgresql://${DB_HOST:aws-0-ap-south-1.pooler.supabase.com}:${DB_PORT:5432}/${DB_NAME:postgres}?sslmode=require
+    url: jdbc:postgresql://${DB_HOST:aws-0-ap-south-1.pooler.supabase.com}:${DB_PORT:5432}/${DB_NAME:postgres}?sslmode=require&stringtype=unspecified
     username: ${DB_USER:postgres.gheiuyygjssqatziviix}
     password: ${DB_PASS:HomeEase@Supa2026#Secure!}
     driver-class-name: org.postgresql.Driver
@@ -28,8 +33,7 @@ spring:
         format_sql: true
         jdbc:
           batch_size: 50
-        type:
-          preferred_uuid_jdbc_type: CHAR
+
 
   flyway:
     enabled: true

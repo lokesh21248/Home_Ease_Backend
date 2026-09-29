@@ -1,5 +1,6 @@
 package com.homeease.backend.model.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.homeease.backend.model.enums.PricingModel;
 import jakarta.persistence.*;
 import lombok.*;
@@ -16,6 +17,7 @@ import java.util.UUID;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
+@JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
 public class SubService {
 
     @Id
@@ -25,6 +27,7 @@ public class SubService {
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "service_id", nullable = false)
+    @JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
     private ServiceEntity service;
 
     @Column(name = "name", nullable = false, length = 100)
