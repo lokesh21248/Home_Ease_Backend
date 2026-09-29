@@ -180,3 +180,43 @@ export const updateTrackingLocation = (data) =>
 // Notification Microservice (:8083)
 export const sendDirectPushNotification = (data) =>
   axios.post(`${NOTIFY_BASE_URL}/notifications/push`, data);
+
+// ==========================================
+// 12. Supabase Storage Upload APIs
+// ==========================================
+const createFormData = (file) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  return formData;
+};
+
+export const uploadServiceImage = (file) =>
+  adminClient.post('/upload/service-image', createFormData(file), {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+
+export const uploadSubServiceImage = (file) =>
+  adminClient.post('/upload/sub-service-image', createFormData(file), {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+
+export const uploadBannerImage = (file) =>
+  adminClient.post('/upload/banner-image', createFormData(file), {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+
+export const uploadWorkerProfile = (workerId, file) =>
+  adminClient.post(`/upload/worker-profile/${workerId}`, createFormData(file), {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+
+export const uploadWorkerPan = (workerId, file) =>
+  adminClient.post(`/upload/worker-kyc/pan/${workerId}`, createFormData(file), {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+
+export const uploadWorkerAadhaar = (workerId, file) =>
+  adminClient.post(`/upload/worker-kyc/aadhaar/${workerId}`, createFormData(file), {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+
