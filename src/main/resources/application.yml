@@ -28,6 +28,8 @@ spring:
         format_sql: true
         jdbc:
           batch_size: 50
+        type:
+          preferred_uuid_jdbc_type: CHAR
 
   flyway:
     enabled: true

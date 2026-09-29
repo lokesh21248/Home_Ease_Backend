@@ -3,6 +3,8 @@ package com.homeease.backend.model.entity;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -18,6 +20,7 @@ public class Banner {
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
+    @JdbcTypeCode(SqlTypes.VARCHAR)
     @Column(name = "banner_id", updatable = false, nullable = false)
     private UUID bannerId;
 
@@ -30,6 +33,7 @@ public class Banner {
     @Column(name = "target_type", length = 50)
     private String targetType;
 
+    @JdbcTypeCode(SqlTypes.VARCHAR)
     @Column(name = "target_id")
     private UUID targetId;
 
