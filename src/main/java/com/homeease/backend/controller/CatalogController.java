@@ -2,6 +2,7 @@ package com.homeease.backend.controller;
 
 import com.homeease.backend.dto.CatalogDto.*;
 import com.homeease.backend.model.entity.Banner;
+import com.homeease.backend.model.entity.Coupon;
 import com.homeease.backend.service.CatalogService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
@@ -38,6 +39,11 @@ public class CatalogController {
     @GetMapping({"/banners", "/catalog/banners"})
     public ResponseEntity<List<Banner>> getActiveBanners() {
         return ResponseEntity.ok(catalogService.getActiveBanners());
+    }
+
+    @GetMapping({"/coupons", "/catalog/coupons"})
+    public ResponseEntity<List<Coupon>> getActiveCoupons() {
+        return ResponseEntity.ok(catalogService.getActiveCoupons());
     }
 
     @PostMapping({"/coupons/validate", "/catalog/coupon/validate"})

@@ -195,12 +195,36 @@
 
 ## 3. Cart & Coupon Verification
 
-### 3.1 Validate Coupon Code
+### 3.1 Get Available Promotional Coupons (Offers List)
+- **Method / Path**: `GET /coupons`
+- **Response** (`200 OK`):
+```json
+[
+  {
+    "couponId": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "code": "WELCOME50",
+    "discountType": "FIXED_AMOUNT",
+    "discountVal": 50.00,
+    "minOrderValue": 299.00,
+    "maxDiscountAmount": 50.00,
+    "validFrom": "2026-01-01T00:00:00Z",
+    "validUntil": "2026-12-31T23:59:59Z",
+    "usageLimit": 1000,
+    "timesUsed": 12,
+    "isActive": true
+  }
+]
+```
+> **Frontend Note**: Display these available coupons on the customer cart/checkout screen under "Available Offers / Coupons".
+
+---
+
+### 3.2 Validate Coupon Code
 - **Method / Path**: `POST /coupons/validate`
 - **Request Body**:
 ```json
 {
-  "code": "DIWALI50",
+  "code": "WELCOME50",
   "orderValue": 899.00
 }
 ```
@@ -208,11 +232,11 @@
 ```json
 {
   "isValid": true,
-  "code": "DIWALI50",
+  "code": "WELCOME50",
   "discountType": "PERCENTAGE",
   "discountVal": 20.00,
   "calculatedDiscount": 179.80,
-  "message": "Coupon applied successfully"
+  "message": "Coupon applied successfully!"
 }
 ```
 *(If invalid: `"isValid": false, "message": "Coupon code is invalid or expired"`)*
