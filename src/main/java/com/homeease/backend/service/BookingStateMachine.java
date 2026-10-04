@@ -9,6 +9,8 @@ import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.Point;
 import org.locationtech.jts.geom.PrecisionModel;
+import com.homeease.backend.exception.InvalidPinException;
+import com.homeease.backend.exception.ResourceNotFoundException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -179,10 +181,10 @@ public class BookingStateMachine {
     @Transactional
     public BookingResponse verifyPinAndStartJob(UUID bookingId, UUID workerUserId, String submittedPin) {
         Booking booking = bookingRepository.findById(bookingId)
-                .orElseThrow(() -> new RuntimeException("Booking not found"));
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found with ID: " + bookingId));
 
-        if (!booking.getPinCode().equals(submittedPin)) {
-            throw new RuntimeException("Invalid 4-digit verification PIN entered by worker.");
+        if (booking.getPinCode() == null || !booking.getPinCode().trim().equals(submittedPin != null ? submittedPin.trim() : "")) {
+            throw new InvalidPinException("Invalid 4-digit verification PIN entered by worker.");
         }
 
         booking.setStatus(BookingStage.IN_PROGRESS);
