@@ -147,7 +147,7 @@ public class AuthController {
         return ResponseEntity.ok(newAddress);
     }
 
-    @DeleteMapping({"/user/addresses/{addressId}", "/users/addresses/{addressId"})
+    @DeleteMapping({"/user/addresses/{addressId}", "/users/addresses/{addressId}"})
     public ResponseEntity<Map<String, String>> deleteUserAddress(
             @RequestHeader("X-User-Id") UUID userId,
             @PathVariable("addressId") String addressId) {
