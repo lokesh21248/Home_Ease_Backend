@@ -4,6 +4,7 @@ import com.homeease.backend.dto.AuthDto.*;
 import com.homeease.backend.model.entity.User;
 import com.homeease.backend.model.enums.UserRole;
 import com.homeease.backend.repository.UserRepository;
+import com.homeease.backend.security.JwtService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -17,9 +18,11 @@ public class AuthService {
     private static final Logger logger = LoggerFactory.getLogger(AuthService.class);
 
     private final UserRepository userRepository;
+    private final JwtService jwtService;
 
-    public AuthService(UserRepository userRepository) {
+    public AuthService(UserRepository userRepository, JwtService jwtService) {
         this.userRepository = userRepository;
+        this.jwtService = jwtService;
     }
 
     @Transactional
@@ -39,7 +42,7 @@ public class AuthService {
                     return userRepository.save(newUser);
                 });
 
-        return buildResponse(user, "no-token-local-testing");
+        return buildResponse(user, jwtService.generateToken(user));
     }
 
     @Transactional
@@ -59,7 +62,7 @@ public class AuthService {
 
         user = userRepository.save(user);
 
-        return buildResponse(user, "no-token-local-testing");
+        return buildResponse(user, jwtService.generateToken(user));
     }
 
     public AuthTokenResponse authenticateAdmin(AdminLoginRequest request) {
@@ -67,7 +70,7 @@ public class AuthService {
                 .filter(u -> u.getRole() == UserRole.ADMIN)
                 .orElseThrow(() -> new RuntimeException("Invalid admin credentials or role"));
 
-        return buildResponse(admin, "no-token-local-testing");
+        return buildResponse(admin, jwtService.generateToken(admin));
     }
 
     public SendOtpResponse sendOtp(SendOtpRequest request) {
@@ -92,7 +95,7 @@ public class AuthService {
                     return userRepository.save(newUser);
                 });
 
-        return buildResponse(user, "no-token-local-testing");
+        return buildResponse(user, jwtService.generateToken(user));
     }
 
     private AuthTokenResponse buildResponse(User user, String token) {

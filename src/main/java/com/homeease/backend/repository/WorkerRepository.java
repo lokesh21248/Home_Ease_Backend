@@ -19,12 +19,25 @@ public interface WorkerRepository extends JpaRepository<Worker, UUID> {
         SELECT w.* 
         FROM workers w
         JOIN worker_services ws ON w.worker_id = ws.worker_id
-        WHERE ws.sub_service_id = :targetSubServiceId
+        WHERE ws.sub_service_id = CAST(:targetSubServiceId AS UUID)
           AND w.is_online = true 
           AND w.is_verified = true
           AND (w.blocked_until IS NULL OR w.blocked_until < CURRENT_TIMESTAMP)
-          AND ST_Distance_Sphere(w.location, ST_GeomFromText(CONCAT('POINT(', :userLng, ' ', :userLat, ')'), 4326)) <= :radiusMeters
-        ORDER BY ST_Distance_Sphere(w.location, ST_GeomFromText(CONCAT('POINT(', :userLng, ' ', :userLat, ')'), 4326)) ASC
+          AND w.current_lat IS NOT NULL AND w.current_lng IS NOT NULL
+          AND (6371000 * acos(
+                least(1.0, greatest(-1.0, 
+                  cos(radians(:userLat)) * cos(radians(w.current_lat)) * 
+                  cos(radians(w.current_lng) - radians(:userLng)) + 
+                  sin(radians(:userLat)) * sin(radians(w.current_lat))
+                ))
+              )) <= :radiusMeters
+        ORDER BY (6371000 * acos(
+                least(1.0, greatest(-1.0, 
+                  cos(radians(:userLat)) * cos(radians(w.current_lat)) * 
+                  cos(radians(w.current_lng) - radians(:userLng)) + 
+                  sin(radians(:userLat)) * sin(radians(w.current_lat))
+                ))
+              )) ASC
         LIMIT 5
         """, nativeQuery = true)
     List<Worker> findCandidateWorkersNearby(

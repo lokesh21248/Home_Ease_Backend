@@ -65,7 +65,7 @@ public class Booking {
     @Column(name = "user_lng", nullable = false)
     private Double userLng;
 
-    @Column(name = "user_location", nullable = false, columnDefinition = "POINT")
+    @Transient
     private Point userLocation;
 
     @Column(name = "base_amount", nullable = false, precision = 10, scale = 2)

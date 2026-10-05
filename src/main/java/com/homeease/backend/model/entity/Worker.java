@@ -54,7 +54,7 @@ public class Worker {
     @Column(name = "current_lng")
     private Double currentLng;
 
-    @Column(name = "location", columnDefinition = "POINT")
+    @Transient
     private Point location;
 
     @Column(name = "blocked_until")

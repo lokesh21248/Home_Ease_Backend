@@ -21,17 +21,17 @@ public class CatalogController {
         this.catalogService = catalogService;
     }
 
-    @GetMapping({"/services", "/catalog/services"})
+    @GetMapping({"/services", "/catalog/services", "/categories", "/catalog/categories"})
     public ResponseEntity<List<ServiceResponse>> getAllActiveServices() {
         return ResponseEntity.ok(catalogService.getAllActiveServices());
     }
 
-    @GetMapping({"/services/{id}", "/catalog/services/{id}"})
+    @GetMapping({"/services/{id}", "/catalog/services/{id}", "/categories/{id}", "/catalog/categories/{id}"})
     public ResponseEntity<ServiceResponse> getServiceById(@PathVariable("id") UUID id) {
         return ResponseEntity.ok(catalogService.getServiceById(id));
     }
 
-    @GetMapping({"/services/{id}/sub-services", "/subservices/{id}", "/catalog/subservices/{id}"})
+    @GetMapping({"/services/{id}/sub-services", "/subservices/{id}", "/catalog/subservices/{id}", "/categories/{id}/sub-services"})
     public ResponseEntity<List<SubServiceResponse>> getSubServicesByServiceId(@PathVariable("id") UUID serviceId) {
         return ResponseEntity.ok(catalogService.getSubServicesByServiceId(serviceId));
     }

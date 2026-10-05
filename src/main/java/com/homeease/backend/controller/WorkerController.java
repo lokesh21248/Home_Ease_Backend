@@ -1,7 +1,6 @@
 package com.homeease.backend.controller;
 
 import com.homeease.backend.dto.WorkerDto.*;
-import com.homeease.backend.model.entity.Worker;
 import com.homeease.backend.service.WorkerService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
@@ -19,15 +18,21 @@ public class WorkerController {
         this.workerService = workerService;
     }
 
+    @GetMapping("/profile")
+    public ResponseEntity<WorkerProfileResponse> getWorkerProfile(
+            @RequestHeader("X-User-Id") UUID userId) {
+        return ResponseEntity.ok(workerService.getWorkerProfile(userId));
+    }
+
     @PostMapping("/register-kyc")
-    public ResponseEntity<Worker> registerKyc(
+    public ResponseEntity<WorkerProfileResponse> registerKyc(
             @RequestHeader("X-User-Id") UUID userId,
             @Valid @RequestBody KycRegisterRequest request) {
         return ResponseEntity.ok(workerService.registerKyc(userId, request));
     }
 
     @PostMapping("/status")
-    public ResponseEntity<Worker> toggleOnlineStatus(
+    public ResponseEntity<WorkerProfileResponse> toggleOnlineStatus(
             @RequestHeader("X-User-Id") UUID userId,
             @Valid @RequestBody StatusToggleRequest request) {
         return ResponseEntity.ok(workerService.toggleOnlineStatus(userId, request.getIsOnline()));

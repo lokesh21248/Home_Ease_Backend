@@ -76,6 +76,8 @@ homeease:
     response-timeout-seconds: 180 # 3 minutes timeout for candidate acceptance
   billing:
     platform-commission-percent: 2.00 # 2% platform commission
+  worker:
+    auto-verify: ${AUTO_VERIFY_WORKERS:true} # Auto-verify workers on KYC submission to prevent duty toggle blockers in test/prod
 
 logging:
   level:

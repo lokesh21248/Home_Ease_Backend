@@ -64,4 +64,49 @@ public class WorkerDto {
         private BigDecimal netPayout;
         private Integer completedBookingsCount;
     }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class WorkerProfileResponse {
+        private UUID workerId;
+        private UUID userId;
+        private Object user;
+        private String fullName;
+        private String phoneNumber;
+        private String email;
+        private String address;
+        private String panNumber;
+        private String panDocUrl;
+        private String aadhaarDocUrl;
+        private String bankAccountNo;
+        private String bankIfsc;
+        private Boolean isOnline;
+        private Boolean isVerified;
+        private Double currentLat;
+        private Double currentLng;
+        private Double rating;
+        private Integer jobsCompleted;
+    }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class WorkerBookingRequestResponse {
+        private UUID bookingId;
+        private String status;
+        private String serviceName;
+        private String subServiceName;
+        private String customerName;
+        private String customerPhone;
+        private Double userLat;
+        private Double userLng;
+        private BigDecimal totalAmount;
+        private java.time.Instant scheduledAt;
+        private java.time.Instant createdAt;
+    }
 }

@@ -167,4 +167,37 @@ public class DispatchEngine {
         // Re-trigger spatial matching for remaining candidates
         triggerSpatialDispatch(booking, targetSubServiceId);
     }
+
+    @Transactional(readOnly = true)
+    public List<com.homeease.backend.dto.WorkerDto.WorkerBookingRequestResponse> getPendingRequestsForWorker(UUID userId) {
+        Worker worker = workerRepository.findByUser_UserId(userId).orElse(null);
+        if (worker == null) {
+            return Collections.emptyList();
+        }
+
+        List<AssignmentAttempt> attempts = assignmentAttemptRepository.findByWorker_WorkerIdAndAcceptedIsNull(worker.getWorkerId());
+        List<com.homeease.backend.dto.WorkerDto.WorkerBookingRequestResponse> requests = new ArrayList<>();
+
+        for (AssignmentAttempt attempt : attempts) {
+            Booking booking = attempt.getBooking();
+            if (booking != null && booking.getStatus() == BookingStage.SEARCHING) {
+                String serviceName = booking.getService() != null ? booking.getService().getName() : "Home Service";
+
+                requests.add(com.homeease.backend.dto.WorkerDto.WorkerBookingRequestResponse.builder()
+                        .bookingId(booking.getBookingId())
+                        .status(booking.getStatus().name())
+                        .serviceName(serviceName)
+                        .subServiceName(serviceName)
+                        .customerName(booking.getUser() != null ? booking.getUser().getFullName() : "Customer")
+                        .customerPhone(booking.getUser() != null ? booking.getUser().getPhoneNumber() : "")
+                        .userLat(booking.getUserLat())
+                        .userLng(booking.getUserLng())
+                        .totalAmount(booking.getTotalAmount())
+                        .scheduledAt(booking.getScheduledAt())
+                        .createdAt(booking.getCreatedAt())
+                        .build());
+            }
+        }
+        return requests;
+    }
 }

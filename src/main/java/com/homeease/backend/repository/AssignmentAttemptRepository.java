@@ -12,4 +12,6 @@ import java.util.UUID;
 public interface AssignmentAttemptRepository extends JpaRepository<AssignmentAttempt, UUID> {
     List<AssignmentAttempt> findByBooking_BookingId(UUID bookingId);
     Optional<AssignmentAttempt> findByBooking_BookingIdAndWorker_WorkerId(UUID bookingId, UUID workerId);
+    List<AssignmentAttempt> findByWorker_WorkerIdAndAcceptedIsNull(UUID workerId);
+    List<AssignmentAttempt> findByWorker_WorkerId(UUID workerId);
 }
