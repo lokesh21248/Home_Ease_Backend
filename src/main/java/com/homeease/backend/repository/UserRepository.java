@@ -14,4 +14,5 @@ public interface UserRepository extends JpaRepository<User, UUID> {
     boolean existsByPhoneNumber(String phoneNumber);
     boolean existsByEmail(String email);
     java.util.List<User> findByRole(com.homeease.backend.model.enums.UserRole role);
+    long countByRole(com.homeease.backend.model.enums.UserRole role);
 }

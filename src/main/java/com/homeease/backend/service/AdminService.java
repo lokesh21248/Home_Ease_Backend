@@ -41,7 +41,7 @@ public class AdminService {
 
     @Transactional(readOnly = true)
     public AdminDashboardStats getDashboardStats() {
-        long totalUsers = userRepository.count();
+        long totalUsers = userRepository.countByRole(UserRole.CUSTOMER);
         long totalWorkers = workerRepository.count();
         long activeWorkers = workerRepository.findAll().stream().filter(w -> Boolean.TRUE.equals(w.getIsOnline())).count();
         long totalBookings = bookingRepository.count();
