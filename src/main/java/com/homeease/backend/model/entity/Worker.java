@@ -35,6 +35,9 @@ public class Worker {
     @Column(name = "pan_doc_url", nullable = false, columnDefinition = "TEXT")
     private String panDocUrl;
 
+    @Column(name = "aadhaar_number", length = 20)
+    private String aadhaarNumber;
+
     @Column(name = "aadhaar_doc_url", nullable = false, columnDefinition = "TEXT")
     private String aadhaarDocUrl;
 

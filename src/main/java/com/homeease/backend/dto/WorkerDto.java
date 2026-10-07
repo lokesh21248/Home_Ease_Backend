@@ -16,12 +16,14 @@ public class WorkerDto {
     @AllArgsConstructor
     @Builder
     public static class KycRegisterRequest {
+        private String fullName;
         @NotBlank(message = "Address is required")
         private String address;
         @NotBlank(message = "PAN number is required")
         private String panNumber;
         @NotBlank(message = "PAN document URL is required")
         private String panDocUrl;
+        private String aadhaarNumber;
         @NotBlank(message = "Aadhaar document URL is required")
         private String aadhaarDocUrl;
         @NotBlank(message = "Bank account number is required")
@@ -80,6 +82,7 @@ public class WorkerDto {
         private String address;
         private String panNumber;
         private String panDocUrl;
+        private String aadhaarNumber;
         private String aadhaarDocUrl;
         private String bankAccountNo;
         private String bankIfsc;

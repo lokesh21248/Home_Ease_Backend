@@ -203,19 +203,23 @@ Upload endpoints accept `multipart/form-data` with parameter name `file`.
 * **Request Body**:
   | Field | Type | Required | Description |
   | :--- | :--- | :--- | :--- |
+  | `fullName` | `String` | No | Legal name of the worker (updates user account name). |
   | `address` | `String` | **Yes** | Residential address of the worker. |
   | `panNumber` | `String` | **Yes** | 10-character PAN number (e.g. `"ABCDE1234F"`). |
   | `panDocUrl` | `String` | **Yes** | URL returned from PAN upload. |
+  | `aadhaarNumber` | `String` | No | 12-digit Aadhaar number (e.g. `"123456789012"`). |
   | `aadhaarDocUrl` | `String` | **Yes** | URL returned from Aadhaar upload. |
   | `bankAccountNo` | `String` | **Yes** | Bank account number for direct payouts. |
   | `bankIfsc` | `String` | **Yes** | Bank IFSC code (e.g. `"HDFC0001234"`). |
-  | `subServiceIds` | `List<UUID>`| **Yes** | Array of sub-service UUIDs the worker is certified to perform. |
+  | `subServiceIds` | `List<UUID>`| No | Array of sub-service UUIDs the worker is certified to perform. |
 * **Sample Request**:
   ```json
   {
+    "fullName": "Ramesh Kumar",
     "address": "Flat 204, Sai Residency, Hitec City, Hyderabad",
     "panNumber": "ABCDE1234F",
     "panDocUrl": "https://gheiuyygjssqatziviix.supabase.co/storage/v1/object/public/homeease-worker-kyc/pan-docs/6f2e1a3b_pan.png",
+    "aadhaarNumber": "123456789012",
     "aadhaarDocUrl": "https://gheiuyygjssqatziviix.supabase.co/storage/v1/object/public/homeease-worker-kyc/aadhaar-docs/6f2e1a3b_aadhaar.png",
     "bankAccountNo": "50100234567891",
     "bankIfsc": "HDFC0001234",

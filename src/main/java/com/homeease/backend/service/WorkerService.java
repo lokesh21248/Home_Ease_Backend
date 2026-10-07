@@ -61,6 +61,10 @@ public class WorkerService {
             user.setRole(UserRole.WORKER);
             userRepository.save(user);
         }
+        if (request.getFullName() != null && !request.getFullName().isBlank()) {
+            user.setFullName(request.getFullName().trim());
+            userRepository.save(user);
+        }
 
         Worker worker = workerRepository.findByUser_UserId(userId)
                 .orElseGet(() -> Worker.builder()
@@ -68,6 +72,7 @@ public class WorkerService {
                         .address(request.getAddress())
                         .panNumber(request.getPanNumber())
                         .panDocUrl(request.getPanDocUrl())
+                        .aadhaarNumber(request.getAadhaarNumber())
                         .aadhaarDocUrl(request.getAadhaarDocUrl())
                         .bankAccountNo(request.getBankAccountNo())
                         .bankIfsc(request.getBankIfsc())
@@ -78,6 +83,7 @@ public class WorkerService {
         worker.setAddress(request.getAddress());
         worker.setPanNumber(request.getPanNumber());
         worker.setPanDocUrl(request.getPanDocUrl());
+        worker.setAadhaarNumber(request.getAadhaarNumber());
         worker.setAadhaarDocUrl(request.getAadhaarDocUrl());
         worker.setBankAccountNo(request.getBankAccountNo());
         worker.setBankIfsc(request.getBankIfsc());
@@ -209,6 +215,7 @@ public class WorkerService {
                 .address(worker.getAddress())
                 .panNumber(worker.getPanNumber())
                 .panDocUrl(worker.getPanDocUrl())
+                .aadhaarNumber(worker.getAadhaarNumber())
                 .aadhaarDocUrl(worker.getAadhaarDocUrl())
                 .bankAccountNo(worker.getBankAccountNo())
                 .bankIfsc(worker.getBankIfsc())
