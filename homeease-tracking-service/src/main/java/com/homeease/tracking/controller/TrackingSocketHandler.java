@@ -1,9 +1,9 @@
 package com.homeease.tracking.controller;
 
 import com.homeease.tracking.dto.LocationPayload;
+import com.homeease.tracking.service.LiveTrackingService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.SendTo;
@@ -14,26 +14,26 @@ public class TrackingSocketHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(TrackingSocketHandler.class);
 
-    private final RedisTemplate<String, String> redisTemplate;
+    private final LiveTrackingService trackingService;
 
-    public TrackingSocketHandler(RedisTemplate<String, String> redisTemplate) {
-        this.redisTemplate = redisTemplate;
+    public TrackingSocketHandler(LiveTrackingService trackingService) {
+        this.trackingService = trackingService;
     }
 
-    @MessageMapping("/track/{bookingId}")
-    @SendTo("/topic/track/{bookingId}")
+    /**
+     * STOMP Destination:
+     * Inbound: /app/tracking/{bookingId} or /app/track/{bookingId}
+     * Broadcast to subscribers: /topic/tracking/{bookingId} & /topic/track/{bookingId}
+     */
+    @MessageMapping({"/tracking/{bookingId}", "/track/{bookingId}"})
+    @SendTo("/topic/tracking/{bookingId}")
     public LocationPayload streamLocation(
             @DestinationVariable("bookingId") String bookingId,
             LocationPayload payload) {
 
-        logger.debug("Tracking Microservice (Port 8082): STOMP live stream for booking {}: lat={}, lng={}", bookingId, payload.getLat(), payload.getLng());
+        logger.debug("Live GPS stream received for booking {}: lat={}, lng={}, bearing={}", 
+                bookingId, payload.getLat(), payload.getLng(), payload.getBearing());
 
-        try {
-            redisTemplate.opsForValue().set("tracking:booking:" + bookingId, payload.getLat() + "," + payload.getLng());
-        } catch (Exception e) {
-            logger.warn("Redis live tracking coordinate cache update failed: {}", e.getMessage());
-        }
-
-        return payload;
+        return trackingService.processLocationUpdate(bookingId, payload);
     }
 }
