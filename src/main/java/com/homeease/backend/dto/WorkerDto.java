@@ -19,6 +19,7 @@ public class WorkerDto {
     @Builder
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public static class KycRegisterRequest {
+        private UUID userId;
         private String fullName;
         @NotBlank(message = "Address is required")
         private String address;

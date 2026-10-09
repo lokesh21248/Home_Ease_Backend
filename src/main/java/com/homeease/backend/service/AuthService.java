@@ -140,7 +140,7 @@ public class AuthService {
                     .role(UserRole.WORKER)
                     .build();
             User saved = userRepository.save(newUser);
-            String token = jwtService.generateToken(saved);
+            String token = saved.getUserId().toString(); // Direct UUID identifier (no JWT required)
 
             return AuthTokenResponse.builder()
                     .token(token)
@@ -157,7 +157,7 @@ public class AuthService {
 
         // EXISTING WORKER (Already in DB):
         User user = existingUserOpt.get();
-        String token = jwtService.generateToken(user);
+        String token = user.getUserId().toString(); // Direct UUID identifier (no JWT required)
 
         boolean isRegistered = user.getFullName() != null && !user.getFullName().trim().isEmpty();
         boolean isKycCompleted = false;
@@ -197,14 +197,28 @@ public class AuthService {
         String phone = normalizePhone(request.getPhoneNumber());
         UserRole targetRole = request.getRole() != null ? request.getRole() : UserRole.WORKER;
 
-        // Try resolving authenticated user via JWT header
-        UUID tokenUserId = jwtService.extractUserId(authHeader);
         User user = null;
 
-        if (tokenUserId != null) {
-            user = userRepository.findById(tokenUserId).orElse(null);
+        // 1. Direct userId in request body
+        if (request.getUserId() != null) {
+            user = userRepository.findById(request.getUserId()).orElse(null);
         }
 
+        // 2. Check if authHeader passed is a UUID or has userId
+        if (user == null && authHeader != null && !authHeader.isBlank()) {
+            try {
+                String clean = authHeader.replace("Bearer ", "").trim();
+                UUID uid = UUID.fromString(clean);
+                user = userRepository.findById(uid).orElse(null);
+            } catch (Exception ignored) {
+                UUID extracted = jwtService.extractUserId(authHeader);
+                if (extracted != null) {
+                    user = userRepository.findById(extracted).orElse(null);
+                }
+            }
+        }
+
+        // 3. Fallback to phone number
         if (user == null && phone != null && !phone.isBlank()) {
             user = findUserByPhoneFlexible(phone).orElse(null);
         }

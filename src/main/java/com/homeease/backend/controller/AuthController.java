@@ -45,10 +45,16 @@ public class AuthController {
         this.jwtService = jwtService;
     }
 
-    private UUID resolveUserId(String authHeader, UUID headerUserId) {
+    private UUID resolveUserId(String authHeader, UUID headerUserId, UUID queryUserId) {
+        if (queryUserId != null) return queryUserId;
         if (headerUserId != null) return headerUserId;
         if (authHeader != null && !authHeader.isBlank()) {
-            return jwtService.extractUserId(authHeader);
+            try {
+                String clean = authHeader.replace("Bearer ", "").trim();
+                return UUID.fromString(clean);
+            } catch (Exception ignored) {
+                return jwtService.extractUserId(authHeader);
+            }
         }
         return null;
     }
@@ -75,7 +81,15 @@ public class AuthController {
     @PostMapping({"/users/register", "/user/register", "/auth/register"})
     public ResponseEntity<ApiResponse<Map<String, Object>>> registerUser(
             @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestHeader(value = "X-User-Id", required = false) UUID headerUserId,
+            @RequestParam(value = "userId", required = false) UUID queryUserId,
             @Valid @RequestBody RegisterUserRequest request) {
+        if (request.getUserId() == null) {
+            UUID resolved = resolveUserId(authHeader, headerUserId, queryUserId);
+            if (resolved != null) {
+                request.setUserId(resolved);
+            }
+        }
         User user = authService.registerUser(request, authHeader);
         return ResponseEntity.status(org.springframework.http.HttpStatus.CREATED).body(
                 ApiResponse.<Map<String, Object>>builder()
@@ -95,11 +109,12 @@ public class AuthController {
 
     @GetMapping({"/users/me", "/user/me", "/user/profile", "/users/profile"})
     public ResponseEntity<User> getCurrentUser(
+            @RequestParam(value = "userId", required = false) UUID queryUserId,
             @RequestHeader(value = "Authorization", required = false) String authHeader,
             @RequestHeader(value = "X-User-Id", required = false) UUID headerUserId) {
-        UUID userId = resolveUserId(authHeader, headerUserId);
+        UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
         if (userId == null) {
-            throw new ResourceNotFoundException("Missing authentication. Please provide Authorization Bearer token or X-User-Id.");
+            throw new ResourceNotFoundException("Missing userId. Please provide userId in query param (?userId=...), header (X-User-Id), or Bearer token.");
         }
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found with ID: " + userId));

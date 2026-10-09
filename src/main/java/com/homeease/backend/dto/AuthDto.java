@@ -50,9 +50,9 @@ public class AuthDto {
     @AllArgsConstructor
     @Builder
     public static class RegisterUserRequest {
+        private java.util.UUID userId;
         @NotBlank(message = "Full name is required")
         private String fullName;
-        @NotBlank(message = "Phone number is required")
         private String phoneNumber;
         private String email;
         private UserRole role; // CUSTOMER or WORKER
