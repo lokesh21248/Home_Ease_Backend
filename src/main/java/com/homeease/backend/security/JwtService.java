@@ -17,6 +17,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.UUID;
 
 @Service
 public class JwtService {
@@ -66,6 +67,41 @@ public class JwtService {
             logger.error("Failed to generate JWT token for user {}: {}", user.getUserId(), e.getMessage());
             throw new RuntimeException("JWT generation failure: " + e.getMessage(), e);
         }
+    }
+
+    public Map<String, Object> validateAndExtractClaims(String authHeaderOrToken) {
+        if (authHeaderOrToken == null || authHeaderOrToken.isBlank()) {
+            return null;
+        }
+        String token = authHeaderOrToken.startsWith("Bearer ")
+                ? authHeaderOrToken.substring(7).trim()
+                : authHeaderOrToken.trim();
+
+        try {
+            String[] parts = token.split("\\.");
+            if (parts.length < 2) {
+                return null;
+            }
+            byte[] decoded = Base64.getUrlDecoder().decode(parts[1]);
+            return objectMapper.readValue(decoded, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+        } catch (Exception e) {
+            logger.warn("Could not extract claims from token: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    public UUID extractUserId(String authHeaderOrToken) {
+        Map<String, Object> claims = validateAndExtractClaims(authHeaderOrToken);
+        if (claims == null) return null;
+        Object userIdObj = claims.get("userId") != null ? claims.get("userId") : claims.get("sub");
+        if (userIdObj != null) {
+            try {
+                return UUID.fromString(userIdObj.toString());
+            } catch (Exception e) {
+                logger.warn("Invalid UUID in token claims: {}", userIdObj);
+            }
+        }
+        return null;
     }
 
     private String hmacSha256(String data, String key) throws NoSuchAlgorithmException, InvalidKeyException {

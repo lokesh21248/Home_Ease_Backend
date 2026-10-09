@@ -2,17 +2,13 @@ package com.homeease.backend.service;
 
 import com.homeease.backend.dto.WorkerDto.*;
 import com.homeease.backend.exception.ResourceNotFoundException;
-import com.homeease.backend.model.entity.Payment;
-import com.homeease.backend.model.entity.Review;
-import com.homeease.backend.model.entity.User;
-import com.homeease.backend.model.entity.Worker;
+import com.homeease.backend.exception.UserNotFoundException;
+import com.homeease.backend.model.entity.*;
 import com.homeease.backend.model.enums.TransactionState;
 import com.homeease.backend.model.enums.UserRole;
-import com.homeease.backend.repository.PaymentRepository;
-import com.homeease.backend.repository.ReviewRepository;
-import com.homeease.backend.repository.SubServiceRepository;
-import com.homeease.backend.repository.UserRepository;
-import com.homeease.backend.repository.WorkerRepository;
+import com.homeease.backend.repository.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
@@ -20,42 +16,44 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 
 @Service
 public class WorkerService {
 
+    private static final Logger logger = LoggerFactory.getLogger(WorkerService.class);
+
     private final WorkerRepository workerRepository;
     private final UserRepository userRepository;
     private final SubServiceRepository subServiceRepository;
+    private final WorkerServiceLinkRepository workerServiceLinkRepository;
     private final PaymentRepository paymentRepository;
     private final ReviewRepository reviewRepository;
     private final RedisTemplate<String, String> redisTemplate;
 
-    @Value("${homeease.worker.auto-verify:true}")
+    @Value("${homeease.worker.auto-verify:false}")
     private boolean autoVerifyWorker;
 
     public WorkerService(WorkerRepository workerRepository,
                          UserRepository userRepository,
                          SubServiceRepository subServiceRepository,
+                         WorkerServiceLinkRepository workerServiceLinkRepository,
                          PaymentRepository paymentRepository,
                          ReviewRepository reviewRepository,
                          RedisTemplate<String, String> redisTemplate) {
         this.workerRepository = workerRepository;
         this.userRepository = userRepository;
         this.subServiceRepository = subServiceRepository;
+        this.workerServiceLinkRepository = workerServiceLinkRepository;
         this.paymentRepository = paymentRepository;
         this.reviewRepository = reviewRepository;
         this.redisTemplate = redisTemplate;
     }
 
     @Transactional
-    public WorkerProfileResponse registerKyc(UUID userId, KycRegisterRequest request) {
+    public KycSubmissionResponse registerKyc(UUID userId, KycRegisterRequest request) {
         User user = userRepository.findById(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("User not found for ID: " + userId));
+                .orElseThrow(() -> new UserNotFoundException("USER_NOT_FOUND: User not found for ID: " + userId));
 
         if (user.getRole() != UserRole.WORKER) {
             user.setRole(UserRole.WORKER);
@@ -69,38 +67,102 @@ public class WorkerService {
         Worker worker = workerRepository.findByUser_UserId(userId)
                 .orElseGet(() -> Worker.builder()
                         .user(user)
-                        .address(request.getAddress())
-                        .panNumber(request.getPanNumber())
-                        .panDocUrl(request.getPanDocUrl())
-                        .aadhaarNumber(request.getAadhaarNumber())
-                        .aadhaarDocUrl(request.getAadhaarDocUrl())
-                        .bankAccountNo(request.getBankAccountNo())
-                        .bankIfsc(request.getBankIfsc())
                         .isVerified(autoVerifyWorker)
                         .isOnline(false)
+                        .kycStatus("PENDING")
                         .build());
 
         worker.setAddress(request.getAddress());
         worker.setPanNumber(request.getPanNumber());
         worker.setPanDocUrl(request.getPanDocUrl());
-        worker.setAadhaarNumber(request.getAadhaarNumber());
         worker.setAadhaarDocUrl(request.getAadhaarDocUrl());
         worker.setBankAccountNo(request.getBankAccountNo());
         worker.setBankIfsc(request.getBankIfsc());
 
-        if (autoVerifyWorker) {
-            worker.setIsVerified(true);
+        if (request.getAadhaarNumber() != null && !request.getAadhaarNumber().isBlank()) {
+            worker.setAadhaarNumber(request.getAadhaarNumber());
+        }
+        if (request.getAvatarUrl() != null && !request.getAvatarUrl().isBlank()) {
+            worker.setAvatarUrl(request.getAvatarUrl());
+        }
+        if (request.getGender() != null && !request.getGender().isBlank()) {
+            worker.setGender(request.getGender());
+        }
+        if (request.getDob() != null) {
+            worker.setDob(request.getDob());
+        }
+        if (request.getExperienceYears() != null) {
+            worker.setExperienceYears(request.getExperienceYears());
         }
 
+        worker.setKycStatus(autoVerifyWorker ? "APPROVED" : "PENDING");
+        worker.setIsVerified(autoVerifyWorker);
+
         worker = workerRepository.save(worker);
-        return mapToProfileResponse(worker);
+
+        // Link Sub-Services
+        if (request.getSubServiceIds() != null && !request.getSubServiceIds().isEmpty()) {
+            try {
+                workerServiceLinkRepository.deleteByWorkerId(worker.getWorkerId());
+                for (String subServiceIdStr : request.getSubServiceIds()) {
+                    if (subServiceIdStr == null || subServiceIdStr.isBlank()) continue;
+                    try {
+                        UUID subServiceId = UUID.fromString(subServiceIdStr.trim());
+                        SubService subService = subServiceRepository.findById(subServiceId).orElse(null);
+                        if (subService != null) {
+                            WorkerServiceId linkId = WorkerServiceId.builder()
+                                    .workerId(worker.getWorkerId())
+                                    .subServiceId(subServiceId)
+                                    .build();
+                            WorkerServiceLink link = WorkerServiceLink.builder()
+                                    .id(linkId)
+                                    .worker(worker)
+                                    .subService(subService)
+                                    .build();
+                            workerServiceLinkRepository.save(link);
+                        }
+                    } catch (IllegalArgumentException e) {
+                        logger.warn("Invalid subServiceId format passed to KYC registration: {}", subServiceIdStr);
+                    }
+                }
+            } catch (Exception e) {
+                logger.warn("Failed to link sub-services during KYC registration: {}", e.getMessage());
+            }
+        }
+
+        return KycSubmissionResponse.builder()
+                .workerId(worker.getWorkerId())
+                .isVerified(worker.getIsVerified())
+                .kycStatus(worker.getKycStatus())
+                .build();
     }
 
     @Transactional(readOnly = true)
     public WorkerProfileResponse getWorkerProfile(UUID userId) {
-        Worker worker = workerRepository.findByUser_UserId(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("Worker profile not found. Please register KYC first."));
-        return mapToProfileResponse(worker);
+        Optional<Worker> workerOpt = workerRepository.findByUser_UserId(userId);
+
+        if (workerOpt.isPresent()) {
+            return mapToProfileResponse(workerOpt.get());
+        }
+
+        // Check if User exists but has not completed KYC yet
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new UserNotFoundException("USER_NOT_FOUND: User profile not found for ID: " + userId));
+
+        // Return empty/initial profile for new worker
+        return WorkerProfileResponse.builder()
+                .workerId(null)
+                .userId(user.getUserId())
+                .fullName(user.getFullName())
+                .phoneNumber(user.getPhoneNumber())
+                .email(user.getEmail())
+                .isOnline(false)
+                .isVerified(false)
+                .kycStatus("NOT_UPLOADED")
+                .rating(5.0)
+                .jobsCompleted(0)
+                .subServiceIds(List.of())
+                .build();
     }
 
     @Transactional
@@ -205,6 +267,20 @@ public class WorkerService {
                     .count();
         }
 
+        List<String> subServiceIds = new ArrayList<>();
+        if (worker.getWorkerId() != null) {
+            try {
+                List<WorkerServiceLink> links = workerServiceLinkRepository.findById_WorkerId(worker.getWorkerId());
+                for (WorkerServiceLink link : links) {
+                    if (link.getSubService() != null && link.getSubService().getSubServiceId() != null) {
+                        subServiceIds.add(link.getSubService().getSubServiceId().toString());
+                    }
+                }
+            } catch (Exception e) {
+                logger.warn("Could not load sub-service IDs for worker: {}", e.getMessage());
+            }
+        }
+
         return WorkerProfileResponse.builder()
                 .workerId(worker.getWorkerId())
                 .userId(u != null ? u.getUserId() : null)
@@ -213,6 +289,7 @@ public class WorkerService {
                 .phoneNumber(u != null ? u.getPhoneNumber() : "")
                 .email(u != null ? u.getEmail() : "")
                 .address(worker.getAddress())
+                .avatarUrl(worker.getAvatarUrl())
                 .panNumber(worker.getPanNumber())
                 .panDocUrl(worker.getPanDocUrl())
                 .aadhaarNumber(worker.getAadhaarNumber())
@@ -221,6 +298,11 @@ public class WorkerService {
                 .bankIfsc(worker.getBankIfsc())
                 .isOnline(worker.getIsOnline())
                 .isVerified(worker.getIsVerified())
+                .kycStatus(worker.getKycStatus() != null ? worker.getKycStatus() : "NOT_UPLOADED")
+                .gender(worker.getGender())
+                .dob(worker.getDob())
+                .experienceYears(worker.getExperienceYears())
+                .subServiceIds(subServiceIds)
                 .currentLat(worker.getCurrentLat())
                 .currentLng(worker.getCurrentLng())
                 .rating(Math.round(rating * 10.0) / 10.0)

@@ -1,10 +1,26 @@
 package com.homeease.backend.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.homeease.backend.model.enums.UserRole;
 import jakarta.validation.constraints.NotBlank;
 import lombok.*;
 
+import java.util.Map;
+
 public class AuthDto {
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class ApiResponse<T> {
+        @Builder.Default
+        private String status = "SUCCESS";
+        private String message;
+        private T data;
+    }
 
     @Getter
     @Setter
@@ -57,10 +73,23 @@ public class AuthDto {
     @NoArgsConstructor
     @AllArgsConstructor
     @Builder
+    public static class SendOtpData {
+        private Boolean isNewUser;
+        private Boolean userExists;
+    }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     public static class SendOtpResponse {
+        @Builder.Default
+        private String status = "SUCCESS";
         private String message;
         private String otpId;
-        private String status;
+        private SendOtpData data;
     }
 
     @Getter
@@ -80,6 +109,7 @@ public class AuthDto {
     @NoArgsConstructor
     @AllArgsConstructor
     @Builder
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     public static class AuthTokenResponse {
         private String token;
         private String userId;
@@ -87,5 +117,12 @@ public class AuthDto {
         private String phoneNumber;
         private String email;
         private UserRole role;
+
+        // Flags for multi-step onboarding flow
+        private Boolean isNewUser;
+        private Boolean userExists;
+        private Boolean isRegistered;
+        private Boolean isKycCompleted;
+        private Boolean isVerified;
     }
 }

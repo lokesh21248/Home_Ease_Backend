@@ -6,11 +6,13 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/v1/upload")
+@CrossOrigin(origins = "*")
 public class FileUploadController {
 
     private final StorageService storageService;
@@ -19,14 +21,23 @@ public class FileUploadController {
         this.storageService = storageService;
     }
 
+    private Map<String, Object> formatUploadResponse(String url, String bucket) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("status", "SUCCESS");
+        body.put("url", url);
+        body.put("bucket", bucket);
+        body.put("data", Map.of("url", url, "bucket", bucket));
+        return body;
+    }
+
     /**
      * Upload Service Vertical Image (Icon / Illustration)
      * Stored in bucket: homeease-services
      */
     @PostMapping(value = "/service-image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<Map<String, String>> uploadServiceImage(@RequestParam("file") MultipartFile file) {
+    public ResponseEntity<Map<String, Object>> uploadServiceImage(@RequestParam("file") MultipartFile file) {
         String url = storageService.uploadServiceImage(file);
-        return ResponseEntity.ok(Map.of("url", url, "bucket", storageService.getServicesBucket()));
+        return ResponseEntity.ok(formatUploadResponse(url, storageService.getServicesBucket()));
     }
 
     /**
@@ -34,9 +45,9 @@ public class FileUploadController {
      * Stored in bucket: homeease-sub-services
      */
     @PostMapping(value = "/sub-service-image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<Map<String, String>> uploadSubServiceImage(@RequestParam("file") MultipartFile file) {
+    public ResponseEntity<Map<String, Object>> uploadSubServiceImage(@RequestParam("file") MultipartFile file) {
         String url = storageService.uploadSubServiceImage(file);
-        return ResponseEntity.ok(Map.of("url", url, "bucket", storageService.getSubServicesBucket()));
+        return ResponseEntity.ok(formatUploadResponse(url, storageService.getSubServicesBucket()));
     }
 
     /**
@@ -44,9 +55,9 @@ public class FileUploadController {
      * Stored in bucket: homeease-banners
      */
     @PostMapping(value = "/banner-image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<Map<String, String>> uploadBannerImage(@RequestParam("file") MultipartFile file) {
+    public ResponseEntity<Map<String, Object>> uploadBannerImage(@RequestParam("file") MultipartFile file) {
         String url = storageService.uploadBannerImage(file);
-        return ResponseEntity.ok(Map.of("url", url, "bucket", storageService.getBannersBucket()));
+        return ResponseEntity.ok(formatUploadResponse(url, storageService.getBannersBucket()));
     }
 
     /**
@@ -54,11 +65,11 @@ public class FileUploadController {
      * Stored in bucket: homeease-worker-profile
      */
     @PostMapping(value = "/worker-profile/{workerId}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<Map<String, String>> uploadWorkerProfilePhoto(
+    public ResponseEntity<Map<String, Object>> uploadWorkerProfilePhoto(
             @PathVariable("workerId") UUID workerId,
             @RequestParam("file") MultipartFile file) {
         String url = storageService.uploadWorkerProfilePhoto(workerId, file);
-        return ResponseEntity.ok(Map.of("url", url, "bucket", storageService.getWorkerProfileBucket()));
+        return ResponseEntity.ok(formatUploadResponse(url, storageService.getWorkerProfileBucket()));
     }
 
     /**
@@ -66,11 +77,11 @@ public class FileUploadController {
      * Stored in bucket: homeease-worker-kyc
      */
     @PostMapping(value = "/worker-kyc/pan/{workerId}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<Map<String, String>> uploadWorkerPan(
+    public ResponseEntity<Map<String, Object>> uploadWorkerPan(
             @PathVariable("workerId") UUID workerId,
             @RequestParam("file") MultipartFile file) {
         String url = storageService.uploadWorkerPanDoc(workerId, file);
-        return ResponseEntity.ok(Map.of("url", url, "bucket", storageService.getWorkerKycBucket()));
+        return ResponseEntity.ok(formatUploadResponse(url, storageService.getWorkerKycBucket()));
     }
 
     /**
@@ -78,10 +89,10 @@ public class FileUploadController {
      * Stored in bucket: homeease-worker-kyc
      */
     @PostMapping(value = "/worker-kyc/aadhaar/{workerId}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<Map<String, String>> uploadWorkerAadhaar(
+    public ResponseEntity<Map<String, Object>> uploadWorkerAadhaar(
             @PathVariable("workerId") UUID workerId,
             @RequestParam("file") MultipartFile file) {
         String url = storageService.uploadWorkerAadhaarDoc(workerId, file);
-        return ResponseEntity.ok(Map.of("url", url, "bucket", storageService.getWorkerKycBucket()));
+        return ResponseEntity.ok(formatUploadResponse(url, storageService.getWorkerKycBucket()));
     }
 }

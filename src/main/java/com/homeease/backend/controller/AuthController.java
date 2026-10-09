@@ -19,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 @RestController
 @RequestMapping({"/api/v1", "/api"})
+@CrossOrigin(origins = "*")
 public class AuthController {
 
     private static final Logger logger = LoggerFactory.getLogger(AuthController.class);
@@ -27,6 +28,7 @@ public class AuthController {
     private final UserRepository userRepository;
     private final RedisTemplate<String, String> redisTemplate;
     private final ObjectMapper objectMapper;
+    private final com.homeease.backend.security.JwtService jwtService;
 
     // In-memory fallback if Redis is not yet configured
     private final Map<UUID, List<Map<String, Object>>> addressFallbackStore = new ConcurrentHashMap<>();
@@ -34,11 +36,21 @@ public class AuthController {
     public AuthController(AuthService authService,
                           UserRepository userRepository,
                           RedisTemplate<String, String> redisTemplate,
-                          ObjectMapper objectMapper) {
+                          ObjectMapper objectMapper,
+                          com.homeease.backend.security.JwtService jwtService) {
         this.authService = authService;
         this.userRepository = userRepository;
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
+        this.jwtService = jwtService;
+    }
+
+    private UUID resolveUserId(String authHeader, UUID headerUserId) {
+        if (headerUserId != null) return headerUserId;
+        if (authHeader != null && !authHeader.isBlank()) {
+            return jwtService.extractUserId(authHeader);
+        }
+        return null;
     }
 
     @PostMapping("/auth/firebase-login")
@@ -52,13 +64,26 @@ public class AuthController {
     }
 
     @PostMapping("/auth/otp/verify")
-    public ResponseEntity<AuthTokenResponse> verifyOtp(@Valid @RequestBody VerifyOtpRequest request) {
-        return ResponseEntity.ok(authService.verifyOtp(request));
+    public ResponseEntity<ApiResponse<AuthTokenResponse>> verifyOtp(@Valid @RequestBody VerifyOtpRequest request) {
+        AuthTokenResponse response = authService.verifyOtp(request);
+        return ResponseEntity.ok(ApiResponse.<AuthTokenResponse>builder()
+                .status("SUCCESS")
+                .data(response)
+                .build());
     }
 
     @PostMapping({"/users/register", "/user/register", "/auth/register"})
-    public ResponseEntity<AuthTokenResponse> registerUser(@Valid @RequestBody RegisterUserRequest request) {
-        return ResponseEntity.ok(authService.registerUser(request));
+    public ResponseEntity<ApiResponse<Map<String, Object>>> registerUser(
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @Valid @RequestBody RegisterUserRequest request) {
+        User user = authService.registerUser(request, authHeader);
+        return ResponseEntity.status(org.springframework.http.HttpStatus.CREATED).body(
+                ApiResponse.<Map<String, Object>>builder()
+                        .status("SUCCESS")
+                        .message("Worker account registered successfully.")
+                        .data(Map.of("userId", user.getUserId().toString()))
+                        .build()
+        );
     }
 
     @PostMapping("/admin/auth/login")
@@ -69,7 +94,13 @@ public class AuthController {
     // --- User Profile Endpoints (Supports both singular /user and plural /users) ---
 
     @GetMapping({"/users/me", "/user/me", "/user/profile", "/users/profile"})
-    public ResponseEntity<User> getCurrentUser(@RequestHeader("X-User-Id") UUID userId) {
+    public ResponseEntity<User> getCurrentUser(
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestHeader(value = "X-User-Id", required = false) UUID headerUserId) {
+        UUID userId = resolveUserId(authHeader, headerUserId);
+        if (userId == null) {
+            throw new ResourceNotFoundException("Missing authentication. Please provide Authorization Bearer token or X-User-Id.");
+        }
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found with ID: " + userId));
         return ResponseEntity.ok(user);
