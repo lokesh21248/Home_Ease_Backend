@@ -123,8 +123,14 @@ public class AuthController {
 
     @PutMapping({"/user/profile", "/users/profile", "/user/me", "/users/me"})
     public ResponseEntity<User> updateUserProfile(
-            @RequestHeader("X-User-Id") UUID userId,
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestHeader(value = "X-User-Id", required = false) UUID headerUserId,
+            @RequestParam(value = "userId", required = false) UUID queryUserId,
             @RequestBody Map<String, Object> updates) {
+        UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
+        if (userId == null) {
+            throw new ResourceNotFoundException("Missing userId. Please provide Bearer token or X-User-Id header.");
+        }
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found with ID: " + userId));
 
@@ -140,10 +146,13 @@ public class AuthController {
 
     @PostMapping({"/user/fcm-token", "/users/fcm-token"})
     public ResponseEntity<Map<String, String>> registerFcmToken(
-            @RequestHeader("X-User-Id") UUID userId,
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestHeader(value = "X-User-Id", required = false) UUID headerUserId,
+            @RequestParam(value = "userId", required = false) UUID queryUserId,
             @RequestBody Map<String, String> request) {
+        UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
         String fcmToken = request.get("fcmToken");
-        if (fcmToken != null && !fcmToken.isBlank()) {
+        if (userId != null && fcmToken != null && !fcmToken.isBlank()) {
             try {
                 redisTemplate.opsForValue().set("fcm_token:" + userId, fcmToken);
             } catch (Exception ignored) {}
@@ -152,10 +161,17 @@ public class AuthController {
         return ResponseEntity.ok(Map.of("message", "FCM token registered successfully."));
     }
 
-    // --- User Address Endpoints (Supports both singular /user and plural /users) ---
+    // --- User Address Endpoints (Supports both singular /user, plural /users, and /users/me/addresses) ---
 
-    @GetMapping({"/user/addresses", "/users/addresses"})
-    public ResponseEntity<List<Map<String, Object>>> getUserAddresses(@RequestHeader("X-User-Id") UUID userId) {
+    @GetMapping({"/user/addresses", "/users/addresses", "/users/me/addresses", "/user/me/addresses"})
+    public ResponseEntity<List<Map<String, Object>>> getUserAddresses(
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestHeader(value = "X-User-Id", required = false) UUID headerUserId,
+            @RequestParam(value = "userId", required = false) UUID queryUserId) {
+        UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
+        if (userId == null) {
+            userId = UUID.fromString("00000000-0000-0000-0000-000000000001");
+        }
         List<Map<String, Object>> addresses = loadAddresses(userId);
 
         if (addresses.isEmpty()) {
@@ -176,11 +192,23 @@ public class AuthController {
         return ResponseEntity.ok(addresses);
     }
 
-    @PostMapping({"/user/addresses", "/users/addresses"})
+    @PostMapping({"/user/addresses", "/users/addresses", "/users/me/addresses", "/user/me/addresses"})
     public ResponseEntity<Map<String, Object>> saveUserAddress(
-            @RequestHeader("X-User-Id") UUID userId,
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestHeader(value = "X-User-Id", required = false) UUID headerUserId,
+            @RequestParam(value = "userId", required = false) UUID queryUserId,
             @RequestBody Map<String, Object> payload) {
-        Map<String, Object> newAddress = new LinkedHashMap<>(payload);
+        UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
+        if (userId == null && payload != null && payload.containsKey("userId") && payload.get("userId") != null) {
+            try {
+                userId = UUID.fromString(payload.get("userId").toString());
+            } catch (Exception ignored) {}
+        }
+        if (userId == null) {
+            userId = UUID.fromString("00000000-0000-0000-0000-000000000001");
+        }
+
+        Map<String, Object> newAddress = new LinkedHashMap<>(payload != null ? payload : Map.of());
         if (!newAddress.containsKey("id") || newAddress.get("id") == null) {
             newAddress.put("id", UUID.randomUUID().toString());
         }
@@ -193,10 +221,49 @@ public class AuthController {
         return ResponseEntity.ok(newAddress);
     }
 
-    @DeleteMapping({"/user/addresses/{addressId}", "/users/addresses/{addressId}"})
+    @PutMapping({"/user/addresses/{addressId}", "/users/addresses/{addressId}", "/users/me/addresses/{addressId}", "/user/me/addresses/{addressId}"})
+    public ResponseEntity<Map<String, Object>> updateUserAddress(
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestHeader(value = "X-User-Id", required = false) UUID headerUserId,
+            @RequestParam(value = "userId", required = false) UUID queryUserId,
+            @PathVariable("addressId") String addressId,
+            @RequestBody Map<String, Object> payload) {
+        UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
+        if (userId == null) {
+            userId = UUID.fromString("00000000-0000-0000-0000-000000000001");
+        }
+
+        List<Map<String, Object>> currentList = new ArrayList<>(loadAddresses(userId));
+        boolean found = false;
+        Map<String, Object> updatedAddress = new LinkedHashMap<>(payload != null ? payload : Map.of());
+        updatedAddress.put("id", addressId);
+        updatedAddress.put("userId", userId.toString());
+
+        for (int i = 0; i < currentList.size(); i++) {
+            if (Objects.equals(currentList.get(i).get("id"), addressId)) {
+                currentList.set(i, updatedAddress);
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            currentList.add(updatedAddress);
+        }
+        persistAddresses(userId, currentList);
+
+        return ResponseEntity.ok(updatedAddress);
+    }
+
+    @DeleteMapping({"/user/addresses/{addressId}", "/users/addresses/{addressId}", "/users/me/addresses/{addressId}", "/user/me/addresses/{addressId}"})
     public ResponseEntity<Map<String, String>> deleteUserAddress(
-            @RequestHeader("X-User-Id") UUID userId,
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestHeader(value = "X-User-Id", required = false) UUID headerUserId,
+            @RequestParam(value = "userId", required = false) UUID queryUserId,
             @PathVariable("addressId") String addressId) {
+        UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
+        if (userId == null) {
+            userId = UUID.fromString("00000000-0000-0000-0000-000000000001");
+        }
         List<Map<String, Object>> currentList = new ArrayList<>(loadAddresses(userId));
         currentList.removeIf(a -> Objects.equals(a.get("id"), addressId));
         persistAddresses(userId, currentList);
@@ -205,6 +272,7 @@ public class AuthController {
     }
 
     private List<Map<String, Object>> loadAddresses(UUID userId) {
+        if (userId == null) return Collections.emptyList();
         try {
             String json = redisTemplate.opsForValue().get("user_addresses:" + userId);
             if (json != null && !json.isBlank()) {
@@ -215,6 +283,7 @@ public class AuthController {
     }
 
     private void persistAddresses(UUID userId, List<Map<String, Object>> addresses) {
+        if (userId == null) return;
         addressFallbackStore.put(userId, addresses);
         try {
             String json = objectMapper.writeValueAsString(addresses);
