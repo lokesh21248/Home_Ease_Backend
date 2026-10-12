@@ -72,12 +72,24 @@ public class WorkerService {
                         .kycStatus("PENDING")
                         .build());
 
-        worker.setAddress(request.getAddress());
-        worker.setPanNumber(request.getPanNumber());
-        worker.setPanDocUrl(request.getPanDocUrl());
-        worker.setAadhaarDocUrl(request.getAadhaarDocUrl());
-        worker.setBankAccountNo(request.getBankAccountNo());
-        worker.setBankIfsc(request.getBankIfsc());
+        if (request.getAddress() != null && !request.getAddress().isBlank()) {
+            worker.setAddress(request.getAddress());
+        }
+        if (request.getPanNumber() != null && !request.getPanNumber().isBlank()) {
+            worker.setPanNumber(request.getPanNumber());
+        }
+        if (request.getPanDocUrl() != null && !request.getPanDocUrl().isBlank()) {
+            worker.setPanDocUrl(request.getPanDocUrl());
+        }
+        if (request.getAadhaarDocUrl() != null && !request.getAadhaarDocUrl().isBlank()) {
+            worker.setAadhaarDocUrl(request.getAadhaarDocUrl());
+        }
+        if (request.getBankAccountNo() != null && !request.getBankAccountNo().isBlank()) {
+            worker.setBankAccountNo(request.getBankAccountNo());
+        }
+        if (request.getBankIfsc() != null && !request.getBankIfsc().isBlank()) {
+            worker.setBankIfsc(request.getBankIfsc());
+        }
 
         if (request.getAadhaarNumber() != null && !request.getAadhaarNumber().isBlank()) {
             worker.setAadhaarNumber(request.getAadhaarNumber());
@@ -95,8 +107,15 @@ public class WorkerService {
             worker.setExperienceYears(request.getExperienceYears());
         }
 
-        worker.setKycStatus(autoVerifyWorker ? "APPROVED" : "PENDING");
-        worker.setIsVerified(autoVerifyWorker);
+        boolean hasDocs = (worker.getPanDocUrl() != null && !worker.getPanDocUrl().isBlank()) ||
+                          (worker.getAadhaarDocUrl() != null && !worker.getAadhaarDocUrl().isBlank());
+        if (hasDocs) {
+            worker.setKycStatus(autoVerifyWorker ? "APPROVED" : "PENDING");
+            worker.setIsVerified(autoVerifyWorker);
+        } else {
+            worker.setKycStatus("NOT_UPLOADED");
+            worker.setIsVerified(false);
+        }
 
         worker = workerRepository.save(worker);
 

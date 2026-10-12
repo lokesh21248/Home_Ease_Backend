@@ -77,7 +77,7 @@ homeease:
   billing:
     platform-commission-percent: 2.00 # 2% platform commission
   worker:
-    auto-verify: ${AUTO_VERIFY_WORKERS:true} # Auto-verify workers on KYC submission to prevent duty toggle blockers in test/prod
+    auto-verify: ${AUTO_VERIFY_WORKERS:false} # Workers require admin approval via /admin/workers/{id}/verify-kyc
 
 logging:
   level:

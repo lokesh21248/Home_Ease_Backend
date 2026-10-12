@@ -21,18 +21,12 @@ public class WorkerDto {
     public static class KycRegisterRequest {
         private UUID userId;
         private String fullName;
-        @NotBlank(message = "Address is required")
         private String address;
-        @NotBlank(message = "PAN number is required")
         private String panNumber;
-        @NotBlank(message = "PAN document URL is required")
         private String panDocUrl;
         private String aadhaarNumber;
-        @NotBlank(message = "Aadhaar document URL is required")
         private String aadhaarDocUrl;
-        @NotBlank(message = "Bank account number is required")
         private String bankAccountNo;
-        @NotBlank(message = "Bank IFSC is required")
         private String bankIfsc;
         private List<String> subServiceIds;
         private String avatarUrl;
