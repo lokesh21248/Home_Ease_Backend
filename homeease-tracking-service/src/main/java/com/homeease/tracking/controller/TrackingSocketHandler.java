@@ -6,8 +6,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
 import org.springframework.messaging.handler.annotation.MessageMapping;
-import org.springframework.messaging.handler.annotation.SendTo;
 import org.springframework.stereotype.Controller;
+
+import java.security.Principal;
 
 @Controller
 public class TrackingSocketHandler {
@@ -24,16 +25,26 @@ public class TrackingSocketHandler {
      * STOMP Destination:
      * Inbound: /app/tracking/{bookingId} or /app/track/{bookingId}
      * Broadcast to subscribers: /topic/tracking/{bookingId} & /topic/track/{bookingId}
+     *
+     * Note: Duplicate broadcast is eliminated by removing @SendTo;
+     * LiveTrackingService explicitly broadcasts via SimpMessagingTemplate to both topics.
      */
     @MessageMapping({"/tracking/{bookingId}", "/track/{bookingId}"})
-    @SendTo("/topic/tracking/{bookingId}")
-    public LocationPayload streamLocation(
+    public void streamLocation(
             @DestinationVariable("bookingId") String bookingId,
-            LocationPayload payload) {
+            LocationPayload payload,
+            Principal principal) {
 
-        logger.debug("Live GPS stream received for booking {}: lat={}, lng={}, bearing={}", 
-                bookingId, payload.getLat(), payload.getLng(), payload.getBearing());
+        String authenticatedUserId = principal != null ? principal.getName() : null;
 
-        return trackingService.processLocationUpdate(bookingId, payload);
+        logger.debug("Live GPS stream received for booking {}: lat={}, lng={}, bearing={}, principal={}",
+                bookingId, payload != null ? payload.getLat() : null,
+                payload != null ? payload.getLng() : null,
+                payload != null ? payload.getBearing() : null,
+                authenticatedUserId);
+
+        if (payload != null) {
+            trackingService.processLocationUpdate(bookingId, payload, authenticatedUserId);
+        }
     }
 }

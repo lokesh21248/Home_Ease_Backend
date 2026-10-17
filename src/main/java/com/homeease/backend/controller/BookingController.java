@@ -71,8 +71,18 @@ public class BookingController {
             return ResponseEntity.ok(bookingStateMachine.mapToBookingResponse(booking));
         } else if ("COMPLETED".equalsIgnoreCase(status)) {
             return ResponseEntity.ok(bookingStateMachine.completeJob(bookingId, userId));
+        } else if ("CANCELLED".equalsIgnoreCase(status)) {
+            return ResponseEntity.ok(bookingStateMachine.cancelBooking(bookingId, userId, "Status updated to CANCELLED"));
         }
         return ResponseEntity.ok(bookingStateMachine.getBookingById(bookingId));
+    }
+
+    @PostMapping("/bookings/{id}/cancel")
+    public ResponseEntity<BookingResponse> cancelBooking(
+            @PathVariable("id") UUID bookingId,
+            @RequestHeader("X-User-Id") UUID userId,
+            @RequestParam(value = "reason", required = false) String reason) {
+        return ResponseEntity.ok(bookingStateMachine.cancelBooking(bookingId, userId, reason));
     }
 
     // Worker Job Execution Endpoints

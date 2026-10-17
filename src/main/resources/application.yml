@@ -78,6 +78,10 @@ homeease:
     platform-commission-percent: 2.00 # 2% platform commission
   worker:
     auto-verify: ${AUTO_VERIFY_WORKERS:false} # Workers require admin approval via /admin/workers/{id}/verify-kyc
+  openrouteservice:
+    api-key: ${OPENROUTESERVICE_API_KEY:}
+  jwt:
+    secret: ${JWT_SECRET:404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}
 
 logging:
   level:
@@ -93,3 +97,4 @@ management:
   endpoint:
     health:
       show-details: always
+

@@ -1,6 +1,8 @@
 package com.homeease.tracking.dto;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.*;
 
 @Getter
@@ -8,6 +10,7 @@ import lombok.*;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class LocationPayload {
     @JsonAlias({"partnerId", "workerId"})
     private String partnerId;
@@ -21,7 +24,12 @@ public class LocationPayload {
     private Double distanceKm;   // Distance remaining to customer
     private Integer etaMinutes;  // Estimated arrival time in minutes
     private Long timestamp;
+    @Builder.Default
+    private Boolean trackingActive = true;
+    private String status;       // e.g. "TRACKING", "COMPLETED", "CANCELLED"
+    private String message;
 
+    @JsonIgnore
     public String getEffectiveId() {
         if (partnerId != null && !partnerId.isBlank()) return partnerId;
         return workerId != null ? workerId : "unknown_partner";

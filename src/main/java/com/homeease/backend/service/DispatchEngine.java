@@ -30,6 +30,7 @@ public class DispatchEngine {
     private final AssignmentAttemptRepository assignmentAttemptRepository;
     private final RedisTemplate<String, String> redisTemplate;
     private final FcmNotificationService fcmNotificationService;
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
     @Value("${homeease.dispatch.radius-meters:5000}")
     private double radiusMeters;
@@ -38,12 +39,14 @@ public class DispatchEngine {
                           BookingRepository bookingRepository,
                           AssignmentAttemptRepository assignmentAttemptRepository,
                           RedisTemplate<String, String> redisTemplate,
-                          FcmNotificationService fcmNotificationService) {
+                          FcmNotificationService fcmNotificationService,
+                          com.fasterxml.jackson.databind.ObjectMapper objectMapper) {
         this.workerRepository = workerRepository;
         this.bookingRepository = bookingRepository;
         this.assignmentAttemptRepository = assignmentAttemptRepository;
         this.redisTemplate = redisTemplate;
         this.fcmNotificationService = fcmNotificationService;
+        this.objectMapper = objectMapper;
     }
 
     @Transactional
@@ -133,6 +136,23 @@ public class DispatchEngine {
                 "Worker Assigned!",
                 "Worker " + worker.getUser().getFullName() + " accepted your booking request. Your verification PIN is " + pinCode
         );
+
+        // Cache active tracking assignment in Redis for live tracking verification
+        try {
+            Map<String, Object> assignment = new HashMap<>();
+            assignment.put("bookingId", bookingId.toString());
+            assignment.put("workerId", worker.getWorkerId().toString());
+            assignment.put("userId", worker.getUser().getUserId().toString());
+            assignment.put("customerId", booking.getUser().getUserId().toString());
+            assignment.put("status", "ACCEPTED");
+            assignment.put("pinCode", pinCode);
+            assignment.put("acceptedAt", Instant.now().toString());
+
+            String json = objectMapper.writeValueAsString(assignment);
+            redisTemplate.opsForValue().set("tracking:assignment:" + bookingId, json, java.time.Duration.ofHours(24));
+        } catch (Exception e) {
+            logger.warn("Could not cache active booking tracking assignment in Redis for booking {}: {}", bookingId, e.getMessage());
+        }
 
         return booking;
     }

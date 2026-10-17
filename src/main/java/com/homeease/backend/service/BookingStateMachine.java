@@ -36,6 +36,9 @@ public class BookingStateMachine {
     private final BillingEngine billingEngine;
     private final CatalogService catalogService;
     private final FcmNotificationService fcmNotificationService;
+    private final org.springframework.data.redis.core.RedisTemplate<String, String> redisTemplate;
+    private final org.springframework.messaging.simp.SimpMessagingTemplate messagingTemplate;
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
     private final GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
 
@@ -51,7 +54,10 @@ public class BookingStateMachine {
                                DispatchEngine dispatchEngine,
                                BillingEngine billingEngine,
                                CatalogService catalogService,
-                               FcmNotificationService fcmNotificationService) {
+                               FcmNotificationService fcmNotificationService,
+                               org.springframework.data.redis.core.RedisTemplate<String, String> redisTemplate,
+                               org.springframework.messaging.simp.SimpMessagingTemplate messagingTemplate,
+                               com.fasterxml.jackson.databind.ObjectMapper objectMapper) {
         this.bookingRepository = bookingRepository;
         this.userRepository = userRepository;
         this.serviceRepository = serviceRepository;
@@ -65,6 +71,9 @@ public class BookingStateMachine {
         this.billingEngine = billingEngine;
         this.catalogService = catalogService;
         this.fcmNotificationService = fcmNotificationService;
+        this.redisTemplate = redisTemplate;
+        this.messagingTemplate = messagingTemplate;
+        this.objectMapper = objectMapper;
     }
 
     @Transactional
@@ -197,6 +206,28 @@ public class BookingStateMachine {
                 "Worker " + booking.getWorker().getUser().getFullName() + " verified the PIN and started your service."
         );
 
+        // Update tracking assignment in Redis to IN_PROGRESS
+        try {
+            String assignmentKey = "tracking:assignment:" + bookingId;
+            String existingJson = redisTemplate.opsForValue().get(assignmentKey);
+            java.util.Map<String, Object> map = new java.util.HashMap<>();
+            if (existingJson != null && !existingJson.isBlank()) {
+                map = objectMapper.readValue(existingJson, new com.fasterxml.jackson.core.type.TypeReference<java.util.Map<String, Object>>() {});
+            }
+            map.put("bookingId", bookingId.toString());
+            map.put("status", "IN_PROGRESS");
+            map.put("startedAt", Instant.now().toString());
+            redisTemplate.opsForValue().set(assignmentKey, objectMapper.writeValueAsString(map), java.time.Duration.ofHours(24));
+
+            java.util.Map<String, Object> event = new java.util.HashMap<>();
+            event.put("bookingId", bookingId.toString());
+            event.put("status", "IN_PROGRESS");
+            event.put("trackingActive", true);
+            event.put("message", "Worker verified PIN and started service.");
+            messagingTemplate.convertAndSend("/topic/track/" + bookingId, event);
+            messagingTemplate.convertAndSend("/topic/tracking/" + bookingId, event);
+        } catch (Exception ignored) {}
+
         return mapToBookingResponse(booking);
     }
 
@@ -248,6 +279,64 @@ public class BookingStateMachine {
                 "Job Completed!",
                 "Your service is completed. Total Amount: ₹" + booking.getTotalAmount() + ". Please rate your experience!"
         );
+
+        // Stop live tracking: evict coordinates from Redis and broadcast completion event
+        try {
+            redisTemplate.delete("tracking:booking:" + bookingId);
+
+            String assignmentKey = "tracking:assignment:" + bookingId;
+            java.util.Map<String, Object> map = new java.util.HashMap<>();
+            map.put("bookingId", bookingId.toString());
+            map.put("status", "COMPLETED");
+            map.put("trackingActive", false);
+            map.put("completedAt", Instant.now().toString());
+            redisTemplate.opsForValue().set(assignmentKey, objectMapper.writeValueAsString(map), java.time.Duration.ofHours(1));
+
+            java.util.Map<String, Object> event = new java.util.HashMap<>();
+            event.put("bookingId", bookingId.toString());
+            event.put("status", "COMPLETED");
+            event.put("trackingActive", false);
+            event.put("message", "Job completed. Live tracking has ended.");
+            messagingTemplate.convertAndSend("/topic/track/" + bookingId, event);
+            messagingTemplate.convertAndSend("/topic/tracking/" + bookingId, event);
+        } catch (Exception ignored) {}
+
+        return mapToBookingResponse(booking);
+    }
+
+    @Transactional
+    public BookingResponse cancelBooking(UUID bookingId, UUID userId, String reason) {
+        Booking booking = bookingRepository.findById(bookingId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found with ID: " + bookingId));
+
+        if (booking.getStatus() == BookingStage.COMPLETED) {
+            throw new RuntimeException("Completed booking cannot be cancelled");
+        }
+
+        booking.setStatus(BookingStage.CANCELLED);
+        bookingRepository.save(booking);
+
+        // Stop live tracking: evict coordinates from Redis and broadcast cancellation event
+        try {
+            redisTemplate.delete("tracking:booking:" + bookingId);
+
+            String assignmentKey = "tracking:assignment:" + bookingId;
+            java.util.Map<String, Object> map = new java.util.HashMap<>();
+            map.put("bookingId", bookingId.toString());
+            map.put("status", "CANCELLED");
+            map.put("trackingActive", false);
+            map.put("reason", reason != null ? reason : "Cancelled by user");
+            map.put("cancelledAt", Instant.now().toString());
+            redisTemplate.opsForValue().set(assignmentKey, objectMapper.writeValueAsString(map), java.time.Duration.ofHours(1));
+
+            java.util.Map<String, Object> event = new java.util.HashMap<>();
+            event.put("bookingId", bookingId.toString());
+            event.put("status", "CANCELLED");
+            event.put("trackingActive", false);
+            event.put("message", "Booking has been cancelled. Live tracking ended.");
+            messagingTemplate.convertAndSend("/topic/track/" + bookingId, event);
+            messagingTemplate.convertAndSend("/topic/tracking/" + bookingId, event);
+        } catch (Exception ignored) {}
 
         return mapToBookingResponse(booking);
     }
