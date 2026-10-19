@@ -13,6 +13,9 @@ import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
+import org.springframework.web.util.UriComponentsBuilder;
+
+import java.net.URI;
 import java.time.Duration;
 import java.util.*;
 
@@ -25,6 +28,9 @@ public class LiveTrackingService {
     private final ObjectMapper objectMapper;
     private final SimpMessagingTemplate messagingTemplate;
     private final RestTemplate restTemplate;
+
+    @Value("${homeease.google.maps.api-key:}")
+    private String googleMapsApiKey;
 
     @Value("${homeease.openrouteservice.api-key:}")
     private String orsApiKey;
@@ -40,6 +46,17 @@ public class LiveTrackingService {
         this.objectMapper = objectMapper;
         this.messagingTemplate = messagingTemplate;
         this.restTemplate = new RestTemplate();
+    }
+
+    private String getEffectiveGoogleMapsKey() {
+        if (googleMapsApiKey != null && !googleMapsApiKey.isBlank()) {
+            return googleMapsApiKey.trim();
+        }
+        String envKey = System.getenv("GOOGLE_MAPS_API_KEY");
+        if (envKey != null && !envKey.isBlank()) {
+            return envKey.trim();
+        }
+        return "";
     }
 
     private String getEffectiveOrsKey() {
@@ -278,10 +295,18 @@ public class LiveTrackingService {
             );
         }
 
+        String googleKey = getEffectiveGoogleMapsKey();
+        if (!googleKey.isBlank()) {
+            Map<String, Object> googleRes = getGoogleRoadRoute(startLat, startLng, destLat, destLng, googleKey);
+            if (googleRes != null && Boolean.TRUE.equals(googleRes.get("found"))) {
+                return googleRes;
+            }
+        }
+
         String key = getEffectiveOrsKey();
         if (key.isBlank()) {
-            logger.warn("OpenRouteService routing skipped: OPENROUTESERVICE_API_KEY missing");
-            return Map.of("found", false, "provider", "openrouteservice", "message", "API key not configured");
+            logger.warn("Road routing skipped: Neither GOOGLE_MAPS_API_KEY nor OPENROUTESERVICE_API_KEY is configured");
+            return Map.of("found", false, "provider", "none", "message", "Map routing API keys not configured");
         }
 
         try {
@@ -360,6 +385,101 @@ public class LiveTrackingService {
         }
 
         return Map.of("found", false, "provider", "openrouteservice", "message", "No road route found for specified coordinates");
+    }
+
+    private Map<String, Object> getGoogleRoadRoute(double startLat, double startLng, double destLat, double destLng, String key) {
+        try {
+            URI uri = UriComponentsBuilder.fromHttpUrl("https://maps.googleapis.com/maps/api/directions/json")
+                    .queryParam("origin", startLat + "," + startLng)
+                    .queryParam("destination", destLat + "," + destLng)
+                    .queryParam("mode", "driving")
+                    .queryParam("key", key)
+                    .build()
+                    .toUri();
+
+            ResponseEntity<String> response = restTemplate.getForEntity(uri, String.class);
+            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                JsonNode root = objectMapper.readTree(response.getBody());
+                String status = root.path("status").asText("");
+                if ("OK".equalsIgnoreCase(status)) {
+                    JsonNode routes = root.path("routes");
+                    if (routes.isArray() && routes.size() > 0) {
+                        JsonNode firstRoute = routes.get(0);
+                        JsonNode leg = firstRoute.path("legs").get(0);
+
+                        double distanceMeters = leg.path("distance").path("value").asDouble(0.0);
+                        double durationSeconds = leg.path("duration").path("value").asDouble(0.0);
+                        String encodedPolyline = firstRoute.path("overview_polyline").path("points").asText("");
+
+                        List<List<Double>> leafletCoordinates = decodePolyline(encodedPolyline);
+                        List<List<Double>> geoJsonCoordinates = new ArrayList<>();
+                        for (List<Double> pt : leafletCoordinates) {
+                            geoJsonCoordinates.add(Arrays.asList(pt.get(1), pt.get(0))); // [lng, lat]
+                        }
+
+                        Map<String, Object> result = new HashMap<>();
+                        result.put("provider", "google");
+                        result.put("found", true);
+                        result.put("coordinates", geoJsonCoordinates);       // [lng, lat]
+                        result.put("leafletCoordinates", leafletCoordinates); // [lat, lng]
+                        result.put("distanceMeters", Math.round(distanceMeters));
+                        result.put("durationSeconds", Math.round(durationSeconds));
+                        result.put("distanceText", leg.path("distance").path("text").asText(distanceMeters < 1000
+                                ? Math.round(distanceMeters) + " m"
+                                : String.format(Locale.US, "%.1f km", distanceMeters / 1000.0)));
+                        int mins = Math.max(1, (int) Math.round(durationSeconds / 60.0));
+                        result.put("durationText", leg.path("duration").path("text").asText(mins < 60
+                                ? mins + " min" + (mins == 1 ? "" : "s")
+                                : (mins / 60) + "h " + (mins % 60) + "m"));
+                        result.put("polyline", encodedPolyline);
+                        result.put("directions", root);
+
+                        logger.info("Google Directions route computed: {} m, {} s, {} points",
+                                Math.round(distanceMeters), Math.round(durationSeconds), geoJsonCoordinates.size());
+                        return result;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("Google Directions API failed in tracking service, trying fallback: {}", e.getMessage());
+        }
+        return Collections.emptyMap();
+    }
+
+    private static List<List<Double>> decodePolyline(String encoded) {
+        List<List<Double>> poly = new ArrayList<>();
+        if (encoded == null || encoded.isBlank()) {
+            return poly;
+        }
+
+        int index = 0, len = encoded.length();
+        int lat = 0, lng = 0;
+
+        while (index < len) {
+            int b, shift = 0, result = 0;
+            do {
+                b = encoded.charAt(index++) - 63;
+                result |= (b & 0x1f) << shift;
+                shift += 5;
+            } while (b >= 0x20);
+            int dlat = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
+            lat += dlat;
+
+            shift = 0;
+            result = 0;
+            do {
+                b = encoded.charAt(index++) - 63;
+                result |= (b & 0x1f) << shift;
+                shift += 5;
+            } while (b >= 0x20);
+            int dlng = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
+            lng += dlng;
+
+            double latitude = (double) lat / 1E5;
+            double longitude = (double) lng / 1E5;
+            poly.add(Arrays.asList(latitude, longitude));
+        }
+        return poly;
     }
 
     private double haversine(double lat1, double lon1, double lat2, double lon2) {

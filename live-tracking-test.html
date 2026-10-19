@@ -308,12 +308,18 @@
     let workerMarkerOnWorkerMap, customerDestinationMarker;
     let customerMarkerOnCustomerMap, customerHouseMarker;
 
+    // Google Maps Tile Layer Config
+    const GOOGLE_MAPS_KEY = "AIzaSyAwXLWgqtEBxDCuVA-8-qeRYPK6WwmoDiI";
+    const googleRoadmapUrl = 'https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&key=' + GOOGLE_MAPS_KEY;
+
     // Initialize Maps on Load
     function initMaps() {
       // 1. Worker Map
       workerMap = L.map('workerMap').setView(workerCurrentLoc, 13);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; OpenStreetMap'
+      L.tileLayer(googleRoadmapUrl, {
+        subdomains: ['0', '1', '2', '3'],
+        maxZoom: 20,
+        attribution: '&copy; Google Maps'
       }).addTo(workerMap);
 
       // Customer Target Marker on Worker Map
@@ -346,8 +352,10 @@
 
       // 2. Customer Map
       customerMap = L.map('customerMap').setView(CUSTOMER_LOCATION, 13);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; OpenStreetMap'
+      L.tileLayer(googleRoadmapUrl, {
+        subdomains: ['0', '1', '2', '3'],
+        maxZoom: 20,
+        attribution: '&copy; Google Maps'
       }).addTo(customerMap);
 
       customerHouseMarker = L.marker(CUSTOMER_LOCATION, {

@@ -21,6 +21,9 @@ public class GeoService {
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
 
+    @Value("${homeease.google.maps.api-key:}")
+    private String googleMapsApiKey;
+
     @Value("${homeease.locationiq.api-key:}")
     private String locationIqApiKey;
 
@@ -30,6 +33,14 @@ public class GeoService {
     public GeoService(ObjectMapper objectMapper) {
         this.restTemplate = new RestTemplate();
         this.objectMapper = objectMapper;
+    }
+
+    private String getEffectiveGoogleMapsKey() {
+        if (googleMapsApiKey != null && !googleMapsApiKey.isBlank()) {
+            return googleMapsApiKey.trim();
+        }
+        String env = System.getenv("GOOGLE_MAPS_API_KEY");
+        return env != null ? env.trim() : "";
     }
 
     private String getEffectiveLocationIqKey() {
@@ -49,19 +60,75 @@ public class GeoService {
     }
 
     /**
-     * Autocomplete / Forward Geocoding using LocationIQ
+     * Autocomplete / Forward Geocoding using Google Maps (fallback to LocationIQ)
      */
     public List<Map<String, Object>> searchLocations(String query, int limit) {
+        if (query == null || query.trim().length() < 2) {
+            return Collections.emptyList();
+        }
+
+        String googleKey = getEffectiveGoogleMapsKey();
+        if (!googleKey.isBlank()) {
+            List<Map<String, Object>> googleResults = searchGoogleGeocode(query.trim(), limit, googleKey);
+            if (!googleResults.isEmpty()) {
+                return googleResults;
+            }
+        }
+
+        // Fallback to LocationIQ
+        return searchLocationIq(query.trim(), limit);
+    }
+
+    private List<Map<String, Object>> searchGoogleGeocode(String query, int limit, String key) {
+        try {
+            URI uri = UriComponentsBuilder.fromHttpUrl("https://maps.googleapis.com/maps/api/geocode/json")
+                    .queryParam("address", query)
+                    .queryParam("components", "country:in")
+                    .queryParam("key", key)
+                    .build()
+                    .toUri();
+
+            ResponseEntity<String> response = restTemplate.getForEntity(uri, String.class);
+            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                JsonNode root = objectMapper.readTree(response.getBody());
+                String status = root.path("status").asText("");
+                if ("OK".equalsIgnoreCase(status)) {
+                    JsonNode resultsNode = root.path("results");
+                    List<Map<String, Object>> list = new ArrayList<>();
+                    int max = Math.min(Math.max(1, limit), resultsNode.size());
+                    for (int i = 0; i < max; i++) {
+                        JsonNode item = resultsNode.get(i);
+                        Map<String, Object> map = new HashMap<>();
+                        map.put("placeId", item.path("place_id").asText(""));
+                        map.put("displayName", item.path("formatted_address").asText(""));
+                        map.put("lat", item.path("geometry").path("location").path("lat").asDouble());
+                        map.put("lon", item.path("geometry").path("location").path("lng").asDouble());
+                        map.put("type", item.path("types").isArray() && item.path("types").size() > 0
+                                ? item.path("types").get(0).asText("") : "street_address");
+
+                        Map<String, Object> addrMap = parseGoogleAddressComponents(item.path("address_components"));
+                        map.put("address", addrMap);
+                        list.add(map);
+                    }
+                    return list;
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("Google Geocode search failed, trying fallback: {}", e.getMessage());
+        }
+        return Collections.emptyList();
+    }
+
+    private List<Map<String, Object>> searchLocationIq(String query, int limit) {
         String key = getEffectiveLocationIqKey();
-        if (key.isBlank() || query == null || query.trim().length() < 2) {
-            logger.warn("LocationIQ search skipped: empty query or missing API key");
+        if (key.isBlank()) {
             return Collections.emptyList();
         }
 
         try {
             URI uri = UriComponentsBuilder.fromHttpUrl("https://api.locationiq.com/v1/autocomplete")
                     .queryParam("key", key)
-                    .queryParam("q", query.trim())
+                    .queryParam("q", query)
                     .queryParam("limit", Math.min(Math.max(1, limit), 10))
                     .queryParam("countrycodes", "in")
                     .queryParam("format", "json")
@@ -100,17 +167,58 @@ public class GeoService {
         } catch (Exception e) {
             logger.warn("LocationIQ search request failed: {}", e.getMessage());
         }
-
         return Collections.emptyList();
     }
 
     /**
-     * Reverse Geocoding using LocationIQ
+     * Reverse Geocoding using Google Maps (fallback to LocationIQ)
      */
     public Map<String, Object> reverseGeocode(double lat, double lon) {
+        String googleKey = getEffectiveGoogleMapsKey();
+        if (!googleKey.isBlank()) {
+            Map<String, Object> googleRes = reverseGeocodeGoogle(lat, lon, googleKey);
+            if (!googleRes.isEmpty()) {
+                return googleRes;
+            }
+        }
+
+        // Fallback to LocationIQ
+        return reverseGeocodeLocationIq(lat, lon);
+    }
+
+    private Map<String, Object> reverseGeocodeGoogle(double lat, double lon, String key) {
+        try {
+            URI uri = UriComponentsBuilder.fromHttpUrl("https://maps.googleapis.com/maps/api/geocode/json")
+                    .queryParam("latlng", lat + "," + lon)
+                    .queryParam("key", key)
+                    .build()
+                    .toUri();
+
+            ResponseEntity<String> response = restTemplate.getForEntity(uri, String.class);
+            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                JsonNode root = objectMapper.readTree(response.getBody());
+                if ("OK".equalsIgnoreCase(root.path("status").asText(""))) {
+                    JsonNode firstResult = root.path("results").get(0);
+                    if (firstResult != null) {
+                        Map<String, Object> map = new HashMap<>();
+                        map.put("placeId", firstResult.path("place_id").asText(""));
+                        map.put("displayName", firstResult.path("formatted_address").asText(""));
+                        map.put("lat", firstResult.path("geometry").path("location").path("lat").asDouble());
+                        map.put("lon", firstResult.path("geometry").path("location").path("lng").asDouble());
+                        map.put("address", parseGoogleAddressComponents(firstResult.path("address_components")));
+                        return map;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("Google Reverse Geocoding failed, trying fallback: {}", e.getMessage());
+        }
+        return Collections.emptyMap();
+    }
+
+    private Map<String, Object> reverseGeocodeLocationIq(double lat, double lon) {
         String key = getEffectiveLocationIqKey();
         if (key.isBlank()) {
-            logger.warn("LocationIQ reverse geocoding skipped: missing API key");
             return Collections.emptyMap();
         }
 
@@ -149,18 +257,83 @@ public class GeoService {
         } catch (Exception e) {
             logger.warn("LocationIQ reverse request failed: {}", e.getMessage());
         }
-
         return Collections.emptyMap();
     }
 
     /**
-     * Road Routing using OpenRouteService (HeiGIT API)
-     * Endpoint: https://api.heigit.org/openrouteservice/v2/directions/driving-car/geojson
+     * Road Routing using Google Directions API (fallback to OpenRouteService)
      */
     public Map<String, Object> getDirections(double startLat, double startLng, double destLat, double destLng) {
+        String googleKey = getEffectiveGoogleMapsKey();
+        if (!googleKey.isBlank()) {
+            Map<String, Object> googleDirections = getGoogleDirections(startLat, startLng, destLat, destLng, googleKey);
+            if (!googleDirections.isEmpty()) {
+                return googleDirections;
+            }
+        }
+
+        // Fallback to OpenRouteService
+        return getOrsDirections(startLat, startLng, destLat, destLng);
+    }
+
+    private Map<String, Object> getGoogleDirections(double startLat, double startLng, double destLat, double destLng, String key) {
+        try {
+            URI uri = UriComponentsBuilder.fromHttpUrl("https://maps.googleapis.com/maps/api/directions/json")
+                    .queryParam("origin", startLat + "," + startLng)
+                    .queryParam("destination", destLat + "," + destLng)
+                    .queryParam("mode", "driving")
+                    .queryParam("key", key)
+                    .build()
+                    .toUri();
+
+            ResponseEntity<String> response = restTemplate.getForEntity(uri, String.class);
+            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                JsonNode root = objectMapper.readTree(response.getBody());
+                String status = root.path("status").asText("");
+                if ("OK".equalsIgnoreCase(status)) {
+                    JsonNode routes = root.path("routes");
+                    if (routes.isArray() && routes.size() > 0) {
+                        JsonNode firstRoute = routes.get(0);
+                        JsonNode leg = firstRoute.path("legs").get(0);
+
+                        double distanceMeters = leg.path("distance").path("value").asDouble(0.0);
+                        double durationSeconds = leg.path("duration").path("value").asDouble(0.0);
+                        String encodedPolyline = firstRoute.path("overview_polyline").path("points").asText("");
+
+                        List<List<Double>> leafletCoordinates = decodePolyline(encodedPolyline);
+                        List<List<Double>> geoJsonCoordinates = new ArrayList<>();
+                        for (List<Double> pt : leafletCoordinates) {
+                            geoJsonCoordinates.add(Arrays.asList(pt.get(1), pt.get(0))); // [lng, lat]
+                        }
+
+                        Map<String, Object> result = new HashMap<>();
+                        result.put("provider", "google");
+                        result.put("found", true);
+                        result.put("coordinates", geoJsonCoordinates);       // [lng, lat]
+                        result.put("leafletCoordinates", leafletCoordinates); // [lat, lng]
+                        result.put("distanceMeters", Math.round(distanceMeters));
+                        result.put("durationSeconds", Math.round(durationSeconds));
+                        result.put("distanceText", leg.path("distance").path("text").asText(formatDistance(distanceMeters)));
+                        result.put("durationText", leg.path("duration").path("text").asText(formatDuration(durationSeconds)));
+                        result.put("polyline", encodedPolyline);
+                        result.put("directions", root);
+
+                        logger.info("Google Directions route computed: {} m, {} s, {} points",
+                                Math.round(distanceMeters), Math.round(durationSeconds), geoJsonCoordinates.size());
+                        return result;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("Google Directions API failed, trying fallback: {}", e.getMessage());
+        }
+        return Collections.emptyMap();
+    }
+
+    private Map<String, Object> getOrsDirections(double startLat, double startLng, double destLat, double destLng) {
         String key = getEffectiveOrsKey();
         if (key.isBlank()) {
-            logger.warn("OpenRouteService routing skipped: missing API key");
+            logger.warn("Routing skipped: no Google Maps or OpenRouteService key configured");
             return Collections.emptyMap();
         }
 
@@ -172,7 +345,6 @@ public class GeoService {
             headers.set("Authorization", key);
             headers.set("Accept", "application/json, application/geo+json");
 
-            // OpenRouteService coordinates format: [[startLng, startLat], [destLng, destLat]]
             Map<String, Object> requestBody = new HashMap<>();
             List<List<Double>> coords = new ArrayList<>();
             coords.add(Arrays.asList(startLng, startLat));
@@ -211,16 +383,14 @@ public class GeoService {
                     Map<String, Object> result = new HashMap<>();
                     result.put("provider", "openrouteservice");
                     result.put("found", true);
-                    result.put("coordinates", coordinateList); // GeoJSON [lng, lat]
-                    result.put("leafletCoordinates", leafletCoordinates); // Leaflet [lat, lng]
+                    result.put("coordinates", coordinateList);
+                    result.put("leafletCoordinates", leafletCoordinates);
                     result.put("distanceMeters", Math.round(distanceMeters));
                     result.put("durationSeconds", Math.round(durationSeconds));
                     result.put("distanceText", formatDistance(distanceMeters));
                     result.put("durationText", formatDuration(durationSeconds));
                     result.put("geojson", root);
 
-                    logger.info("OpenRouteService driving route computed: {} m, {} s, {} points",
-                            Math.round(distanceMeters), Math.round(durationSeconds), coordinateList.size());
                     return result;
                 }
             }
@@ -229,6 +399,88 @@ public class GeoService {
         }
 
         return Collections.emptyMap();
+    }
+
+    /**
+     * Decodes Google Maps Encoded Polyline algorithm into [lat, lng] pairs
+     */
+    public static List<List<Double>> decodePolyline(String encoded) {
+        List<List<Double>> poly = new ArrayList<>();
+        if (encoded == null || encoded.isBlank()) {
+            return poly;
+        }
+
+        int index = 0, len = encoded.length();
+        int lat = 0, lng = 0;
+
+        while (index < len) {
+            int b, shift = 0, result = 0;
+            do {
+                b = encoded.charAt(index++) - 63;
+                result |= (b & 0x1f) << shift;
+                shift += 5;
+            } while (b >= 0x20);
+            int dlat = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
+            lat += dlat;
+
+            shift = 0;
+            result = 0;
+            do {
+                b = encoded.charAt(index++) - 63;
+                result |= (b & 0x1f) << shift;
+                shift += 5;
+            } while (b >= 0x20);
+            int dlng = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
+            lng += dlng;
+
+            double latitude = (double) lat / 1E5;
+            double longitude = (double) lng / 1E5;
+            poly.add(Arrays.asList(latitude, longitude));
+        }
+        return poly;
+    }
+
+    private Map<String, Object> parseGoogleAddressComponents(JsonNode components) {
+        Map<String, Object> addrMap = new HashMap<>();
+        if (components == null || !components.isArray()) {
+            return addrMap;
+        }
+
+        for (JsonNode comp : components) {
+            JsonNode types = comp.path("types");
+            String longName = comp.path("long_name").asText("");
+            for (JsonNode t : types) {
+                String typeStr = t.asText("");
+                switch (typeStr) {
+                    case "route":
+                        addrMap.put("road", longName);
+                        break;
+                    case "street_number":
+                        addrMap.put("houseNumber", longName);
+                        break;
+                    case "sublocality_level_1":
+                    case "sublocality":
+                    case "neighborhood":
+                        if (!addrMap.containsKey("suburb")) {
+                            addrMap.put("suburb", longName);
+                        }
+                        break;
+                    case "locality":
+                        addrMap.put("city", longName);
+                        break;
+                    case "administrative_area_level_1":
+                        addrMap.put("state", longName);
+                        break;
+                    case "postal_code":
+                        addrMap.put("postcode", longName);
+                        break;
+                    case "country":
+                        addrMap.put("country", longName);
+                        break;
+                }
+            }
+        }
+        return addrMap;
     }
 
     private String formatDistance(double meters) {
@@ -248,4 +500,3 @@ public class GeoService {
         return hrs + "h " + remMins + "m";
     }
 }
-
