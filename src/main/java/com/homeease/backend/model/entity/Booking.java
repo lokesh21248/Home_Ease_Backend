@@ -13,7 +13,14 @@ import java.time.Instant;
 import java.util.UUID;
 
 @Entity
-@Table(name = "bookings")
+@Table(name = "bookings", indexes = {
+    @Index(name = "idx_bookings_user_created", columnList = "user_id, created_at DESC"),
+    @Index(name = "idx_bookings_worker_created", columnList = "worker_id, created_at DESC"),
+    @Index(name = "idx_bookings_worker_status", columnList = "worker_id, status"),
+    @Index(name = "idx_bookings_status", columnList = "status"),
+    @Index(name = "idx_bookings_scheduled_at", columnList = "scheduled_at"),
+    @Index(name = "idx_bookings_payment_status", columnList = "payment_status")
+})
 @Getter
 @Setter
 @NoArgsConstructor

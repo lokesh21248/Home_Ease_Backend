@@ -10,7 +10,9 @@ import java.time.Instant;
 import java.util.UUID;
 
 @Entity
-@Table(name = "coupons")
+@Table(name = "coupons", indexes = {
+    @Index(name = "idx_coupons_active_validity", columnList = "is_active, valid_from, valid_until")
+})
 @Getter
 @Setter
 @NoArgsConstructor

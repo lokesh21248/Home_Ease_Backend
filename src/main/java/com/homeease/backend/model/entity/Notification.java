@@ -11,7 +11,11 @@ import java.time.Instant;
 import java.util.UUID;
 
 @Entity
-@Table(name = "notifications")
+@Table(name = "notifications", indexes = {
+    @Index(name = "idx_notifications_queue", columnList = "status, scheduled_at"),
+    @Index(name = "idx_notifications_user_created", columnList = "user_id, created_at DESC"),
+    @Index(name = "idx_notifications_worker_created", columnList = "worker_id, created_at DESC")
+})
 @Getter
 @Setter
 @NoArgsConstructor

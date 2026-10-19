@@ -11,7 +11,9 @@ import java.time.Instant;
 import java.util.UUID;
 
 @Entity
-@Table(name = "sub_services")
+@Table(name = "sub_services", indexes = {
+    @Index(name = "idx_sub_services_service_active", columnList = "service_id, is_active")
+})
 @Getter
 @Setter
 @NoArgsConstructor

@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HomeEase — Live GPS Tracking Simulator (Worker & Customer)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Leaflet CSS & JS for OpenStreetMap -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- SockJS and STOMP for WebSocket Messaging -->
+  <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://cdn.jsdelivr.net/npm/lucide@latest/dist/umd/lucide.js"></script>
+
+  <style>
+    body {
+      background: #090d16;
+      color: #f1f5f9;
+      font-family: 'Inter', system-ui, sans-serif;
+    }
+    .font-display { font-family: 'Outfit', sans-serif; }
+    .font-mono { font-family: 'JetBrains Mono', monospace; }
+    .glass-card {
+      background: rgba(15, 23, 42, 0.75);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .map-container {
+      height: 380px;
+      width: 100%;
+      border-radius: 0.75rem;
+      z-index: 1;
+    }
+    .leaflet-container {
+      background: #1e293b;
+    }
+    .pulsing-dot {
+      width: 16px;
+      height: 16px;
+      background: #10b981;
+      border-radius: 50%;
+      box-shadow: 0 0 0 rgba(16, 185, 129, 0.6);
+      animation: pulse 1.8s infinite;
+    }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+      70% { box-shadow: 0 0 0 14px rgba(16, 185, 129, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+    }
+  </style>
+</head>
+<body class="p-4 sm:p-6 min-h-screen">
+
+  <!-- TOP HEADER & CONFIG -->
+  <div class="max-w-7xl mx-auto mb-6">
+    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 glass-card p-5 rounded-2xl shadow-xl">
+      <div>
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
+            <i data-lucide="navigation"></i>
+          </div>
+          <div>
+            <h1 class="text-2xl font-display font-bold text-white flex items-center gap-2">
+              HomeEase Live Tracking Tester
+              <span class="text-xs bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-sans font-medium">Real-Time WebSockets</span>
+            </h1>
+            <p class="text-xs text-slate-400">Simulate bidirectional worker GPS streaming & customer live tracking view</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Server & Booking Config -->
+      <div class="flex flex-wrap items-center gap-3">
+        <div>
+          <label class="block text-[11px] font-mono text-slate-400 uppercase tracking-wider mb-1">Service Host</label>
+          <select id="serverHost" class="bg-slate-900 border border-slate-700 text-xs text-white rounded-lg px-3 py-2 outline-none focus:border-indigo-500 font-mono">
+            <option value="http://localhost:8082" selected>Local (http://localhost:8082)</option>
+            <option value="http://3.107.161.126:8082">AWS Live (http://3.107.161.126:8082)</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block text-[11px] font-mono text-slate-400 uppercase tracking-wider mb-1">Booking ID</label>
+          <input type="text" id="bookingIdInput" value="BK-TEST-1001" class="bg-slate-900 border border-slate-700 text-xs text-white rounded-lg px-3 py-2 outline-none focus:border-indigo-500 font-mono w-36" />
+        </div>
+
+        <div>
+          <label class="block text-[11px] font-mono text-slate-400 uppercase tracking-wider mb-1">Worker ID</label>
+          <input type="text" id="workerIdInput" value="WRK-8821" class="bg-slate-900 border border-slate-700 text-xs text-white rounded-lg px-3 py-2 outline-none focus:border-indigo-500 font-mono w-28" />
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SPLIT SCREEN: WORKER vs CUSTOMER -->
+  <div class="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+    <!-- ============================================== -->
+    <!-- PANEL 1: WORKER APP (GPS EMITTER)             -->
+    <!-- ============================================== -->
+    <div class="glass-card rounded-2xl p-5 border border-indigo-500/20 flex flex-col justify-between">
+      <div>
+        <div class="flex items-center justify-between pb-4 border-b border-slate-800 mb-4">
+          <div class="flex items-center gap-2.5">
+            <div class="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+              <i data-lucide="truck" class="w-4 h-4"></i>
+            </div>
+            <div>
+              <h2 class="font-display font-semibold text-lg text-white">Worker Device (Broadcaster)</h2>
+              <span class="text-xs text-indigo-300">Publishes GPS coordinates to backend</span>
+            </div>
+          </div>
+          <span id="workerStatusBadge" class="text-xs px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 border border-slate-700 font-mono">Idle</span>
+        </div>
+
+        <!-- Worker Controls -->
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 mb-4">
+          <button id="btnStartTrip" onclick="toggleRouteSimulation()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/30">
+            <i data-lucide="play" class="w-4 h-4"></i>
+            <span id="btnStartTripText">Start Route Sim</span>
+          </button>
+
+          <button onclick="sendSingleLocationStep()" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-2">
+            <i data-lucide="step-forward" class="w-4 h-4"></i>
+            <span>Send 1 Step</span>
+          </button>
+
+          <button onclick="sendRestUpdate()" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 text-xs font-medium py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-2">
+            <i data-lucide="send" class="w-4 h-4"></i>
+            <span>Send via REST</span>
+          </button>
+        </div>
+
+        <!-- Worker Map -->
+        <div class="relative mb-4">
+          <div id="workerMap" class="map-container"></div>
+          <div class="absolute bottom-3 left-3 z-[1000] bg-slate-900/90 backdrop-blur border border-slate-700 text-[11px] font-mono px-3 py-1.5 rounded-lg text-slate-300">
+            <span class="text-emerald-400 font-bold">Hint:</span> Drag the blue worker marker to test custom positions!
+          </div>
+        </div>
+
+        <!-- Telemetry Details -->
+        <div class="grid grid-cols-3 gap-2 text-center text-xs font-mono mb-4">
+          <div class="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800">
+            <div class="text-slate-400 text-[10px] uppercase">Latitude / Longitude</div>
+            <div id="workerCoordsDisplay" class="font-bold text-indigo-400 truncate mt-1">12.9716, 77.5946</div>
+          </div>
+          <div class="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800">
+            <div class="text-slate-400 text-[10px] uppercase">Speed / Bearing</div>
+            <div id="workerSpeedDisplay" class="font-bold text-amber-400 mt-1">28 km/h • 45°</div>
+          </div>
+          <div class="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800">
+            <div class="text-slate-400 text-[10px] uppercase">Packets Sent</div>
+            <div id="packetsSentCount" class="font-bold text-emerald-400 mt-1">0</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Worker Output Log -->
+      <div>
+        <div class="flex items-center justify-between text-xs text-slate-400 mb-1">
+          <span class="font-mono text-[11px]">Worker Outbound Log</span>
+          <button onclick="clearLog('workerLog')" class="text-[10px] hover:text-white">Clear</button>
+        </div>
+        <pre id="workerLog" class="p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-[10px] font-mono text-slate-400 h-28 overflow-y-auto"></pre>
+      </div>
+    </div>
+
+
+    <!-- ============================================== -->
+    <!-- PANEL 2: CUSTOMER APP (GPS SUBSCRIBER)        -->
+    <!-- ============================================== -->
+    <div class="glass-card rounded-2xl p-5 border border-emerald-500/20 flex flex-col justify-between">
+      <div>
+        <div class="flex items-center justify-between pb-4 border-b border-slate-800 mb-4">
+          <div class="flex items-center gap-2.5">
+            <div class="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+              <i data-lucide="user-check" class="w-4 h-4"></i>
+            </div>
+            <div>
+              <h2 class="font-display font-semibold text-lg text-white">Customer App (Subscriber)</h2>
+              <span class="text-xs text-emerald-300">Listening to <span class="font-mono text-[11px] text-white">/topic/tracking/{bookingId}</span></span>
+            </div>
+          </div>
+          <span id="customerStatusBadge" class="text-xs px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 border border-slate-700 font-mono">Connecting...</span>
+        </div>
+
+        <!-- Customer Live Status Banner -->
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 mb-4">
+          <div class="p-3 bg-gradient-to-br from-emerald-950/40 to-slate-900 border border-emerald-500/30 rounded-xl">
+            <span class="text-[10px] font-mono text-emerald-400 uppercase tracking-wider">Estimated ETA</span>
+            <div id="customerEtaDisplay" class="text-xl font-bold font-display text-white mt-0.5">Calculating...</div>
+          </div>
+
+          <div class="p-3 bg-slate-900/90 border border-slate-800 rounded-xl">
+            <span class="text-[10px] font-mono text-slate-400 uppercase tracking-wider">Distance Remaining</span>
+            <div id="customerDistanceDisplay" class="text-xl font-bold font-display text-white mt-0.5">-- km</div>
+          </div>
+
+          <div class="p-2 flex flex-col justify-center">
+            <button onclick="fetchLatestRest()" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs text-slate-200 py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 transition">
+              <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+              <span>Fetch REST</span>
+            </button>
+            <button onclick="reconnectCustomerWs()" class="text-[11px] text-indigo-400 hover:underline mt-1.5 text-center">
+              Reconnect Socket
+            </button>
+          </div>
+        </div>
+
+        <!-- Customer Map -->
+        <div class="relative mb-4">
+          <div id="customerMap" class="map-container"></div>
+          <div class="absolute top-3 right-3 z-[1000] flex items-center gap-2 bg-slate-900/90 backdrop-blur px-3 py-1.5 rounded-full border border-slate-700 text-xs">
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span id="socketLiveIndicator" class="font-mono text-slate-300">Listening to Live Stream</span>
+          </div>
+        </div>
+
+        <!-- Customer Location Specs -->
+        <div class="grid grid-cols-3 gap-2 text-center text-xs font-mono mb-4">
+          <div class="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800">
+            <div class="text-slate-400 text-[10px] uppercase">Partner Live GPS</div>
+            <div id="custPartnerCoords" class="font-bold text-emerald-400 truncate mt-1">Waiting...</div>
+          </div>
+          <div class="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800">
+            <div class="text-slate-400 text-[10px] uppercase">Heading Bearing</div>
+            <div id="custPartnerBearing" class="font-bold text-cyan-400 mt-1">--°</div>
+          </div>
+          <div class="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800">
+            <div class="text-slate-400 text-[10px] uppercase">Updates Received</div>
+            <div id="packetsRecvCount" class="font-bold text-white mt-1">0</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Customer Inbound Log -->
+      <div>
+        <div class="flex items-center justify-between text-xs text-slate-400 mb-1">
+          <span class="font-mono text-[11px]">Customer Inbound WebSocket Stream</span>
+          <button onclick="clearLog('customerLog')" class="text-[10px] hover:text-white">Clear</button>
+        </div>
+        <pre id="customerLog" class="p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-[10px] font-mono text-slate-400 h-28 overflow-y-auto"></pre>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- HOW TO TEST FOOTER -->
+  <div class="max-w-7xl mx-auto mt-6 glass-card p-5 rounded-2xl border border-slate-800 text-xs text-slate-400">
+    <h3 class="font-display font-semibold text-sm text-white mb-2 flex items-center gap-2">
+      <i data-lucide="info" class="w-4 h-4 text-indigo-400"></i>
+      How Live Tracking Works Under the Hood
+    </h3>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-[12px] leading-relaxed">
+      <div class="bg-slate-900/50 p-3 rounded-xl border border-slate-800">
+        <strong class="text-slate-200 block mb-1">1. Worker Ingestion (Port 8082)</strong>
+        Worker app connects to STOMP <code class="text-indigo-300">/ws</code> and emits coordinates to <code class="text-indigo-300">/app/tracking/{bookingId}</code> every 3-5s (or uses fallback REST <code class="text-indigo-300">POST /api/v1/tracking/update-location</code>).
+      </div>
+      <div class="bg-slate-900/50 p-3 rounded-xl border border-slate-800">
+        <strong class="text-slate-200 block mb-1">2. Redis Geospatial Index</strong>
+        Spring Boot microservice records the point in Redis GEO (<code class="text-amber-300">geo:partners</code>) and caches in <code class="text-amber-300">tracking:booking:{bookingId}</code> with 2-hr TTL.
+      </div>
+      <div class="bg-slate-900/50 p-3 rounded-xl border border-slate-800">
+        <strong class="text-slate-200 block mb-1">3. Customer Fanout</strong>
+        The broker broadcasts the payload instantly to <code class="text-emerald-300">/topic/tracking/{bookingId}</code>. Customer app receives it with 0ms polling delay and smoothly rotates the marker.
+      </div>
+    </div>
+  </div>
+
+
+  <!-- JAVASCRIPT LOGIC -->
+  <script>
+    lucide.createIcons();
+
+    // Default coordinates: Bangalore Koramangala to Indiranagar
+    const CUSTOMER_LOCATION = [12.9716, 77.5946];
+    let workerCurrentLoc = [12.9352, 77.6245]; // starting point ~4km away
+
+    // Simulated Route Points towards customer
+    const ROUTE_WAYPOINTS = [
+      [12.9352, 77.6245],
+      [12.9410, 77.6200],
+      [12.9480, 77.6150],
+      [12.9550, 77.6080],
+      [12.9620, 77.6020],
+      [12.9670, 77.5980],
+      [12.9700, 77.5960],
+      [12.9716, 77.5946]
+    ];
+    let routeStepIndex = 0;
+    let isSimulating = false;
+    let simInterval = null;
+    let packetsSent = 0;
+    let packetsReceived = 0;
+
+    // Stomp Clients
+    let workerStompClient = null;
+    let customerStompClient = null;
+
+    // Maps & Markers
+    let workerMap, customerMap;
+    let workerMarkerOnWorkerMap, customerDestinationMarker;
+    let customerMarkerOnCustomerMap, customerHouseMarker;
+
+    // Initialize Maps on Load
+    function initMaps() {
+      // 1. Worker Map
+      workerMap = L.map('workerMap').setView(workerCurrentLoc, 13);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap'
+      }).addTo(workerMap);
+
+      // Customer Target Marker on Worker Map
+      customerDestinationMarker = L.marker(CUSTOMER_LOCATION, {
+        icon: L.icon({
+          iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+          shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+          iconSize: [25, 41],
+          iconAnchor: [12, 41]
+        })
+      }).addTo(workerMap).bindPopup("Customer Address");
+
+      // Draggable Worker Marker
+      workerMarkerOnWorkerMap = L.marker(workerCurrentLoc, {
+        draggable: true,
+        icon: L.icon({
+          iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-blue.png',
+          shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+          iconSize: [25, 41],
+          iconAnchor: [12, 41]
+        })
+      }).addTo(workerMap).bindPopup("Worker (You)");
+
+      workerMarkerOnWorkerMap.on('dragend', function(e) {
+        const coord = e.target.getLatLng();
+        workerCurrentLoc = [coord.lat, coord.lng];
+        updateWorkerDisplay(workerCurrentLoc[0], workerCurrentLoc[1], 45, 25);
+        sendSingleLocation(workerCurrentLoc[0], workerCurrentLoc[1], 45, 25);
+      });
+
+      // 2. Customer Map
+      customerMap = L.map('customerMap').setView(CUSTOMER_LOCATION, 13);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap'
+      }).addTo(customerMap);
+
+      customerHouseMarker = L.marker(CUSTOMER_LOCATION, {
+        icon: L.icon({
+          iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-green.png',
+          shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+          iconSize: [25, 41],
+          iconAnchor: [12, 41]
+        })
+      }).addTo(customerMap).bindPopup("My Home (Destination)");
+
+      customerMarkerOnCustomerMap = L.marker(workerCurrentLoc, {
+        icon: L.icon({
+          iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-violet.png',
+          shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+          iconSize: [25, 41],
+          iconAnchor: [12, 41]
+        })
+      }).addTo(customerMap).bindPopup("Partner on the way!");
+    }
+
+    // Helper: Haversine distance in KM
+    function haversineDistance(lat1, lon1, lat2, lon2) {
+      const R = 6371; // km
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon/2) * Math.sin(dLon/2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      return R * c;
+    }
+
+    // Calculate Bearing in degrees
+    function calculateBearing(lat1, lon1, lat2, lon2) {
+      const y = Math.sin((lon2 - lon1) * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180);
+      const x = Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180) -
+                Math.sin(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.cos((lon2 - lon1) * Math.PI / 180);
+      return Math.round((Math.atan2(y, x) * 180 / Math.PI + 360) % 360);
+    }
+
+    function appendLog(elementId, text) {
+      const el = document.getElementById(elementId);
+      const time = new Date().toLocaleTimeString();
+      el.textContent = `[${time}] ${text}\n` + el.textContent;
+    }
+
+    function clearLog(elementId) {
+      document.getElementById(elementId).textContent = '';
+    }
+
+    function getBaseUrl() {
+      return document.getElementById('serverHost').value.trim().replace(/\/$/, '');
+    }
+
+    function getBookingId() {
+      return document.getElementById('bookingIdInput').value.trim();
+    }
+
+    function getWorkerId() {
+      return document.getElementById('workerIdInput').value.trim();
+    }
+
+    // Setup Customer STOMP Subscription
+    function connectCustomerWebSocket() {
+      const baseUrl = getBaseUrl();
+      const bookingId = getBookingId();
+      const wsUrl = `${baseUrl}/ws`;
+
+      document.getElementById('customerStatusBadge').textContent = 'Connecting...';
+      document.getElementById('customerStatusBadge').className = 'text-xs px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 font-mono';
+
+      appendLog('customerLog', `Connecting to WebSocket at ${wsUrl}...`);
+
+      const socket = new SockJS(wsUrl);
+      customerStompClient = Stomp.over(socket);
+      customerStompClient.debug = null; // silence verbose debug logs
+
+      customerStompClient.connect({}, function (frame) {
+        document.getElementById('customerStatusBadge').textContent = 'Connected (Live)';
+        document.getElementById('customerStatusBadge').className = 'text-xs px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-mono';
+
+        const topic = `/topic/tracking/${bookingId}`;
+        appendLog('customerLog', `✓ Connected! Subscribing to: ${topic}`);
+
+        customerStompClient.subscribe(topic, function (message) {
+          try {
+            const data = JSON.parse(message.body);
+            handleIncomingCustomerGps(data);
+          } catch(e) {
+            appendLog('customerLog', `Error parsing frame: ${message.body}`);
+          }
+        });
+      }, function (error) {
+        document.getElementById('customerStatusBadge').textContent = 'Disconnected';
+        document.getElementById('customerStatusBadge').className = 'text-xs px-2.5 py-1 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 font-mono';
+        appendLog('customerLog', `WebSocket connection failed: ${error}`);
+      });
+    }
+
+    function reconnectCustomerWs() {
+      if (customerStompClient && customerStompClient.connected) {
+        customerStompClient.disconnect();
+      }
+      connectCustomerWebSocket();
+    }
+
+    // Connect Worker STOMP Client
+    function connectWorkerWebSocket(onReady) {
+      if (workerStompClient && workerStompClient.connected) {
+        if (onReady) onReady();
+        return;
+      }
+      const baseUrl = getBaseUrl();
+      const wsUrl = `${baseUrl}/ws`;
+      const socket = new SockJS(wsUrl);
+      workerStompClient = Stomp.over(socket);
+      workerStompClient.debug = null;
+
+      workerStompClient.connect({}, function () {
+        document.getElementById('workerStatusBadge').textContent = 'Socket Connected';
+        document.getElementById('workerStatusBadge').className = 'text-xs px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-mono';
+        appendLog('workerLog', `✓ Worker WebSocket connected to ${wsUrl}`);
+        if (onReady) onReady();
+      }, function (err) {
+        document.getElementById('workerStatusBadge').textContent = 'REST Fallback';
+        document.getElementById('workerStatusBadge').className = 'text-xs px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 font-mono';
+        appendLog('workerLog', `Worker WebSocket unavailable, falling back to REST: ${err}`);
+      });
+    }
+
+    // Handle Incoming GPS update in Customer View
+    function handleIncomingCustomerGps(payload) {
+      packetsReceived++;
+      document.getElementById('packetsRecvCount').textContent = packetsReceived;
+
+      const lat = payload.lat;
+      const lng = payload.lng;
+      const bearing = payload.bearing || 0;
+      const speed = payload.speed || 0;
+
+      // Move Customer View Marker
+      if (customerMarkerOnCustomerMap) {
+        customerMarkerOnCustomerMap.setLatLng([lat, lng]);
+        customerMarkerOnCustomerMap.bindPopup(`Partner (${payload.workerId || 'Worker'})<br>Speed: ${speed} km/h`).openPopup();
+      }
+
+      // Compute Distance and ETA
+      const dist = haversineDistance(lat, lng, CUSTOMER_LOCATION[0], CUSTOMER_LOCATION[1]);
+      const etaMin = Math.max(1, Math.round((dist / 25.0) * 60.0) + 2);
+
+      document.getElementById('custPartnerCoords').textContent = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+      document.getElementById('custPartnerBearing').textContent = `${bearing}°`;
+      document.getElementById('customerDistanceDisplay').textContent = `${dist.toFixed(2)} km`;
+      document.getElementById('customerEtaDisplay').textContent = `${etaMin} mins away`;
+
+      appendLog('customerLog', `Received GPS: [${lat.toFixed(5)}, ${lng.toFixed(5)}] • Dist: ${dist.toFixed(2)}km • ETA: ${etaMin}m`);
+    }
+
+    // Send GPS via WebSocket STOMP
+    function sendSingleLocation(lat, lng, bearing = 0, speed = 25) {
+      const bookingId = getBookingId();
+      const workerId = getWorkerId();
+      const dist = haversineDistance(lat, lng, CUSTOMER_LOCATION[0], CUSTOMER_LOCATION[1]);
+      const etaMin = Math.max(1, Math.round((dist / 25.0) * 60.0) + 2);
+
+      const payload = {
+        bookingId: bookingId,
+        workerId: workerId,
+        partnerId: workerId,
+        lat: lat,
+        lng: lng,
+        bearing: bearing,
+        speed: speed,
+        accuracy: 5.0,
+        distanceKm: Math.round(dist * 100) / 100,
+        etaMinutes: etaMin,
+        timestamp: Date.now()
+      };
+
+      packetsSent++;
+      document.getElementById('packetsSentCount').textContent = packetsSent;
+
+      if (workerStompClient && workerStompClient.connected) {
+        const dest = `/app/tracking/${bookingId}`;
+        workerStompClient.send(dest, {}, JSON.stringify(payload));
+        appendLog('workerLog', `Sent via STOMP to ${dest}: [${lat.toFixed(5)}, ${lng.toFixed(5)}]`);
+      } else {
+        // Fallback to REST
+        sendRestLocationPayload(payload);
+      }
+    }
+
+    // Send GPS via REST API
+    async function sendRestLocationPayload(payload) {
+      const baseUrl = getBaseUrl();
+      const url = `${baseUrl}/api/v1/tracking/update-location`;
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const json = await res.json();
+        appendLog('workerLog', `Sent via REST (${res.status}): ${JSON.stringify(json.data || json)}`);
+      } catch (e) {
+        appendLog('workerLog', `REST Send Error: ${e.message}`);
+      }
+    }
+
+    function sendRestUpdate() {
+      sendSingleLocation(workerCurrentLoc[0], workerCurrentLoc[1], 45, 30);
+    }
+
+    function sendSingleLocationStep() {
+      if (routeStepIndex < ROUTE_WAYPOINTS.length - 1) {
+        routeStepIndex++;
+      } else {
+        routeStepIndex = 0;
+      }
+      const nextPoint = ROUTE_WAYPOINTS[routeStepIndex];
+      const bearing = calculateBearing(workerCurrentLoc[0], workerCurrentLoc[1], nextPoint[0], nextPoint[1]);
+      workerCurrentLoc = [nextPoint[0], nextPoint[1]];
+
+      workerMarkerOnWorkerMap.setLatLng(workerCurrentLoc);
+      workerMap.panTo(workerCurrentLoc);
+
+      updateWorkerDisplay(workerCurrentLoc[0], workerCurrentLoc[1], bearing, 32);
+      sendSingleLocation(workerCurrentLoc[0], workerCurrentLoc[1], bearing, 32);
+    }
+
+    function toggleRouteSimulation() {
+      if (isSimulating) {
+        // Stop
+        clearInterval(simInterval);
+        isSimulating = false;
+        document.getElementById('btnStartTripText').textContent = 'Start Route Sim';
+        document.getElementById('btnStartTrip').className = 'bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/30';
+        appendLog('workerLog', 'Simulation paused.');
+      } else {
+        // Start
+        isSimulating = true;
+        document.getElementById('btnStartTripText').textContent = 'Pause Route Sim';
+        document.getElementById('btnStartTrip').className = 'bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-rose-600/30';
+        appendLog('workerLog', 'Simulation started. Emitting GPS every 3s...');
+
+        connectWorkerWebSocket(() => {
+          sendSingleLocationStep();
+          simInterval = setInterval(() => {
+            sendSingleLocationStep();
+            if (routeStepIndex >= ROUTE_WAYPOINTS.length - 1) {
+              appendLog('workerLog', '✓ Worker reached customer location!');
+              toggleRouteSimulation();
+            }
+          }, 3000);
+        });
+      }
+    }
+
+    function updateWorkerDisplay(lat, lng, bearing, speed) {
+      document.getElementById('workerCoordsDisplay').textContent = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+      document.getElementById('workerSpeedDisplay').textContent = `${speed} km/h • ${bearing}°`;
+    }
+
+    async function fetchLatestRest() {
+      const baseUrl = getBaseUrl();
+      const bookingId = getBookingId();
+      const url = `${baseUrl}/api/v1/tracking/latest/${bookingId}`;
+      appendLog('customerLog', `Fetching latest known GPS via REST: ${url}`);
+      try {
+        const res = await fetch(url);
+        const data = await res.json();
+        appendLog('customerLog', `REST Result: ${JSON.stringify(data)}`);
+        if (data && data.lat && data.lng) {
+          handleIncomingCustomerGps(data);
+        }
+      } catch (e) {
+        appendLog('customerLog', `REST Fetch Failed: ${e.message}`);
+      }
+    }
+
+    // Start Everything on Page Load
+    window.onload = function() {
+      initMaps();
+      connectCustomerWebSocket();
+      connectWorkerWebSocket();
+    };
+  </script>
+</body>
+</html>

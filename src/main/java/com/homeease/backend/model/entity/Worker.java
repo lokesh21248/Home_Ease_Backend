@@ -9,7 +9,11 @@ import java.time.Instant;
 import java.util.UUID;
 
 @Entity
-@Table(name = "workers")
+@Table(name = "workers", indexes = {
+    @Index(name = "idx_workers_dispatch", columnList = "is_online, is_verified, blocked_until"),
+    @Index(name = "idx_workers_coords", columnList = "current_lat, current_lng"),
+    @Index(name = "idx_workers_kyc_status", columnList = "kyc_status")
+})
 @Getter
 @Setter
 @NoArgsConstructor

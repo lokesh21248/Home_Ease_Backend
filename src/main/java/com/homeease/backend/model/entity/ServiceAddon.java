@@ -10,7 +10,9 @@ import java.time.Instant;
 import java.util.UUID;
 
 @Entity
-@Table(name = "service_addons")
+@Table(name = "service_addons", indexes = {
+    @Index(name = "idx_service_addons_sub_service_active", columnList = "sub_service_id, is_active")
+})
 @Getter
 @Setter
 @NoArgsConstructor
