@@ -147,6 +147,10 @@ public class DispatchEngine {
             assignment.put("status", "ACCEPTED");
             assignment.put("pinCode", pinCode);
             assignment.put("acceptedAt", Instant.now().toString());
+            if (booking.getUserLocation() != null) {
+                assignment.put("customerLat", booking.getUserLocation().getY());
+                assignment.put("customerLng", booking.getUserLocation().getX());
+            }
 
             String json = objectMapper.writeValueAsString(assignment);
             redisTemplate.opsForValue().set("tracking:assignment:" + bookingId, json, java.time.Duration.ofHours(24));

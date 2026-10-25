@@ -66,6 +66,9 @@ public class WorkerDto {
         private Double lat;
         @NotNull(message = "Longitude is required")
         private Double lng;
+        private Double bearing;   // Heading in degrees (0-360) for marker rotation
+        private Double speed;     // Speed in km/h
+        private Double accuracy;  // GPS accuracy in metres
     }
 
     @Getter

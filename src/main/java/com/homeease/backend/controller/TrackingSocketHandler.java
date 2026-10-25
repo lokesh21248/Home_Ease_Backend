@@ -43,6 +43,9 @@ public class TrackingSocketHandler {
             map.put("bookingId", bookingId);
             map.put("lat", locationPayload.getLat());
             map.put("lng", locationPayload.getLng());
+            if (locationPayload.getBearing() != null) map.put("bearing", locationPayload.getBearing());
+            if (locationPayload.getSpeed() != null) map.put("speed", locationPayload.getSpeed());
+            if (locationPayload.getAccuracy() != null) map.put("accuracy", locationPayload.getAccuracy());
             map.put("timestamp", System.currentTimeMillis());
             map.put("trackingActive", true);
             map.put("status", "TRACKING");

@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
 import org.springframework.messaging.handler.annotation.MessageMapping;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Controller;
 
 import java.security.Principal;
@@ -16,9 +17,11 @@ public class TrackingSocketHandler {
     private static final Logger logger = LoggerFactory.getLogger(TrackingSocketHandler.class);
 
     private final LiveTrackingService trackingService;
+    private final SimpMessagingTemplate messagingTemplate;
 
-    public TrackingSocketHandler(LiveTrackingService trackingService) {
+    public TrackingSocketHandler(LiveTrackingService trackingService, SimpMessagingTemplate messagingTemplate) {
         this.trackingService = trackingService;
+        this.messagingTemplate = messagingTemplate;
     }
 
     /**
@@ -45,6 +48,21 @@ public class TrackingSocketHandler {
 
         if (payload != null) {
             trackingService.processLocationUpdate(bookingId, payload, authenticatedUserId);
+        }
+    }
+
+    /**
+     * Reconnection Snapshot:
+     * Allows reconnecting clients (e.g. after network drop) to trigger an immediate
+     * broadcast of the latest location without waiting for the partner's next GPS tick.
+     */
+    @MessageMapping({"/tracking/{bookingId}/snapshot", "/track/{bookingId}/snapshot"})
+    public void requestSnapshot(@DestinationVariable("bookingId") String bookingId) {
+        LocationPayload latest = trackingService.getLatestLocation(bookingId);
+        if (latest != null) {
+            messagingTemplate.convertAndSend("/topic/tracking/" + bookingId, latest);
+            messagingTemplate.convertAndSend("/topic/track/" + bookingId, latest);
+            logger.info("Sent reconnection snapshot for booking {}", bookingId);
         }
     }
 }

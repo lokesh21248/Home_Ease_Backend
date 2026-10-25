@@ -16,10 +16,10 @@ jobs:
       - name: 2. Deploy to AWS EC2 via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          port: 22
+          host: ${{ secrets.SSH_HOST || secrets.EC2_HOST }}
+          username: ${{ secrets.SSH_USERNAME || secrets.EC2_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY || secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
           script: |
             cd ~/Home_Ease_Backend
             echo "📥 Pulling latest changes from GitHub..."
@@ -41,4 +41,3 @@ jobs:
             docker compose up -d --build
             echo "✅ Deployment successful! Running containers:"
             docker ps
-

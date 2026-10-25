@@ -46,6 +46,16 @@ public class GlobalExceptionHandler {
         ));
     }
 
+    @ExceptionHandler(RateLimitExceededException.class)
+    public ResponseEntity<Map<String, Object>> handleRateLimit(RateLimitExceededException ex) {
+        logger.warn("Rate limit exceeded in tracking service: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(Map.of(
+                "status", "RATE_LIMITED",
+                "timestamp", Instant.now().toString(),
+                "error", ex.getMessage()
+        ));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleGenericException(Exception ex) {
         logger.error("Unhandled error in tracking service: {}", ex.getMessage(), ex);

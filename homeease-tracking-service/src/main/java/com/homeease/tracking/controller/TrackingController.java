@@ -1,6 +1,7 @@
 package com.homeease.tracking.controller;
 
 import com.homeease.tracking.dto.LocationPayload;
+import com.homeease.tracking.exception.RateLimitExceededException;
 import com.homeease.tracking.security.JwtTokenValidator;
 import com.homeease.tracking.service.LiveTrackingService;
 import org.slf4j.Logger;
@@ -100,6 +101,12 @@ public class TrackingController {
                     "trackingActive", false,
                     "message", e.getMessage()
             ));
+        } catch (RateLimitExceededException e) {
+            logger.warn("Rate limit throttled for booking {}: {}", payload.getBookingId(), e.getMessage());
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(Map.of(
+                    "status", "RATE_LIMITED",
+                    "error", e.getMessage()
+            ));
         } catch (Exception e) {
             logger.error("Unexpected error in tracking update: {}", e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
@@ -150,7 +157,7 @@ public class TrackingController {
     }
 
     /**
-     * Road Routing / Directions via OpenRouteService (HeiGIT API) - GET endpoint
+     * Road Routing / Directions via Google Maps (Routes API v2 / Directions API) - GET endpoint
      * GET /api/v1/tracking/route?startLat=17.4485&startLng=78.3748&destLat=17.4585&destLng=78.3848
      */
     @GetMapping({"/route", "/directions"})
@@ -163,7 +170,7 @@ public class TrackingController {
     }
 
     /**
-     * Road Routing / Directions via OpenRouteService (HeiGIT API) - POST endpoint
+     * Road Routing / Directions via Google Maps (Routes API v2 / Directions API) - POST endpoint
      * POST /api/v1/tracking/route
      */
     @PostMapping({"/route", "/directions"})

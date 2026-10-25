@@ -23,8 +23,11 @@ management:
 homeease:
   jwt:
     secret: ${JWT_SECRET:404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}
-  openrouteservice:
-    api-key: ${OPENROUTESERVICE_API_KEY:}
   google:
     maps:
       api-key: ${GOOGLE_MAPS_API_KEY:}
+  tracking:
+    rate-limit:
+      window-seconds: ${TRACKING_RATE_LIMIT_WINDOW:60}
+      max-updates: ${TRACKING_RATE_LIMIT_MAX:30}
+      movement-threshold-meters: ${TRACKING_MOVEMENT_THRESHOLD:15.0}

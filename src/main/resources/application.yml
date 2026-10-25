@@ -78,8 +78,6 @@ homeease:
     platform-commission-percent: 2.00 # 2% platform commission
   worker:
     auto-verify: ${AUTO_VERIFY_WORKERS:false} # Workers require admin approval via /admin/workers/{id}/verify-kyc
-  openrouteservice:
-    api-key: ${OPENROUTESERVICE_API_KEY:}
   google:
     maps:
       api-key: ${GOOGLE_MAPS_API_KEY:}
