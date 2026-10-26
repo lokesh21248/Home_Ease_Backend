@@ -26,10 +26,13 @@ adminClient.interceptors.request.use((config) => {
 });
 
 // ==========================================
-// 1. Authentication
+// 1. Authentication & Profile
 // ==========================================
 export const adminLogin = (email, password) =>
   adminClient.post('/admin/auth/login', { email, password });
+
+export const getAdminProfile = () =>
+  adminClient.get('/users/me');
 
 // ==========================================
 // 2. Dashboard Analytics
@@ -219,4 +222,21 @@ export const uploadWorkerAadhaar = (workerId, file) =>
   adminClient.post(`/upload/worker-kyc/aadhaar/${workerId}`, createFormData(file), {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
+
+// ==========================================
+// 13. Bookings Inspection & Support
+// ==========================================
+export const getBookingById = (bookingId) =>
+  adminClient.get(`/bookings/${bookingId}`);
+
+export const cancelBookingByAdmin = (bookingId, adminUserId, reason = 'Cancelled by administrator') =>
+  adminClient.post(`/bookings/${bookingId}/cancel?reason=${encodeURIComponent(reason)}`, null, {
+    headers: { 'X-User-Id': adminUserId },
+  });
+
+export const updateBookingStatusByAdmin = (bookingId, status, adminUserId) =>
+  adminClient.patch(`/bookings/${bookingId}/status?status=${status}`, null, {
+    headers: { 'X-User-Id': adminUserId },
+  });
+
 
