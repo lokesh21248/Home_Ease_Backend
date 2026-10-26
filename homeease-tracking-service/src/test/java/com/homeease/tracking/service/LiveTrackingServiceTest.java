@@ -50,6 +50,7 @@ public class LiveTrackingServiceTest {
         ReflectionTestUtils.setField(trackingService, "windowSeconds", 60);
         ReflectionTestUtils.setField(trackingService, "maxUpdates", 5);
         ReflectionTestUtils.setField(trackingService, "movementThresholdMeters", 15.0);
+        ReflectionTestUtils.setField(trackingService, "maxAccuracyMeters", 50.0);
 
         trackingService.init();
     }
@@ -285,4 +286,120 @@ public class LiveTrackingServiceTest {
         assertNotNull(result.get("etaMinutes"));
         assertTrue(((Number) result.get("etaMinutes")).intValue() > 0);
     }
+
+    // =========================================================================
+    // New tests added for GPS accuracy validation, sequence numbers, and
+    // the corrected stationary noise suppression threshold (1.5m).
+    // =========================================================================
+
+    @Test
+    void testProcessLocationUpdate_PoorAccuracy_Rejected() {
+        String bookingId = "BK-ACC-BAD";
+        LocationPayload payload = LocationPayload.builder()
+                .bookingId(bookingId)
+                .lat(17.4485)
+                .lng(78.3748)
+                .accuracy(100.0)  // Exceeds maxAccuracyMeters=50m
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+                trackingService.processLocationUpdate(bookingId, payload, null));
+        assertTrue(ex.getMessage().contains("accuracy"), "Exception should mention accuracy");
+    }
+
+    @Test
+    void testProcessLocationUpdate_BorderlineAccuracy_Accepted() {
+        // Exactly at the threshold (50.0m) should pass
+        String bookingId = "BK-ACC-OK";
+        LocationPayload payload = LocationPayload.builder()
+                .bookingId(bookingId)
+                .lat(17.4485)
+                .lng(78.3748)
+                .accuracy(50.0)  // Equal to maxAccuracyMeters, not exceeding
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        LocationPayload result = assertDoesNotThrow(() ->
+                trackingService.processLocationUpdate(bookingId, payload, null));
+        assertNotNull(result);
+        assertEquals(17.4485, result.getLat());
+    }
+
+    @Test
+    void testProcessLocationUpdate_SequenceNumber_Monotonic() {
+        String bookingId = "BK-SEQ";
+        long baseTs = System.currentTimeMillis();
+
+        LocationPayload p1 = LocationPayload.builder()
+                .bookingId(bookingId).lat(17.4485).lng(78.3748).timestamp(baseTs).build();
+        LocationPayload r1 = trackingService.processLocationUpdate(bookingId, p1, null);
+
+        LocationPayload p2 = LocationPayload.builder()
+                .bookingId(bookingId).lat(17.4510).lng(78.3748).timestamp(baseTs + 5000).build();
+        LocationPayload r2 = trackingService.processLocationUpdate(bookingId, p2, null);
+
+        assertNotNull(r1.getSequenceNumber(), "sequenceNumber must not be null");
+        assertNotNull(r2.getSequenceNumber(), "sequenceNumber must not be null");
+        assertTrue(r2.getSequenceNumber() > r1.getSequenceNumber(),
+                "sequenceNumber must increase monotonically: " + r1.getSequenceNumber() + " vs " + r2.getSequenceNumber());
+    }
+
+    @Test
+    void testProcessLocationUpdate_SequenceNumber_IsolatedPerBooking() {
+        String booking1 = "BK-ISOLATED-A";
+        String booking2 = "BK-ISOLATED-B";
+        long ts = System.currentTimeMillis();
+
+        LocationPayload a = LocationPayload.builder().bookingId(booking1).lat(17.4485).lng(78.3748).timestamp(ts).build();
+        LocationPayload b = LocationPayload.builder().bookingId(booking2).lat(17.4485).lng(78.3748).timestamp(ts).build();
+
+        LocationPayload rA = trackingService.processLocationUpdate(booking1, a, null);
+        LocationPayload rB = trackingService.processLocationUpdate(booking2, b, null);
+
+        // Both should start at seq=1 independently
+        assertEquals(1L, rA.getSequenceNumber(), "First update for booking1 should have seq=1");
+        assertEquals(1L, rB.getSequenceNumber(), "First update for booking2 should have seq=1 independently");
+    }
+
+    @Test
+    void testProcessLocationUpdate_StationaryNoise_BelowNewThreshold_Suppressed() {
+        // Movement of ~1.4m is below the new 1.5m noise threshold and should be suppressed
+        String bookingId = "BK-NOISE-BELOW";
+        long ts = System.currentTimeMillis();
+
+        LocationPayload first = LocationPayload.builder()
+                .bookingId(bookingId).lat(17.44850).lng(78.37480).bearing(45.0).timestamp(ts).build();
+        trackingService.processLocationUpdate(bookingId, first, null);
+
+        // ~1.1m north (0.00001 deg lat ~ 1.11m), same bearing, within 3s
+        LocationPayload noise = LocationPayload.builder()
+                .bookingId(bookingId).lat(17.44851).lng(78.37480).bearing(45.0).timestamp(ts + 500).build();
+        LocationPayload result = trackingService.processLocationUpdate(bookingId, noise, null);
+
+        // Should return the original coordinates (suppressed, not broadcast)
+        assertEquals(17.44850, result.getLat(), 0.00001);
+    }
+
+    @Test
+    void testProcessLocationUpdate_Movement_AboveNewThreshold_Passes() {
+        // Movement of ~3.3m (0.00003 deg lat ~ 3.3m) is above 1.5m noise threshold and should broadcast
+        String bookingId = "BK-NOISE-ABOVE";
+        long ts = System.currentTimeMillis();
+
+        LocationPayload first = LocationPayload.builder()
+                .bookingId(bookingId).lat(17.44850).lng(78.37480).bearing(45.0).timestamp(ts).build();
+        trackingService.processLocationUpdate(bookingId, first, null);
+
+        // ~3.3m north, same bearing, within 3s
+        LocationPayload moved = LocationPayload.builder()
+                .bookingId(bookingId).lat(17.44853).lng(78.37480).bearing(45.0).timestamp(ts + 500).build();
+        LocationPayload result = trackingService.processLocationUpdate(bookingId, moved, null);
+
+        // Should have the new coordinates (broadcast happened)
+        assertEquals(17.44853, result.getLat(), 0.00001,
+                "Update above noise threshold must broadcast new coordinates");
+        assertNotNull(result.getSequenceNumber(), "Broadcast update must carry a sequenceNumber");
+    }
 }
+

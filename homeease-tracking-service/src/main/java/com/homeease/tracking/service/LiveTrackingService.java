@@ -48,6 +48,22 @@ public class LiveTrackingService {
     @Value("${homeease.tracking.rate-limit.movement-threshold-meters:15.0}")
     private double movementThresholdMeters;
 
+    /**
+     * Maximum acceptable GPS horizontal accuracy in metres.
+     * Updates with accuracy > this value are rejected to prevent noise injection.
+     * Default: 50m. Set via TRACKING_MAX_ACCURACY_METERS env var.
+     */
+    @Value("${homeease.tracking.max-accuracy-meters:50.0}")
+    private double maxAccuracyMeters;
+
+    /**
+     * Minimum movement required to not be classified as stationary noise.
+     * Below this threshold, updates are suppressed if bearing is unchanged and
+     * the update arrived within 3 seconds of the previous one.
+     * Raised from 0.2m to 1.5m to correctly handle GPS horizontal noise.
+     */
+    private static final double STATIONARY_NOISE_THRESHOLD_METERS = 1.5;
+
     // Cache TTL: 2 hours for in-transit tracking data
     private static final Duration TRACKING_TTL = Duration.ofHours(2);
     private static final String GEO_WORKERS_KEY = "active_workers_geo";
@@ -57,6 +73,13 @@ public class LiveTrackingService {
     // =========================================================================
     private final ConcurrentMap<String, LocationPayload> activeLocationsMap = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Long> locationLastAccessMap = new ConcurrentHashMap<>();
+
+    // =========================================================================
+    // DSA C: Per-booking monotonic sequence counter (AtomicLong, O(1)).
+    // Server-assigned: immune to device-clock skew. Clients discard frames
+    // with sequenceNumber <= lastSeen to prevent out-of-order rendering.
+    // =========================================================================
+    private final ConcurrentMap<String, java.util.concurrent.atomic.AtomicLong> sequenceCounters = new ConcurrentHashMap<>();
 
     // =========================================================================
     // DSA B: Bounded Asynchronous Event Buffer / Queue
@@ -207,6 +230,9 @@ public class LiveTrackingService {
 
         payload.setBookingId(bookingId);
 
+        long receiptMs = System.currentTimeMillis();
+        payload.setServerTimestamp(receiptMs);
+
         // 1. Validate coordinates
         Double lat = payload.getLat();
         Double lng = payload.getLng();
@@ -217,6 +243,15 @@ public class LiveTrackingService {
                 lng < -180.0 || lng > 180.0) {
             throw new IllegalArgumentException(String.format(
                     "Invalid GPS coordinates: lat=%s, lng=%s (Must be between -90..90 and -180..180)", lat, lng));
+        }
+
+        // 1b. Validate GPS accuracy – reject fixes with excessive positional uncertainty
+        if (payload.getAccuracy() != null && payload.getAccuracy() > maxAccuracyMeters) {
+            logger.warn("[tracking] Rejected poor-accuracy GPS fix for booking {}: accuracy={}m > threshold={}m",
+                    bookingId, payload.getAccuracy(), maxAccuracyMeters);
+            throw new IllegalArgumentException(String.format(
+                    "GPS accuracy %.1fm exceeds maximum allowed %.1fm — fix rejected",
+                    payload.getAccuracy(), maxAccuracyMeters));
         }
 
         // 2. Validate booking assignment & status in Redis if assignment metadata exists
@@ -265,18 +300,22 @@ public class LiveTrackingService {
         LocationPayload latestExisting = getLatestLocation(bookingId);
         if (latestExisting != null && latestExisting.getTimestamp() != null) {
             if (effectiveTimestamp <= latestExisting.getTimestamp()) {
-                logger.warn("Stale GPS update rejected for booking {}: incoming {} <= latest cached {}",
+                logger.warn("[tracking] Stale GPS rejected for booking {}: incomingTs={} <= cachedTs={}",
                         bookingId, effectiveTimestamp, latestExisting.getTimestamp());
                 return latestExisting;
             }
 
-            // Stationary duplicate suppression: if moved < 0.2m and bearing identical, suppress redundant broadcast
+            // Stationary noise suppression: threshold raised to 1.5m to handle GPS noise correctly.
+            // Suppress only when: moved < STATIONARY_NOISE_THRESHOLD_METERS AND bearing unchanged AND arrived < 3s after previous.
             double movedDistMeters = haversine(latestExisting.getLat(), latestExisting.getLng(), lat, lng) * 1000.0;
             boolean bearingSame = Objects.equals(latestExisting.getBearing(), payload.getBearing());
-            if (movedDistMeters < 0.2 && bearingSame && (effectiveTimestamp - latestExisting.getTimestamp() < 3000)) {
+            if (movedDistMeters < STATIONARY_NOISE_THRESHOLD_METERS && bearingSame &&
+                    (effectiveTimestamp - latestExisting.getTimestamp() < 3000)) {
                 latestExisting.setTimestamp(effectiveTimestamp);
                 activeLocationsMap.put(bookingId, latestExisting);
                 locationLastAccessMap.put(bookingId, now);
+                logger.debug("[tracking] Stationary duplicate suppressed for booking {} (moved={}m, <{}m threshold)",
+                        bookingId, String.format("%.2f", movedDistMeters), STATIONARY_NOISE_THRESHOLD_METERS);
                 return latestExisting;
             }
         }
@@ -299,18 +338,30 @@ public class LiveTrackingService {
         payload.setTrackingActive(true);
         payload.setStatus("TRACKING");
 
+        // 5b. Assign server-side monotonic sequence number (DSA C).
+        //     AtomicLong guarantees thread-safety without a lock on the hot path.
+        long seq = sequenceCounters
+                .computeIfAbsent(bookingId, k -> new java.util.concurrent.atomic.AtomicLong(0L))
+                .incrementAndGet();
+        payload.setSequenceNumber(seq);
+
         // 6. In-Memory L1 Cache update (DSA A: O(1) Instant Access)
         activeLocationsMap.put(bookingId, payload);
         locationLastAccessMap.put(bookingId, now);
 
         // 7. Push to WebSocket Topics immediately: /topic/tracking/{bookingId} & /topic/track/{bookingId}
+        long broadcastStartMs = System.currentTimeMillis();
         try {
             messagingTemplate.convertAndSend("/topic/tracking/" + bookingId, payload);
             messagingTemplate.convertAndSend("/topic/track/" + bookingId, payload);
-            logger.debug("Broadcasted live GPS for booking {} to /topic/tracking/{}: [{}, {}], bearing={}",
-                    bookingId, bookingId, payload.getLat(), payload.getLng(), payload.getBearing());
+            long broadcastLatencyMs = System.currentTimeMillis() - broadcastStartMs;
+            long e2eLatencyMs = System.currentTimeMillis() - receiptMs;
+            logger.debug("[tracking] Broadcast seq={} for booking {} to /topic/tracking/{}: [{}, {}] bearing={} "
+                            + "broadcastLatency={}ms e2eLatency={}ms",
+                    seq, bookingId, bookingId, payload.getLat(), payload.getLng(), payload.getBearing(),
+                    broadcastLatencyMs, e2eLatencyMs);
         } catch (Exception e) {
-            logger.warn("WebSocket broadcast failed for booking {}: {}", bookingId, e.getMessage());
+            logger.warn("[tracking] WebSocket broadcast failed for booking {}: {}", bookingId, e.getMessage());
         }
 
         // 8. Bounded Asynchronous Event Buffer: Queue Redis & GEO persistence (DSA B)

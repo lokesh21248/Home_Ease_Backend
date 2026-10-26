@@ -484,20 +484,111 @@
       });
     }
 
+    // -----------------------------------------------------------------------
+    // Smooth Marker Animation
+    // Leaflet does not natively animate marker movements on setLatLng, so we
+    // use a requestAnimationFrame loop to interpolate between the current
+    // displayed position and the newly received GPS target.
+    //
+    // Design goals:
+    //  - Start from the current *displayed* position, not the last GPS value.
+    //  - Retargetable: a new update mid-animation pivots from wherever the
+    //    marker currently is, with no snap-back.
+    //  - Duration adapts to observed update interval (capped 1.5s–4s).
+    //  - RAF is cancelled when the component unmounts or simulation stops.
+    // -----------------------------------------------------------------------
+    let markerAnimationId = null;         // current rAF handle
+    let markerAnimStartTime = null;       // when the current anim started
+    let markerAnimFrom = null;            // [lat, lng] where anim started
+    let markerAnimTarget = null;          // [lat, lng] we are heading to
+    let markerAnimDuration = 2500;        // ms, adapted per interval
+    let lastGpsReceiptTime = null;        // for adaptive duration
+    let lastSequenceNumber = -1;          // out-of-order guard
+
+    /** Linear interpolation helper. */
+    function lerp(a, b, t) { return a + (b - a) * t; }
+
+    /** Smoothstep easing for a more natural deceleration curve. */
+    function smoothstep(t) { return t * t * (3 - 2 * t); }
+
+    /**
+     * Cancel any running animation and start a new one from `from` to `to`.
+     * @param {Leaflet.Marker} marker
+     * @param {[number,number]} from  - starting [lat, lng]
+     * @param {[number,number]} to    - target  [lat, lng]
+     * @param {number} durationMs
+     */
+    function animateMarkerTo(marker, from, to, durationMs) {
+      if (markerAnimationId !== null) {
+        cancelAnimationFrame(markerAnimationId);
+        markerAnimationId = null;
+      }
+
+      markerAnimFrom = from.slice();
+      markerAnimTarget = to.slice();
+      markerAnimStartTime = null;
+      markerAnimDuration = durationMs;
+
+      function step(timestamp) {
+        if (!markerAnimStartTime) markerAnimStartTime = timestamp;
+        const elapsed = timestamp - markerAnimStartTime;
+        const rawT = Math.min(elapsed / markerAnimDuration, 1.0);
+        const t = smoothstep(rawT);
+
+        const lat = lerp(markerAnimFrom[0], markerAnimTarget[0], t);
+        const lng = lerp(markerAnimFrom[1], markerAnimTarget[1], t);
+        marker.setLatLng([lat, lng]);
+
+        if (rawT < 1.0) {
+          markerAnimationId = requestAnimationFrame(step);
+        } else {
+          markerAnimationId = null;
+          markerAnimFrom = markerAnimTarget.slice();
+        }
+      }
+
+      markerAnimationId = requestAnimationFrame(step);
+    }
+
     // Handle Incoming GPS update in Customer View
     function handleIncomingCustomerGps(payload) {
+      const lat = payload.lat;
+      const lng = payload.lng;
+      if (lat === undefined || lng === undefined || lat === null || lng === null) return;
+
+      // Out-of-order guard using server-assigned sequenceNumber
+      if (payload.sequenceNumber !== undefined && payload.sequenceNumber !== null) {
+        if (payload.sequenceNumber <= lastSequenceNumber) {
+          appendLog('customerLog', `⚠ Out-of-order frame seq=${payload.sequenceNumber} ignored (last=${lastSequenceNumber})`);
+          return;
+        }
+        lastSequenceNumber = payload.sequenceNumber;
+      }
+
       packetsReceived++;
       document.getElementById('packetsRecvCount').textContent = packetsReceived;
 
-      const lat = payload.lat;
-      const lng = payload.lng;
       const bearing = payload.bearing || 0;
       const speed = payload.speed || 0;
 
-      // Move Customer View Marker
+      // Adaptive animation duration: aim to finish in 90% of the observed interval,
+      // clamped to [1500ms, 4000ms]. On the very first frame, use 2500ms default.
+      const now = Date.now();
+      if (lastGpsReceiptTime !== null) {
+        const observedIntervalMs = now - lastGpsReceiptTime;
+        const adaptiveDuration = Math.max(1500, Math.min(4000, observedIntervalMs * 0.9));
+        markerAnimDuration = adaptiveDuration;
+      }
+      lastGpsReceiptTime = now;
+
+      // Determine the starting position for this animation segment.
+      // If an animation is currently running, start from the current marker position
+      // (already updated by the rAF step) to avoid snap-back.
       if (customerMarkerOnCustomerMap) {
-        customerMarkerOnCustomerMap.setLatLng([lat, lng]);
-        customerMarkerOnCustomerMap.bindPopup(`Partner (${payload.workerId || 'Worker'})<br>Speed: ${speed} km/h`).openPopup();
+        const currentPos = customerMarkerOnCustomerMap.getLatLng();
+        const from = [currentPos.lat, currentPos.lng];
+        animateMarkerTo(customerMarkerOnCustomerMap, from, [lat, lng], markerAnimDuration);
+        customerMarkerOnCustomerMap.bindPopup(`Partner (${payload.workerId || payload.partnerId || 'Worker'})<br>Speed: ${speed} m/s`);
       }
 
       // Compute Distance and ETA
@@ -509,7 +600,8 @@
       document.getElementById('customerDistanceDisplay').textContent = `${dist.toFixed(2)} km`;
       document.getElementById('customerEtaDisplay').textContent = `${etaMin} mins away`;
 
-      appendLog('customerLog', `Received GPS: [${lat.toFixed(5)}, ${lng.toFixed(5)}] • Dist: ${dist.toFixed(2)}km • ETA: ${etaMin}m`);
+      const seqLabel = payload.sequenceNumber != null ? ` seq=${payload.sequenceNumber}` : '';
+      appendLog('customerLog', `Received GPS${seqLabel}: [${lat.toFixed(5)}, ${lng.toFixed(5)}] • Dist: ${dist.toFixed(2)}km • ETA: ${etaMin}m`);
     }
 
     // Send GPS via WebSocket STOMP
