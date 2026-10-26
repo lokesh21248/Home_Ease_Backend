@@ -26,8 +26,8 @@ jobs:
             elif [ -d ~/firstdoor ]; then
               cd ~/firstdoor
             fi
-            git remote set-url origin https://github.com/lokesh21248/firstdoor.git 2>/dev/null || true
-            echo "📥 Pulling latest changes from GitHub (firstdoor)..."
+            git remote set-url origin https://github.com/lokesh21248/Home_Ease_Backend.git 2>/dev/null || true
+            echo "📥 Pulling latest changes from GitHub (Home_Ease_Backend)..."
             git pull origin main
 
             echo "📦 Building Core Backend JAR..."
