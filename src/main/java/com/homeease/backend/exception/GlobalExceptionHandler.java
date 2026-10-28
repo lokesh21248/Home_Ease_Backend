@@ -57,6 +57,61 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * P0-2 — Duplicate booking detected via idempotency key.
+     * Returns 409 Conflict with the existing booking ID so the client can redirect.
+     */
+    @ExceptionHandler(DuplicateBookingException.class)
+    public ResponseEntity<Map<String, Object>> handleDuplicateBooking(DuplicateBookingException ex) {
+        log.warn("Duplicate booking request blocked: {}", ex.getMessage());
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("timestamp", Instant.now().toString());
+        body.put("status", HttpStatus.CONFLICT.value());
+        body.put("error", "DUPLICATE_BOOKING");
+        body.put("message", ex.getMessage());
+        body.put("existingBookingId", ex.getExistingBookingId());
+
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
+    }
+
+    /**
+     * Service Area — pincode not serviceable, city/state inactive, unknown pincode,
+     * or serviceability check failure during booking creation.
+     * Returns 422 Unprocessable Entity with "serviceable: false" so clients can distinguish
+     * service area restrictions from generic 400 Bad Request.
+     */
+    @ExceptionHandler(ServiceabilityException.class)
+    public ResponseEntity<Map<String, Object>> handleServiceabilityException(ServiceabilityException ex) {
+        log.warn("Serviceability gate rejected booking/check: {}", ex.getMessage());
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("timestamp", Instant.now().toString());
+        body.put("status", HttpStatus.UNPROCESSABLE_ENTITY.value());
+        body.put("error", "AREA_NOT_SERVICEABLE");
+        body.put("message", ex.getMessage());
+        body.put("serviceable", false);
+
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(body);
+    }
+
+    /**
+     * P0-3 — Unauthorized PIN verification attempt (wrong worker on booking).
+     * Returns 403 Forbidden.
+     */
+    @ExceptionHandler(SecurityException.class)
+    public ResponseEntity<Map<String, Object>> handleSecurityException(SecurityException ex) {
+        log.warn("Security violation: {}", ex.getMessage());
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("timestamp", Instant.now().toString());
+        body.put("status", HttpStatus.FORBIDDEN.value());
+        body.put("error", "FORBIDDEN");
+        body.put("message", ex.getMessage());
+
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
+    }
+
+    /**
      * Handles incorrect PIN verification when a worker attempts to unlock a job.
      */
     @ExceptionHandler(InvalidPinException.class)

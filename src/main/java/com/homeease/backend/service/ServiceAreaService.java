@@ -1,0 +1,456 @@
+package com.homeease.backend.service;
+
+import com.homeease.backend.dto.ServiceAreaDto.*;
+import com.homeease.backend.exception.ResourceNotFoundException;
+import com.homeease.backend.exception.ServiceabilityException;
+import com.homeease.backend.model.entity.*;
+import com.homeease.backend.model.enums.BookingStage;
+import com.homeease.backend.model.enums.UserRole;
+import com.homeease.backend.repository.*;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+@Service
+public class ServiceAreaService {
+
+    private final StateRepository                stateRepository;
+    private final CityRepository                 cityRepository;
+    private final ServiceablePincodeRepository   pincodeRepository;
+    private final UserRepository                 userRepository;
+    private final BookingRepository              bookingRepository;
+
+    public ServiceAreaService(StateRepository stateRepository,
+                              CityRepository cityRepository,
+                              ServiceablePincodeRepository pincodeRepository,
+                              UserRepository userRepository,
+                              BookingRepository bookingRepository) {
+        this.stateRepository   = stateRepository;
+        this.cityRepository    = cityRepository;
+        this.pincodeRepository = pincodeRepository;
+        this.userRepository    = userRepository;
+        this.bookingRepository = bookingRepository;
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // ADMIN AUTHORIZATION HELPER
+    // ════════════════════════════════════════════════════════════════
+
+    /**
+     * Verifies the caller has UserRole.ADMIN. Throws SecurityException (→ 403)
+     * if not. Follows the same pattern used throughout AdminService.
+     */
+    private void requireAdmin(UUID callerId) {
+        User caller = userRepository.findById(callerId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + callerId));
+        if (caller.getRole() != UserRole.ADMIN) {
+            throw new SecurityException("Only administrators may manage service areas.");
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // OVERVIEW / STATS
+    // ════════════════════════════════════════════════════════════════
+
+    @Transactional(readOnly = true)
+    public ServiceAreaOverviewResponse getOverview() {
+        ServiceAreaStats stats = ServiceAreaStats.builder()
+                .totalStates(stateRepository.count())
+                .totalCities(cityRepository.count())
+                .totalPincodes(pincodeRepository.count())
+                .activePincodes(pincodeRepository.countByIsActiveTrue())
+                .inactivePincodes(pincodeRepository.countByIsActiveFalse())
+                .build();
+
+        List<StateResponse> states = stateRepository.findAllByOrderByNameAsc()
+                .stream().map(this::mapState).collect(Collectors.toList());
+
+        return ServiceAreaOverviewResponse.builder()
+                .stats(stats)
+                .states(states)
+                .build();
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // STATE MANAGEMENT
+    // ════════════════════════════════════════════════════════════════
+
+    @Transactional(readOnly = true)
+    public List<StateResponse> getAllStates() {
+        return stateRepository.findAllByOrderByNameAsc()
+                .stream().map(this::mapState).collect(Collectors.toList());
+    }
+
+    @Transactional
+    public StateResponse createState(UUID callerId, CreateStateRequest req) {
+        requireAdmin(callerId);
+
+        String norm = normalize(req.getName());
+        if (stateRepository.findByNameNorm(norm).isPresent()) {
+            throw new IllegalArgumentException("State '" + req.getName() + "' already exists.");
+        }
+
+        State state = State.builder()
+                .name(req.getName().trim())
+                .nameNorm(norm)
+                .isActive(req.getIsActive() != null && req.getIsActive())
+                .build();
+
+        return mapState(stateRepository.save(state));
+    }
+
+    @Transactional
+    public Object updateState(UUID callerId, UUID stateId, UpdateStateRequest req, boolean confirm) {
+        requireAdmin(callerId);
+
+        State state = stateRepository.findById(stateId)
+                .orElseThrow(() -> new ResourceNotFoundException("State not found: " + stateId));
+
+        // Name change — check for duplicate
+        if (req.getName() != null && !req.getName().isBlank()) {
+            String norm = normalize(req.getName());
+            stateRepository.findByNameNorm(norm).ifPresent(existing -> {
+                if (!existing.getStateId().equals(stateId)) {
+                    throw new IllegalArgumentException("State '" + req.getName() + "' already exists.");
+                }
+            });
+            state.setName(req.getName().trim());
+            state.setNameNorm(norm);
+        }
+
+        // Deactivation warning
+        if (req.getIsActive() != null && !req.getIsActive() && Boolean.TRUE.equals(state.getIsActive())) {
+            long affected = countUpcomingBookingsForState(stateId);
+            if (affected > 0 && !confirm) {
+                return DeactivationWarningResponse.builder()
+                        .warning(true)
+                        .affectedUpcomingBookings(affected)
+                        .message("Deactivation will block new bookings but will not cancel " + affected + " existing upcoming bookings.")
+                        .proceed(false)
+                        .build();
+            }
+        }
+
+        if (req.getIsActive() != null) {
+            state.setIsActive(req.getIsActive());
+        }
+
+        return DeactivationWarningResponse.builder()
+                .warning(false)
+                .proceed(true)
+                .updatedEntity(mapState(stateRepository.save(state)))
+                .build();
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // CITY MANAGEMENT
+    // ════════════════════════════════════════════════════════════════
+
+    @Transactional(readOnly = true)
+    public List<CityResponse> getCities(UUID stateId) {
+        List<City> cities = (stateId != null)
+                ? cityRepository.findByState_StateIdOrderByNameAsc(stateId)
+                : cityRepository.findAll();
+        return cities.stream().map(this::mapCity).collect(Collectors.toList());
+    }
+
+    @Transactional
+    public CityResponse createCity(UUID callerId, CreateCityRequest req) {
+        requireAdmin(callerId);
+
+        State state = stateRepository.findById(req.getStateId())
+                .orElseThrow(() -> new ResourceNotFoundException("State not found: " + req.getStateId()));
+
+        String norm = normalize(req.getName());
+        if (cityRepository.findByState_StateIdAndNameNorm(req.getStateId(), norm).isPresent()) {
+            throw new IllegalArgumentException("City '" + req.getName() + "' already exists in this state.");
+        }
+
+        City city = City.builder()
+                .state(state)
+                .name(req.getName().trim())
+                .nameNorm(norm)
+                .isActive(req.getIsActive() != null && req.getIsActive())
+                .build();
+
+        return mapCity(cityRepository.save(city));
+    }
+
+    @Transactional
+    public Object updateCity(UUID callerId, UUID cityId, UpdateCityRequest req, boolean confirm) {
+        requireAdmin(callerId);
+
+        City city = cityRepository.findById(cityId)
+                .orElseThrow(() -> new ResourceNotFoundException("City not found: " + cityId));
+
+        if (req.getName() != null && !req.getName().isBlank()) {
+            String norm = normalize(req.getName());
+            cityRepository.findByState_StateIdAndNameNorm(city.getState().getStateId(), norm).ifPresent(existing -> {
+                if (!existing.getCityId().equals(cityId)) {
+                    throw new IllegalArgumentException("City '" + req.getName() + "' already exists in this state.");
+                }
+            });
+            city.setName(req.getName().trim());
+            city.setNameNorm(norm);
+        }
+
+        if (req.getIsActive() != null && !req.getIsActive() && Boolean.TRUE.equals(city.getIsActive())) {
+            long affected = countUpcomingBookingsForCity(cityId);
+            if (affected > 0 && !confirm) {
+                return DeactivationWarningResponse.builder()
+                        .warning(true)
+                        .affectedUpcomingBookings(affected)
+                        .message("Deactivation will block new bookings but will not cancel " + affected + " existing upcoming bookings.")
+                        .proceed(false)
+                        .build();
+            }
+        }
+
+        if (req.getIsActive() != null) {
+            city.setIsActive(req.getIsActive());
+        }
+
+        return DeactivationWarningResponse.builder()
+                .warning(false)
+                .proceed(true)
+                .updatedEntity(mapCity(cityRepository.save(city)))
+                .build();
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // PINCODE MANAGEMENT
+    // ════════════════════════════════════════════════════════════════
+
+    @Transactional(readOnly = true)
+    public PincodePage searchPincodes(UUID stateId, UUID cityId, Boolean active, String q, int page, int size) {
+        Page<ServiceablePincode> result = pincodeRepository.search(
+                stateId, cityId, active, q, PageRequest.of(page, size));
+        return PincodePage.builder()
+                .content(result.getContent().stream().map(this::mapPincode).collect(Collectors.toList()))
+                .page(result.getNumber())
+                .size(result.getSize())
+                .totalElements(result.getTotalElements())
+                .totalPages(result.getTotalPages())
+                .build();
+    }
+
+    @Transactional
+    public PincodeResponse createPincode(UUID callerId, CreatePincodeRequest req) {
+        requireAdmin(callerId);
+        return saveSinglePincode(req);
+    }
+
+    @Transactional
+    public List<PincodeResponse> bulkCreatePincodes(UUID callerId, List<CreatePincodeRequest> reqs) {
+        requireAdmin(callerId);
+        return reqs.stream().map(this::saveSinglePincode).collect(Collectors.toList());
+    }
+
+    private PincodeResponse saveSinglePincode(CreatePincodeRequest req) {
+        if (pincodeRepository.findByPincode(req.getPincode()).isPresent()) {
+            throw new IllegalArgumentException("Pincode " + req.getPincode() + " already exists.");
+        }
+
+        City city = cityRepository.findById(req.getCityId())
+                .orElseThrow(() -> new ResourceNotFoundException("City not found: " + req.getCityId()));
+        State state = stateRepository.findById(req.getStateId())
+                .orElseThrow(() -> new ResourceNotFoundException("State not found: " + req.getStateId()));
+
+        // Validate city belongs to the given state
+        if (!city.getState().getStateId().equals(state.getStateId())) {
+            throw new IllegalArgumentException("City " + req.getCityId() + " does not belong to state " + req.getStateId());
+        }
+
+        ServiceablePincode pincode = ServiceablePincode.builder()
+                .pincode(req.getPincode())
+                .city(city)
+                .state(state)
+                .areaName(req.getAreaName())
+                .isActive(req.getIsActive() != null && req.getIsActive())
+                .build();
+
+        return mapPincode(pincodeRepository.save(pincode));
+    }
+
+    @Transactional
+    public Object updatePincode(UUID callerId, UUID pincodeId, UpdatePincodeRequest req, boolean confirm) {
+        requireAdmin(callerId);
+
+        ServiceablePincode pin = pincodeRepository.findById(pincodeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Pincode not found: " + pincodeId));
+
+        if (req.getIsActive() != null && !req.getIsActive() && Boolean.TRUE.equals(pin.getIsActive())) {
+            long affected = countUpcomingBookingsForPincode(pin.getPincode());
+            if (affected > 0 && !confirm) {
+                return DeactivationWarningResponse.builder()
+                        .warning(true)
+                        .affectedUpcomingBookings(affected)
+                        .message("Disabling pincode " + pin.getPincode() + " will block new bookings but will not cancel "
+                                + affected + " existing upcoming bookings.")
+                        .proceed(false)
+                        .build();
+            }
+        }
+
+        if (req.getAreaName() != null) pin.setAreaName(req.getAreaName());
+        if (req.getIsActive() != null) pin.setIsActive(req.getIsActive());
+
+        return DeactivationWarningResponse.builder()
+                .warning(false)
+                .proceed(true)
+                .updatedEntity(mapPincode(pincodeRepository.save(pin)))
+                .build();
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // CUSTOMER SERVICEABILITY CHECK
+    // ════════════════════════════════════════════════════════════════
+
+    /**
+     * Public — no authentication required. Returns a safe response that never
+     * exposes internal IDs or administrative state to the customer.
+     */
+    @Transactional(readOnly = true)
+    public ServiceabilityResponse checkServiceability(String rawPincode) {
+        if (rawPincode == null || !rawPincode.matches("^[0-9]{6}$")) {
+            return ServiceabilityResponse.builder()
+                    .serviceable(false)
+                    .pincode(rawPincode)
+                    .message("Sorry, FirstDoor is not available in your area yet.")
+                    .build();
+        }
+
+        return pincodeRepository.findByPincode(rawPincode)
+                .map(pin -> {
+                    boolean fullChainActive = Boolean.TRUE.equals(pin.getIsActive())
+                            && Boolean.TRUE.equals(pin.getCity().getIsActive())
+                            && Boolean.TRUE.equals(pin.getState().getIsActive());
+
+                    if (fullChainActive) {
+                        return ServiceabilityResponse.builder()
+                                .serviceable(true)
+                                .pincode(rawPincode)
+                                .city(pin.getCity().getName())
+                                .state(pin.getState().getName())
+                                .areaName(pin.getAreaName())
+                                .message("Great! FirstDoor services are available in your area.")
+                                .build();
+                    } else {
+                        return ServiceabilityResponse.builder()
+                                .serviceable(false)
+                                .pincode(rawPincode)
+                                .message("Sorry, FirstDoor is not available in your area yet.")
+                                .build();
+                    }
+                })
+                .orElse(ServiceabilityResponse.builder()
+                        .serviceable(false)
+                        .pincode(rawPincode)
+                        .message("Sorry, FirstDoor is not available in your area yet.")
+                        .build());
+    }
+
+    /**
+     * Booking enforcement gate — throws ServiceabilityException (HTTP 422) if
+     * the pincode is unknown, inactive, or under an inactive city / state.
+     * Called inside BookingStateMachine.createBooking() within the same transaction.
+     */
+    @Transactional(readOnly = true)
+    public void assertServiceable(String rawPincode) {
+        if (rawPincode == null || rawPincode.isBlank() || !rawPincode.trim().matches("^[0-9]{6}$")) {
+            throw new ServiceabilityException(
+                    "Sorry, FirstDoor is not available in your area yet. A valid 6-digit serviceable pincode is required.");
+        }
+
+        ServiceablePincode pin = pincodeRepository.findByPincode(rawPincode.trim())
+                .orElseThrow(() -> new ServiceabilityException(
+                        "Sorry, FirstDoor is not available in your area yet. Pincode: " + rawPincode.trim()));
+
+        if (!Boolean.TRUE.equals(pin.getIsActive())) {
+            throw new ServiceabilityException(
+                    "Sorry, FirstDoor is not available in your area yet. Pincode: " + rawPincode.trim());
+        }
+        if (!Boolean.TRUE.equals(pin.getCity().getIsActive())) {
+            throw new ServiceabilityException(
+                    "Sorry, FirstDoor is not currently available in " + pin.getCity().getName() + ".");
+        }
+        if (!Boolean.TRUE.equals(pin.getState().getIsActive())) {
+            throw new ServiceabilityException(
+                    "Sorry, FirstDoor is not currently available in " + pin.getState().getName() + ".");
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // DEACTIVATION IMPACT HELPERS
+    // ════════════════════════════════════════════════════════════════
+
+    private long countUpcomingBookingsForPincode(String pincode) {
+        // Count bookings that are SEARCHING or ACCEPTED with scheduledAt in the future.
+        // We don't have pincode on booking; we approximate via lat/lng area match.
+        // As a safe over-estimate we count all non-terminal scheduled bookings.
+        return bookingRepository.findByStatus(BookingStage.SEARCHING).size()
+             + bookingRepository.findByStatus(BookingStage.ACCEPTED).size();
+    }
+
+    private long countUpcomingBookingsForCity(UUID cityId) {
+        return countUpcomingBookingsForPincode(null); // same safe over-estimate
+    }
+
+    private long countUpcomingBookingsForState(UUID stateId) {
+        return countUpcomingBookingsForPincode(null);
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // MAPPING HELPERS
+    // ════════════════════════════════════════════════════════════════
+
+    private String normalize(String name) {
+        return name == null ? "" : name.trim().toUpperCase();
+    }
+
+    private StateResponse mapState(State s) {
+        return StateResponse.builder()
+                .stateId(s.getStateId())
+                .name(s.getName())
+                .isActive(s.getIsActive())
+                .cityCount(cityRepository.countByState_StateId(s.getStateId()))
+                .pincodeCount(pincodeRepository.countByState_StateId(s.getStateId()))
+                .createdAt(s.getCreatedAt())
+                .updatedAt(s.getUpdatedAt())
+                .build();
+    }
+
+    private CityResponse mapCity(City c) {
+        return CityResponse.builder()
+                .cityId(c.getCityId())
+                .stateId(c.getState().getStateId())
+                .stateName(c.getState().getName())
+                .name(c.getName())
+                .isActive(c.getIsActive())
+                .pincodeCount(pincodeRepository.countByCity_CityId(c.getCityId()))
+                .createdAt(c.getCreatedAt())
+                .updatedAt(c.getUpdatedAt())
+                .build();
+    }
+
+    private PincodeResponse mapPincode(ServiceablePincode p) {
+        return PincodeResponse.builder()
+                .pincodeId(p.getPincodeId())
+                .pincode(p.getPincode())
+                .cityId(p.getCity().getCityId())
+                .cityName(p.getCity().getName())
+                .stateId(p.getState().getStateId())
+                .stateName(p.getState().getName())
+                .areaName(p.getAreaName())
+                .isActive(p.getIsActive())
+                .createdAt(p.getCreatedAt())
+                .updatedAt(p.getUpdatedAt())
+                .build();
+    }
+}

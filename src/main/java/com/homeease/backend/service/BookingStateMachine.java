@@ -2,9 +2,11 @@ package com.homeease.backend.service;
 
 import com.homeease.backend.dto.BookingDto.*;
 import com.homeease.backend.dto.CatalogDto;
+import com.homeease.backend.exception.DuplicateBookingException;
 import com.homeease.backend.model.entity.*;
 import com.homeease.backend.model.enums.*;
 import com.homeease.backend.repository.*;
+import com.homeease.backend.service.ServiceAreaService;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.Point;
@@ -16,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -39,6 +42,7 @@ public class BookingStateMachine {
     private final org.springframework.data.redis.core.RedisTemplate<String, String> redisTemplate;
     private final org.springframework.messaging.simp.SimpMessagingTemplate messagingTemplate;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+    private final ServiceAreaService serviceAreaService;
 
     private final GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
 
@@ -57,7 +61,8 @@ public class BookingStateMachine {
                                FcmNotificationService fcmNotificationService,
                                org.springframework.data.redis.core.RedisTemplate<String, String> redisTemplate,
                                org.springframework.messaging.simp.SimpMessagingTemplate messagingTemplate,
-                               com.fasterxml.jackson.databind.ObjectMapper objectMapper) {
+                               com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+                               ServiceAreaService serviceAreaService) {
         this.bookingRepository = bookingRepository;
         this.userRepository = userRepository;
         this.serviceRepository = serviceRepository;
@@ -74,12 +79,47 @@ public class BookingStateMachine {
         this.redisTemplate = redisTemplate;
         this.messagingTemplate = messagingTemplate;
         this.objectMapper = objectMapper;
+        this.serviceAreaService = serviceAreaService;
     }
 
     @Transactional
-    public BookingResponse createBooking(UUID userId, CreateBookingRequest request) {
+    public BookingResponse createBooking(UUID userId, String idempotencyKey, CreateBookingRequest request) {
+        // P0-2: Idempotency guard — return the existing booking if this key was already processed.
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            bookingRepository.findByIdempotencyKey(idempotencyKey.trim())
+                    .ifPresent(existing -> {
+                        throw new DuplicateBookingException(existing.getBookingId());
+                    });
+        }
+
+        // P0-4: Business rule — bookings must be scheduled at least 30 minutes from now.
+        Instant minimumScheduledAt = Instant.now().plus(30, ChronoUnit.MINUTES);
+        if (request.getScheduledAt().isBefore(minimumScheduledAt)) {
+            throw new IllegalArgumentException(
+                    "Bookings must be scheduled at least 30 minutes from now.");
+        }
+
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("User not found"));
+
+        // Friend-booking validation — enforced server-side on every request.
+        // Cannot be bypassed by modifying the client payload because the
+        // DB query inside assertServiceable() always re-runs in this transaction.
+        if (Boolean.TRUE.equals(request.getIsForFriend())) {
+            if (request.getRecipientName() == null || request.getRecipientName().isBlank()) {
+                throw new IllegalArgumentException(
+                        "Recipient name is required when booking for a friend.");
+            }
+            if (request.getRecipientPhone() == null || request.getRecipientPhone().isBlank()) {
+                throw new IllegalArgumentException(
+                        "Recipient phone number is required when booking for a friend.");
+            }
+        }
+
+        // Serviceability gate — revalidated server-side on every booking attempt.
+        // An area deactivated between the customer's address check and this call
+        // is caught here. Throws ServiceabilityException (HTTP 422) on failure.
+        serviceAreaService.assertServiceable(request.getPincode());
 
         ServiceEntity service = serviceRepository.findById(request.getServiceId())
                 .orElseThrow(() -> new RuntimeException("Service vertical not found"));
@@ -151,9 +191,21 @@ public class BookingStateMachine {
                 .totalAmount(totalAmount)
                 .paymentStatus(TransactionState.PENDING)
                 .paymentMethod(request.getPaymentMethod())
+                // V8 — friend / recipient fields
+                .isForFriend(Boolean.TRUE.equals(request.getIsForFriend()))
+                .recipientName(request.getRecipientName())
+                .recipientPhone(request.getRecipientPhone())
+                .recipientAddress(request.getRecipientAddress())
+                .servicePincode(request.getPincode())
                 .build();
 
         booking = bookingRepository.save(booking);
+
+        // P0-2: Persist idempotency key after a successful insert so future retries return early.
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            booking.setIdempotencyKey(idempotencyKey.trim());
+            booking = bookingRepository.save(booking);
+        }
 
         // Save booking line items
         for (SubServiceRequestItem item : request.getSubServices()) {
@@ -191,6 +243,13 @@ public class BookingStateMachine {
     public BookingResponse verifyPinAndStartJob(UUID bookingId, UUID workerUserId, String submittedPin) {
         Booking booking = bookingRepository.findById(bookingId)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found with ID: " + bookingId));
+
+        // P0-3: Verify that the caller is the worker actually assigned to this booking.
+        if (booking.getWorker() == null ||
+                !booking.getWorker().getUser().getUserId().equals(workerUserId)) {
+            throw new SecurityException(
+                    "Worker " + workerUserId + " is not authorised to verify the PIN for booking " + bookingId);
+        }
 
         if (booking.getPinCode() == null || !booking.getPinCode().trim().equals(submittedPin != null ? submittedPin.trim() : "")) {
             throw new InvalidPinException("Invalid 4-digit verification PIN entered by worker.");
@@ -236,6 +295,13 @@ public class BookingStateMachine {
         Booking booking = bookingRepository.findById(bookingId)
                 .orElseThrow(() -> new RuntimeException("Booking not found"));
 
+        // Auth: only the assigned worker may add extra line items
+        if (booking.getWorker() == null ||
+                !booking.getWorker().getUser().getUserId().equals(workerUserId)) {
+            throw new SecurityException(
+                    "Worker " + workerUserId + " is not authorised to add line items to booking " + bookingId);
+        }
+
         if (booking.getStatus() != BookingStage.IN_PROGRESS) {
             throw new RuntimeException("Extra line items can only be added while job is IN_PROGRESS");
         }
@@ -265,6 +331,13 @@ public class BookingStateMachine {
     public BookingResponse completeJob(UUID bookingId, UUID workerUserId) {
         Booking booking = bookingRepository.findById(bookingId)
                 .orElseThrow(() -> new RuntimeException("Booking not found"));
+
+        // Auth: only the assigned worker may mark the job complete
+        if (booking.getWorker() == null ||
+                !booking.getWorker().getUser().getUserId().equals(workerUserId)) {
+            throw new SecurityException(
+                    "Worker " + workerUserId + " is not authorised to complete booking " + bookingId);
+        }
 
         booking.setStatus(BookingStage.COMPLETED);
         booking.setCompletedAt(Instant.now());
@@ -308,6 +381,15 @@ public class BookingStateMachine {
     public BookingResponse cancelBooking(UUID bookingId, UUID userId, String reason) {
         Booking booking = bookingRepository.findById(bookingId)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found with ID: " + bookingId));
+
+        // Auth: only the booking's customer or the assigned worker may cancel
+        boolean isOwner   = booking.getUser().getUserId().equals(userId);
+        boolean isWorker  = booking.getWorker() != null &&
+                booking.getWorker().getUser().getUserId().equals(userId);
+        if (!isOwner && !isWorker) {
+            throw new SecurityException(
+                    "User " + userId + " is not authorised to cancel booking " + bookingId);
+        }
 
         if (booking.getStatus() == BookingStage.COMPLETED) {
             throw new RuntimeException("Completed booking cannot be cancelled");
@@ -387,6 +469,12 @@ public class BookingStateMachine {
                 .paymentStatus(booking.getPaymentStatus())
                 .paymentMethod(booking.getPaymentMethod())
                 .createdAt(booking.getCreatedAt())
+                // V8 — friend / recipient fields
+                .isForFriend(booking.getIsForFriend())
+                .recipientName(booking.getRecipientName())
+                .recipientPhone(booking.getRecipientPhone())
+                .recipientAddress(booking.getRecipientAddress())
+                .servicePincode(booking.getServicePincode())
                 .build();
     }
 }

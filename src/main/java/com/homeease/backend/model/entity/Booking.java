@@ -101,4 +101,46 @@ public class Booking {
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
+
+    /**
+     * P0-2 — Optional client-supplied idempotency key (max 64 chars).
+     * When provided, a duplicate request with the same key returns the
+     * existing booking instead of inserting a new row.
+     */
+    @Column(name = "idempotency_key", unique = true, length = 64)
+    private String idempotencyKey;
+
+    // ─── Friend / third-party booking fields (V8) ────────────────────
+
+    /**
+     * TRUE when the logged-in customer is booking on behalf of another
+     * person (friend, family member, etc.). Defaults to FALSE so all
+     * existing self-booking rows are unaffected.
+     */
+    @Column(name = "is_for_friend", nullable = false)
+    @Builder.Default
+    private Boolean isForFriend = false;
+
+    /** Full name of the service recipient. Null for self-bookings. */
+    @Column(name = "recipient_name", length = 100)
+    private String recipientName;
+
+    /** Mobile number of the service recipient. Null for self-bookings. */
+    @Column(name = "recipient_phone", length = 20)
+    private String recipientPhone;
+
+    /**
+     * Human-readable service address of the recipient
+     * (e.g. "Flat 4B, Banjara Hills, Hyderabad"). Null for self-bookings.
+     */
+    @Column(name = "recipient_address", columnDefinition = "TEXT")
+    private String recipientAddress;
+
+    /**
+     * 6-digit service-area pincode validated by assertServiceable() at
+     * booking-creation time. Null for bookings created before the V8
+     * migration (backward compatible).
+     */
+    @Column(name = "service_pincode", length = 6)
+    private String servicePincode;
 }

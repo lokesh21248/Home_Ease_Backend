@@ -240,3 +240,123 @@ export const updateBookingStatusByAdmin = (bookingId, status, adminUserId) =>
   });
 
 
+// ==========================================
+// 11. Service Area Management
+// ==========================================
+
+/** GET /admin/service-areas — overview stats + all states */
+export const getServiceAreaOverview = () =>
+  adminClient.get('/admin/service-areas');
+
+// --- States ---
+
+/** GET /admin/service-areas/states */
+export const getStates = () =>
+  adminClient.get('/admin/service-areas/states');
+
+/**
+ * POST /admin/service-areas/states
+ * @param {string} adminUserId
+ * @param {{ name: string, isActive?: boolean }} body
+ */
+export const createState = (adminUserId, body) =>
+  adminClient.post('/admin/service-areas/states', body, {
+    headers: { 'X-User-Id': adminUserId },
+  });
+
+/**
+ * PUT /admin/service-areas/states/:id
+ * Pass confirm=true to proceed past the deactivation warning.
+ * @param {string} adminUserId
+ * @param {string} stateId
+ * @param {{ name?: string, isActive?: boolean }} body
+ * @param {boolean} confirm
+ */
+export const updateState = (adminUserId, stateId, body, confirm = false) =>
+  adminClient.put(`/admin/service-areas/states/${stateId}?confirm=${confirm}`, body, {
+    headers: { 'X-User-Id': adminUserId },
+  });
+
+// --- Cities ---
+
+/**
+ * GET /admin/service-areas/cities
+ * @param {string|null} stateId  optional filter
+ */
+export const getCities = (stateId = null) =>
+  adminClient.get('/admin/service-areas/cities', {
+    params: stateId ? { stateId } : {},
+  });
+
+/**
+ * POST /admin/service-areas/cities
+ * @param {string} adminUserId
+ * @param {{ stateId: string, name: string, isActive?: boolean }} body
+ */
+export const createCity = (adminUserId, body) =>
+  adminClient.post('/admin/service-areas/cities', body, {
+    headers: { 'X-User-Id': adminUserId },
+  });
+
+/**
+ * PUT /admin/service-areas/cities/:id
+ * @param {string} adminUserId
+ * @param {string} cityId
+ * @param {{ name?: string, isActive?: boolean }} body
+ * @param {boolean} confirm
+ */
+export const updateCity = (adminUserId, cityId, body, confirm = false) =>
+  adminClient.put(`/admin/service-areas/cities/${cityId}?confirm=${confirm}`, body, {
+    headers: { 'X-User-Id': adminUserId },
+  });
+
+// --- Pincodes ---
+
+/**
+ * GET /admin/service-areas/pincodes
+ * @param {{ stateId?, cityId?, active?, q?, page?, size? }} params
+ */
+export const getPincodes = (params = {}) =>
+  adminClient.get('/admin/service-areas/pincodes', { params });
+
+/**
+ * POST /admin/service-areas/pincodes
+ * @param {string} adminUserId
+ * @param {{ pincode: string, cityId: string, stateId: string, areaName?: string, isActive?: boolean }} body
+ */
+export const createPincode = (adminUserId, body) =>
+  adminClient.post('/admin/service-areas/pincodes', body, {
+    headers: { 'X-User-Id': adminUserId },
+  });
+
+/**
+ * POST /admin/service-areas/pincodes/bulk
+ * @param {string} adminUserId
+ * @param {Array<{ pincode, cityId, stateId, areaName?, isActive? }>} list
+ */
+export const bulkCreatePincodes = (adminUserId, list) =>
+  adminClient.post('/admin/service-areas/pincodes/bulk', list, {
+    headers: { 'X-User-Id': adminUserId },
+  });
+
+/**
+ * PUT /admin/service-areas/pincodes/:id
+ * @param {string} adminUserId
+ * @param {string} pincodeId
+ * @param {{ areaName?: string, isActive?: boolean }} body
+ * @param {boolean} confirm  set true to proceed past deactivation warning
+ */
+export const updatePincode = (adminUserId, pincodeId, body, confirm = false) =>
+  adminClient.put(`/admin/service-areas/pincodes/${pincodeId}?confirm=${confirm}`, body, {
+    headers: { 'X-User-Id': adminUserId },
+  });
+
+// --- Public Customer Check (no auth) ---
+
+/**
+ * GET /serviceability/check?pincode=XXXXXX
+ * Does NOT use adminClient — this is a public endpoint.
+ * @param {string} pincode  6-digit Indian pincode
+ */
+export const checkServiceability = (pincode) =>
+  axios.get(`${MONOLITH_BASE_URL}/serviceability/check`, { params: { pincode } });

@@ -26,8 +26,9 @@ public class BookingController {
     @PostMapping("/bookings")
     public ResponseEntity<BookingResponse> createBooking(
             @RequestHeader("X-User-Id") UUID userId,
+            @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyKey,
             @Valid @RequestBody CreateBookingRequest request) {
-        return ResponseEntity.ok(bookingStateMachine.createBooking(userId, request));
+        return ResponseEntity.ok(bookingStateMachine.createBooking(userId, idempotencyKey, request));
     }
 
     @GetMapping("/bookings/my-bookings")

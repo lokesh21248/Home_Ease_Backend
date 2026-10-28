@@ -105,7 +105,10 @@ public class DispatchEngine {
 
     @Transactional
     public Booking handleWorkerAcceptance(UUID bookingId, UUID workerUserId) {
-        Booking booking = bookingRepository.findById(bookingId)
+        // P0-1: Pessimistic write lock — SELECT ... FOR UPDATE ensures only one concurrent
+        // worker acceptance wins. The second caller blocks here, then re-reads ACCEPTED
+        // and falls through to the status check below.
+        Booking booking = bookingRepository.findByIdForUpdate(bookingId)
                 .orElseThrow(() -> new RuntimeException("Booking not found"));
 
         if (booking.getStatus() != BookingStage.SEARCHING) {
@@ -168,6 +171,14 @@ public class DispatchEngine {
 
         Worker worker = workerRepository.findByUser_UserId(workerUserId)
                 .orElseThrow(() -> new RuntimeException("Worker profile not found"));
+
+        // Auth: only a worker who was actually dispatched to this booking may reject it.
+        // This prevents a malicious worker from triggering the lockout penalty on another
+        // worker, or causing unnecessary re-dispatch cycles.
+        assignmentAttemptRepository
+                .findByBooking_BookingIdAndWorker_WorkerId(bookingId, worker.getWorkerId())
+                .orElseThrow(() -> new SecurityException(
+                        "Worker " + workerUserId + " was not dispatched to booking " + bookingId));
 
         // Apply 1-Hour Disciplinary Lockout Penalty
         worker.setBlockedUntil(Instant.now().plus(1, ChronoUnit.HOURS));
