@@ -62,6 +62,17 @@ public class BookingController {
         return ResponseEntity.ok(bookingStateMachine.getBookingById(bookingId));
     }
 
+    @GetMapping("/bookings/{id}/history")
+    public ResponseEntity<com.homeease.backend.dto.BookingEventDto.BookingHistoryPage> getBookingHistory(
+            @PathVariable("id") UUID bookingId,
+            @RequestHeader("X-User-Id") UUID userId,
+            @RequestHeader(value = "X-User-Role", required = false) String userRole,
+            @RequestParam(value = "page", defaultValue = "0") int page,
+            @RequestParam(value = "size", defaultValue = "20") int size) {
+        boolean isAdmin = "ADMIN".equalsIgnoreCase(userRole);
+        return ResponseEntity.ok(bookingStateMachine.getBookingHistory(bookingId, userId, isAdmin, page, size));
+    }
+
     @PatchMapping("/bookings/{id}/status")
     public ResponseEntity<BookingResponse> updateBookingStatus(
             @PathVariable("id") UUID bookingId,

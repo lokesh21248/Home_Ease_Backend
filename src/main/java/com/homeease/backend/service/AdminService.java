@@ -24,19 +24,22 @@ public class AdminService {
     private final PaymentRepository paymentRepository;
     private final NotificationRepository notificationRepository;
     private final FcmNotificationService fcmNotificationService;
+    private final BookingDomainEventService domainEventService;
 
     public AdminService(UserRepository userRepository,
                         WorkerRepository workerRepository,
                         BookingRepository bookingRepository,
                         PaymentRepository paymentRepository,
                         NotificationRepository notificationRepository,
-                        FcmNotificationService fcmNotificationService) {
+                        FcmNotificationService fcmNotificationService,
+                        BookingDomainEventService domainEventService) {
         this.userRepository = userRepository;
         this.workerRepository = workerRepository;
         this.bookingRepository = bookingRepository;
         this.paymentRepository = paymentRepository;
         this.notificationRepository = notificationRepository;
         this.fcmNotificationService = fcmNotificationService;
+        this.domainEventService = domainEventService;
     }
 
     @Transactional(readOnly = true)
@@ -125,9 +128,18 @@ public class AdminService {
     public PaymentResponse updatePaymentStatus(UUID paymentId, TransactionState newStatus) {
         Payment payment = paymentRepository.findById(paymentId)
                 .orElseThrow(() -> new RuntimeException("Payment not found"));
+        TransactionState previousStatus = payment.getStatus();
         payment.setStatus(newStatus);
         if (payment.getBooking() != null) {
             payment.getBooking().setPaymentStatus(newStatus);
+            domainEventService.recordEvent(
+                    payment.getBooking(),
+                    BookingEventType.PAYMENT_STATUS_CHANGED,
+                    payment.getBooking().getStatus(),
+                    payment.getBooking().getStatus(),
+                    BookingActorType.ADMIN,
+                    null
+            );
         }
         Payment updated = paymentRepository.save(payment);
         return mapPaymentToResponse(updated);

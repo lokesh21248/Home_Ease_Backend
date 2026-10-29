@@ -52,6 +52,21 @@ spring:
       max-file-size: 10MB
       max-request-size: 10MB
 
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      acks: all
+      retries: 3
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+    consumer:
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+    listener:
+      ack-mode: RECORD
+      auto-startup: ${KAFKA_LISTENER_AUTO_STARTUP:true}
+
 # Supabase Storage (S3-compatible) Configuration
 supabase:
   storage:
@@ -83,6 +98,23 @@ homeease:
       api-key: ${GOOGLE_MAPS_API_KEY:}
   jwt:
     secret: ${JWT_SECRET:404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}
+  kafka:
+    topics:
+      booking-events: ${KAFKA_TOPIC_BOOKING_EVENTS:firstdoor.booking.events.v1}
+      booking-events-dlt: ${KAFKA_TOPIC_BOOKING_EVENTS_DLT:firstdoor.booking.events.DLT}
+      partitions: ${KAFKA_TOPIC_PARTITIONS:3}
+      replication-factor: ${KAFKA_TOPIC_REPLICATION_FACTOR:1}
+    outbox:
+      enabled: ${KAFKA_OUTBOX_ENABLED:true}
+      poll-interval-ms: 500
+      batch-size: 50
+      max-attempts: 5
+      initial-backoff-seconds: 2
+      max-backoff-seconds: 300
+      publish-timeout-seconds: 5
+      cleanup-enabled: true
+      cleanup-cron: "0 0 3 * * ?"
+      retention-days: 7
 
 logging:
   level:

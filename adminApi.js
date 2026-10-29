@@ -360,3 +360,23 @@ export const updatePincode = (adminUserId, pincodeId, body, confirm = false) =>
  */
 export const checkServiceability = (pincode) =>
   axios.get(`${MONOLITH_BASE_URL}/serviceability/check`, { params: { pincode } });
+
+// ==========================================
+// 14. Booking Event History (Audit Trail)
+// ==========================================
+/**
+ * GET /bookings/:id/history
+ * Query immutable audit trail of booking lifecycle events.
+ * @param {string} bookingId
+ * @param {string} adminUserId
+ * @param {{ page?: number, size?: number }} [params]
+ */
+export const getBookingHistory = (bookingId, adminUserId, params = { page: 0, size: 20 }) =>
+  adminClient.get(`/bookings/${bookingId}/history`, {
+    headers: {
+      'X-User-Id': adminUserId,
+      'X-User-Role': 'ADMIN',
+    },
+    params,
+  });
+

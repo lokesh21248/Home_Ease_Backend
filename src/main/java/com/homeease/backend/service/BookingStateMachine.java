@@ -1,6 +1,7 @@
 package com.homeease.backend.service;
 
 import com.homeease.backend.dto.BookingDto.*;
+import com.homeease.backend.dto.BookingEventDto;
 import com.homeease.backend.dto.CatalogDto;
 import com.homeease.backend.exception.DuplicateBookingException;
 import com.homeease.backend.model.entity.*;
@@ -43,6 +44,8 @@ public class BookingStateMachine {
     private final org.springframework.messaging.simp.SimpMessagingTemplate messagingTemplate;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
     private final ServiceAreaService serviceAreaService;
+    private final BookingDomainEventService domainEventService;
+    private final BookingEventHistoryRepository historyRepository;
 
     private final GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
 
@@ -62,7 +65,9 @@ public class BookingStateMachine {
                                org.springframework.data.redis.core.RedisTemplate<String, String> redisTemplate,
                                org.springframework.messaging.simp.SimpMessagingTemplate messagingTemplate,
                                com.fasterxml.jackson.databind.ObjectMapper objectMapper,
-                               ServiceAreaService serviceAreaService) {
+                               ServiceAreaService serviceAreaService,
+                               BookingDomainEventService domainEventService,
+                               BookingEventHistoryRepository historyRepository) {
         this.bookingRepository = bookingRepository;
         this.userRepository = userRepository;
         this.serviceRepository = serviceRepository;
@@ -80,6 +85,8 @@ public class BookingStateMachine {
         this.messagingTemplate = messagingTemplate;
         this.objectMapper = objectMapper;
         this.serviceAreaService = serviceAreaService;
+        this.domainEventService = domainEventService;
+        this.historyRepository = historyRepository;
     }
 
     @Transactional
@@ -236,6 +243,19 @@ public class BookingStateMachine {
         // Trigger spatial candidate dispatch engine
         dispatchEngine.triggerSpatialDispatch(booking, firstSubServiceId);
 
+        // Record authoritative domain event & outbox
+        domainEventService.recordEvent(
+                booking,
+                BookingEventType.BOOKING_CREATED,
+                null,
+                BookingStage.SEARCHING,
+                BookingActorType.CUSTOMER,
+                userId,
+                idempotencyKey,
+                null,
+                null
+        );
+
         return mapToBookingResponse(booking);
     }
 
@@ -258,6 +278,16 @@ public class BookingStateMachine {
         booking.setStatus(BookingStage.IN_PROGRESS);
         booking.setStartedAt(Instant.now());
         bookingRepository.save(booking);
+
+        // Record authoritative domain event & outbox
+        domainEventService.recordEvent(
+                booking,
+                BookingEventType.JOB_STARTED,
+                BookingStage.ACCEPTED,
+                BookingStage.IN_PROGRESS,
+                BookingActorType.WORKER,
+                workerUserId
+        );
 
         fcmNotificationService.sendPushNotification(
                 booking.getUser().getUserId(),
@@ -324,6 +354,19 @@ public class BookingStateMachine {
         booking.setTotalAmount(booking.getBaseAmount().add(booking.getExtraAmount()).subtract(booking.getDiscountAmount()));
         bookingRepository.save(booking);
 
+        // Record authoritative domain event & outbox
+        domainEventService.recordEvent(
+                booking,
+                BookingEventType.EXTRA_SERVICE_ADDED,
+                BookingStage.IN_PROGRESS,
+                BookingStage.IN_PROGRESS,
+                BookingActorType.WORKER,
+                workerUserId,
+                null,
+                request.getSubServiceId(),
+                request.getQuantity()
+        );
+
         return mapToBookingResponse(booking);
     }
 
@@ -343,6 +386,24 @@ public class BookingStateMachine {
         booking.setCompletedAt(Instant.now());
         booking.setPaymentStatus(TransactionState.SUCCESS);
         bookingRepository.save(booking);
+
+        // Record authoritative domain events
+        domainEventService.recordEvent(
+                booking,
+                BookingEventType.JOB_COMPLETED,
+                BookingStage.IN_PROGRESS,
+                BookingStage.COMPLETED,
+                BookingActorType.WORKER,
+                workerUserId
+        );
+        domainEventService.recordEvent(
+                booking,
+                BookingEventType.PAYMENT_STATUS_CHANGED,
+                BookingStage.COMPLETED,
+                BookingStage.COMPLETED,
+                BookingActorType.WORKER,
+                workerUserId
+        );
 
         // Execute billing & platform 2% commission settlement
         billingEngine.calculateAndPersistSettlement(booking);
@@ -395,8 +456,20 @@ public class BookingStateMachine {
             throw new RuntimeException("Completed booking cannot be cancelled");
         }
 
+        BookingStage prevStage = booking.getStatus();
         booking.setStatus(BookingStage.CANCELLED);
         bookingRepository.save(booking);
+
+        // Record authoritative domain event & outbox
+        BookingActorType actorType = isOwner ? BookingActorType.CUSTOMER : BookingActorType.WORKER;
+        domainEventService.recordEvent(
+                booking,
+                BookingEventType.BOOKING_CANCELLED,
+                prevStage,
+                BookingStage.CANCELLED,
+                actorType,
+                userId
+        );
 
         // Stop live tracking: evict coordinates from Redis and broadcast cancellation event
         try {
@@ -442,6 +515,44 @@ public class BookingStateMachine {
         Booking booking = bookingRepository.findById(bookingId)
                 .orElseThrow(() -> new RuntimeException("Booking not found"));
         return mapToBookingResponse(booking);
+    }
+
+    /**
+     * Authenticated, paginated history query for customer and admin audit.
+     * Enforces booking ownership and admin authorization.
+     */
+    @Transactional(readOnly = true)
+    public BookingEventDto.BookingHistoryPage getBookingHistory(UUID bookingId, UUID requestingUserId, boolean isAdmin, int page, int size) {
+        Booking booking = bookingRepository.findById(bookingId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found with ID: " + bookingId));
+
+        boolean isOwner = booking.getUser().getUserId().equals(requestingUserId);
+        if (!isAdmin && !isOwner) {
+            throw new SecurityException("User " + requestingUserId + " is not authorised to view history for booking " + bookingId);
+        }
+
+        var pageRequest = org.springframework.data.domain.PageRequest.of(Math.max(0, page), Math.min(100, Math.max(1, size)));
+        var historyPage = historyRepository.findByBookingIdOrderByOccurredAtAsc(bookingId, pageRequest);
+
+        var items = historyPage.getContent().stream()
+                .map(h -> BookingEventDto.BookingHistoryItem.builder()
+                        .eventId(h.getEventId())
+                        .eventType(h.getEventType())
+                        .previousStatus(h.getPreviousStatus())
+                        .newStatus(h.getNewStatus())
+                        .actorType(h.getActorType())
+                        .occurredAt(h.getOccurredAt())
+                        .correlationId(isAdmin ? h.getCorrelationId() : null)
+                        .build())
+                .collect(Collectors.toList());
+
+        return BookingEventDto.BookingHistoryPage.builder()
+                .content(items)
+                .page(historyPage.getNumber())
+                .size(historyPage.getSize())
+                .totalElements(historyPage.getTotalElements())
+                .totalPages(historyPage.getTotalPages())
+                .build();
     }
 
     public BookingResponse mapToBookingResponse(Booking booking) {

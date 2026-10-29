@@ -1,6 +1,8 @@
 package com.homeease.backend.service;
 
 import com.homeease.backend.model.entity.*;
+import com.homeease.backend.model.enums.BookingActorType;
+import com.homeease.backend.model.enums.BookingEventType;
 import com.homeease.backend.model.enums.BookingStage;
 import com.homeease.backend.repository.*;
 import org.slf4j.Logger;
@@ -31,6 +33,7 @@ public class DispatchEngine {
     private final RedisTemplate<String, String> redisTemplate;
     private final FcmNotificationService fcmNotificationService;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+    private final BookingDomainEventService domainEventService;
 
     @Value("${homeease.dispatch.radius-meters:5000}")
     private double radiusMeters;
@@ -40,13 +43,15 @@ public class DispatchEngine {
                           AssignmentAttemptRepository assignmentAttemptRepository,
                           RedisTemplate<String, String> redisTemplate,
                           FcmNotificationService fcmNotificationService,
-                          com.fasterxml.jackson.databind.ObjectMapper objectMapper) {
+                          com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+                          BookingDomainEventService domainEventService) {
         this.workerRepository = workerRepository;
         this.bookingRepository = bookingRepository;
         this.assignmentAttemptRepository = assignmentAttemptRepository;
         this.redisTemplate = redisTemplate;
         this.fcmNotificationService = fcmNotificationService;
         this.objectMapper = objectMapper;
+        this.domainEventService = domainEventService;
     }
 
     @Transactional
@@ -83,6 +88,15 @@ public class DispatchEngine {
             logger.warn("No available candidate workers found within 5km for booking {}", booking.getBookingId());
             booking.setStatus(BookingStage.WORKER_NOT_FOUND);
             bookingRepository.save(booking);
+
+            domainEventService.recordEvent(
+                    booking,
+                    BookingEventType.DISPATCH_UNSUCCESSFUL,
+                    BookingStage.SEARCHING,
+                    BookingStage.WORKER_NOT_FOUND,
+                    BookingActorType.SYSTEM,
+                    null
+            );
             return;
         }
 
@@ -125,6 +139,16 @@ public class DispatchEngine {
         booking.setStatus(BookingStage.ACCEPTED);
         booking.setPinCode(pinCode);
         bookingRepository.save(booking);
+
+        // Record authoritative domain event
+        domainEventService.recordEvent(
+                booking,
+                BookingEventType.PARTNER_ACCEPTED,
+                BookingStage.SEARCHING,
+                BookingStage.ACCEPTED,
+                BookingActorType.WORKER,
+                worker.getUser() != null ? worker.getUser().getUserId() : workerUserId
+        );
 
         // Record attempt acceptance
         assignmentAttemptRepository.findByBooking_BookingIdAndWorker_WorkerId(bookingId, worker.getWorkerId())

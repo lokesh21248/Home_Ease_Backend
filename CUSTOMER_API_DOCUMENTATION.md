@@ -454,3 +454,53 @@ The PostgreSQL database strictly requires **36-character standard UUIDs** for al
   * `IN_PROGRESS`: Worker verified PIN and service is active.
   * `COMPLETED`: Work finished; payment settled.
   * `CANCELLED`: Booking was cancelled.
+
+---
+
+### 5.4 Booking Event History (Audit Trail)
+* **Method & Route**: `GET /bookings/{bookingId}/history?page=0&size=20`
+* **Headers**: `X-User-Id: <userId>`
+* **Description**: Returns the authoritative, immutable audit history of state transitions for this booking. Customers can only view their own bookings.
+* **Response (`200 OK`)**:
+  ```json
+  {
+    "content": [
+      {
+        "eventId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "eventType": "BOOKING_CREATED",
+        "previousStatus": null,
+        "newStatus": "SEARCHING",
+        "actorType": "CUSTOMER",
+        "occurredAt": "2026-10-06T09:30:00Z"
+      },
+      {
+        "eventId": "4ba96g75-6828-5673-c4gd-3d074g77bgb7",
+        "eventType": "PARTNER_ACCEPTED",
+        "previousStatus": "SEARCHING",
+        "newStatus": "ACCEPTED",
+        "actorType": "WORKER",
+        "occurredAt": "2026-10-06T09:32:15Z"
+      },
+      {
+        "eventId": "5cb07h86-7939-6784-d5he-4e185h88chc8",
+        "eventType": "JOB_STARTED",
+        "previousStatus": "ACCEPTED",
+        "newStatus": "IN_PROGRESS",
+        "actorType": "WORKER",
+        "occurredAt": "2026-10-06T09:45:00Z"
+      },
+      {
+        "eventId": "6dc18i97-8040-7895-e6if-5f296i99did9",
+        "eventType": "JOB_COMPLETED",
+        "previousStatus": "IN_PROGRESS",
+        "newStatus": "COMPLETED",
+        "actorType": "WORKER",
+        "occurredAt": "2026-10-06T11:15:00Z"
+      }
+    ],
+    "page": 0,
+    "size": 20,
+    "totalElements": 4,
+    "totalPages": 1
+  }
+  ```
