@@ -38,11 +38,34 @@ public class GeoService {
         }
     }
 
+    private static class GeoCacheEntry {
+        final Map<String, Object> data;
+        final long expiresAt;
+
+        GeoCacheEntry(Map<String, Object> data, long ttlMillis) {
+            this.data = data;
+            this.expiresAt = System.currentTimeMillis() + ttlMillis;
+        }
+
+        boolean isExpired() {
+            return System.currentTimeMillis() > expiresAt;
+        }
+    }
+
     private final Map<String, RouteCacheEntry> routeCache = Collections.synchronizedMap(
             new LinkedHashMap<>(128, 0.75f, true) {
                 @Override
                 protected boolean removeEldestEntry(Map.Entry<String, RouteCacheEntry> eldest) {
                     return size() > 100;
+                }
+            }
+    );
+
+    private final Map<String, GeoCacheEntry> reverseGeocodeCache = Collections.synchronizedMap(
+            new LinkedHashMap<>(256, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, GeoCacheEntry> eldest) {
+                    return size() > 250;
                 }
             }
     );
@@ -220,13 +243,24 @@ public class GeoService {
             return Collections.emptyMap();
         }
 
+        // Bounded spatial cache: quantized to 4 decimal places (~11m bucket) with 24-hr TTL
+        String cacheKey = String.format(Locale.US, "%.4f,%.4f", lat, lon);
+        GeoCacheEntry cached = reverseGeocodeCache.get(cacheKey);
+        if (cached != null && !cached.isExpired()) {
+            return cached.data;
+        }
+
         String googleKey = getEffectiveGoogleMapsKey();
         if (googleKey.isBlank()) {
             logger.warn("Google Maps API key not configured for reverse geocoding");
             return Collections.emptyMap();
         }
 
-        return reverseGeocodeGoogle(lat, lon, googleKey);
+        Map<String, Object> result = reverseGeocodeGoogle(lat, lon, googleKey);
+        if (result != null && !result.isEmpty()) {
+            reverseGeocodeCache.put(cacheKey, new GeoCacheEntry(result, 86_400_000L)); // 24 hours
+        }
+        return result;
     }
 
     private Map<String, Object> reverseGeocodeGoogle(double lat, double lon, String key) {
@@ -249,7 +283,14 @@ public class GeoService {
                         map.put("displayName", firstResult.path("formatted_address").asText(""));
                         map.put("lat", firstResult.path("geometry").path("location").path("lat").asDouble());
                         map.put("lon", firstResult.path("geometry").path("location").path("lng").asDouble());
-                        map.put("address", parseGoogleAddressComponents(firstResult.path("address_components")));
+                        Map<String, Object> addrMap = parseGoogleAddressComponents(firstResult.path("address_components"));
+                        map.put("address", addrMap);
+                        map.put("pincode", addrMap.getOrDefault("pincode", addrMap.get("postcode")));
+                        map.put("city", addrMap.get("city"));
+                        map.put("state", addrMap.get("state"));
+                        map.put("area", addrMap.getOrDefault("suburb", addrMap.get("city")));
+                        map.put("houseNumber", addrMap.get("houseNumber"));
+                        map.put("street", addrMap.get("road"));
                         return map;
                     }
                 } else {
