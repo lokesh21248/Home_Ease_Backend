@@ -79,11 +79,9 @@ public class ServiceAreaDto {
         @NotBlank(message = "Pincode is required")
         @Pattern(regexp = "^[0-9]{6}$", message = "Pincode must be exactly 6 digits")
         private String pincode;
-        @NotNull(message = "City ID is required")
-        private UUID   cityId;
-        @NotNull(message = "State ID is required")
-        private UUID   stateId;
-        private String  areaName;
+        private UUID   cityId;     // Optional metadata for future expansion
+        private UUID   stateId;    // Optional metadata for future expansion
+        private String areaName;   // Locality name (multiple localities can share the same PIN code)
         private Boolean isActive;
     }
 
@@ -148,10 +146,12 @@ public class ServiceAreaDto {
     public static class ServiceabilityResponse {
         private boolean serviceable;
         private String  pincode;
-        private String  city;     // null if not found
-        private String  state;    // null if not found
-        /** Human-readable locality label (e.g. "Banjara Hills"); null if not configured. */
+        private String  city;     // Optional metadata; null if not configured
+        private String  state;    // Optional metadata; null if not configured
+        /** Human-readable locality label; joined if multiple localities. */
         private String  areaName;
+        /** List of all localities associated with this PIN code. */
+        private List<String> localities;
         private String  message;
     }
 

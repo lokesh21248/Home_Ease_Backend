@@ -29,31 +29,30 @@ public class ServiceablePincode {
     /**
      * Indian 6-digit pincode stored as VARCHAR — preserves leading zeros
      * and matches the DB CHECK constraint '^[0-9]{6}$'.
+     * Multiple localities can be associated with the same pincode.
      */
-    @Column(name = "pincode", nullable = false, length = 6, unique = true)
+    @Column(name = "pincode", nullable = false, length = 6)
     private String pincode;
 
-    /** Parent city. ON DELETE RESTRICT. */
+    /** Optional parent city for metadata / future expansion. */
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "city_id", nullable = false)
+    @JoinColumn(name = "city_id", nullable = true)
     private City city;
 
     /**
-     * Denormalized state FK — allows single-table serviceability check
-     * without an extra JOIN.
+     * Optional state FK for metadata / future expansion.
      */
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "state_id", nullable = false)
+    @JoinColumn(name = "state_id", nullable = true)
     private State state;
 
-    /** Optional human-readable area label (e.g. "Banjara Hills"). */
+    /** Optional human-readable locality / area label (e.g. "Banjara Hills"). */
     @Column(name = "area_name", length = 150)
     private String areaName;
 
     /**
-     * A pincode is serviceable only when this flag AND city.isActive AND
-     * state.isActive are all true. Defaults to FALSE — must be explicitly
-     * activated by the admin.
+     * Serviceability is determined directly by this flag for the pincode.
+     * Defaults to FALSE — must be explicitly activated by the admin.
      */
     @Column(name = "is_active", nullable = false)
     @Builder.Default

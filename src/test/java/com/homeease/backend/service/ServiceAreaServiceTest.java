@@ -204,7 +204,7 @@ class ServiceAreaServiceTest {
                 .build();
 
         when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
-        when(pincodeRepository.findByPincode("500072")).thenReturn(Optional.empty());
+        when(pincodeRepository.findAllByPincode("500072")).thenReturn(Collections.emptyList());
         when(cityRepository.findById(hyderabadCity.getCityId())).thenReturn(Optional.of(hyderabadCity)); // in Telangana
         when(stateRepository.findById(karnataka.getStateId())).thenReturn(Optional.of(karnataka)); // Karnataka
 
@@ -217,14 +217,85 @@ class ServiceAreaServiceTest {
         assertThrows(IllegalArgumentException.class, () -> serviceAreaService.createPincode(adminId, req));
     }
 
+    @Test
+    @DisplayName("Pincode creation succeeds with optional city and state omitted")
+    void testCreatePincode_WithoutCityAndState_Success() {
+        when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
+        when(pincodeRepository.findAllByPincode("500072")).thenReturn(Collections.emptyList());
+        when(pincodeRepository.save(any(ServiceablePincode.class))).thenAnswer(i -> {
+            ServiceablePincode saved = i.getArgument(0);
+            saved.setPincodeId(UUID.randomUUID());
+            return saved;
+        });
+
+        CreatePincodeRequest req = CreatePincodeRequest.builder()
+                .pincode("500072")
+                .areaName("Kukatpally")
+                .isActive(true)
+                .build();
+
+        PincodeResponse res = serviceAreaService.createPincode(adminId, req);
+
+        assertNotNull(res);
+        assertEquals("500072", res.getPincode());
+        assertEquals("Kukatpally", res.getAreaName());
+        assertNull(res.getCityId());
+        assertNull(res.getStateId());
+        assertTrue(res.getIsActive());
+    }
+
+    @Test
+    @DisplayName("Multiple localities can be associated with the same PIN code")
+    void testCreatePincode_MultipleLocalitiesSamePincode_Success() {
+        when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
+        // Existing locality Kukatpally exists for 500072
+        when(pincodeRepository.findAllByPincode("500072")).thenReturn(List.of(pincode500072));
+        when(pincodeRepository.save(any(ServiceablePincode.class))).thenAnswer(i -> {
+            ServiceablePincode saved = i.getArgument(0);
+            saved.setPincodeId(UUID.randomUUID());
+            return saved;
+        });
+
+        // Adding a different locality (KPHB Colony) for the same PIN code
+        CreatePincodeRequest req = CreatePincodeRequest.builder()
+                .pincode("500072")
+                .areaName("KPHB Colony")
+                .isActive(true)
+                .build();
+
+        PincodeResponse res = serviceAreaService.createPincode(adminId, req);
+
+        assertNotNull(res);
+        assertEquals("500072", res.getPincode());
+        assertEquals("KPHB Colony", res.getAreaName());
+    }
+
+    @Test
+    @DisplayName("Adding duplicate locality for the same PIN code throws IllegalArgumentException")
+    void testCreatePincode_DuplicateLocality_ThrowsException() {
+        when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
+        // Existing locality Kukatpally exists for 500072
+        when(pincodeRepository.findAllByPincode("500072")).thenReturn(List.of(pincode500072));
+
+        // Adding duplicate (case-insensitive with extra spaces)
+        CreatePincodeRequest req = CreatePincodeRequest.builder()
+                .pincode("500072")
+                .areaName("  kukatpally  ")
+                .build();
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> serviceAreaService.createPincode(adminId, req));
+        assertTrue(ex.getMessage().contains("already exists"));
+    }
+
     // ─────────────────────────────────────────────────────────────────
     // 3. SERVICEABILITY HIERARCHY TESTS
     // ─────────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("Active pincode under active city and state is serviceable")
+    @DisplayName("Active pincode is serviceable and returns metadata and localities")
     void testCheckServiceability_AllActive_ReturnsTrue() {
-        when(pincodeRepository.findByPincode("500072")).thenReturn(Optional.of(pincode500072));
+        when(pincodeRepository.findAllByPincode("500072")).thenReturn(List.of(pincode500072));
 
         ServiceabilityResponse res = serviceAreaService.checkServiceability("500072");
 
@@ -232,6 +303,8 @@ class ServiceAreaServiceTest {
         assertEquals("500072", res.getPincode());
         assertEquals("Hyderabad", res.getCity());
         assertEquals("Telangana", res.getState());
+        assertEquals("Kukatpally", res.getAreaName());
+        assertTrue(res.getLocalities().contains("Kukatpally"));
         assertEquals("Great! FirstDoor services are available in your area.", res.getMessage());
     }
 
@@ -239,7 +312,7 @@ class ServiceAreaServiceTest {
     @DisplayName("Inactive pincode is not serviceable")
     void testCheckServiceability_InactivePincode_ReturnsFalse() {
         pincode500072.setIsActive(false);
-        when(pincodeRepository.findByPincode("500072")).thenReturn(Optional.of(pincode500072));
+        when(pincodeRepository.findAllByPincode("500072")).thenReturn(List.of(pincode500072));
 
         ServiceabilityResponse res = serviceAreaService.checkServiceability("500072");
 
@@ -248,33 +321,45 @@ class ServiceAreaServiceTest {
     }
 
     @Test
-    @DisplayName("Active pincode under inactive city is not serviceable")
-    void testCheckServiceability_InactiveCity_ReturnsFalse() {
+    @DisplayName("Active pincode is serviceable even if city or state is inactive (simplified check)")
+    void testCheckServiceability_ActivePincode_ServiceableRegardlessOfCityState() {
         hyderabadCity.setIsActive(false); // deactivated city
-        when(pincodeRepository.findByPincode("500072")).thenReturn(Optional.of(pincode500072));
+        telanganaState.setIsActive(false); // deactivated state
+        when(pincodeRepository.findAllByPincode("500072")).thenReturn(List.of(pincode500072));
 
         ServiceabilityResponse res = serviceAreaService.checkServiceability("500072");
 
-        assertFalse(res.isServiceable());
-        assertEquals("Sorry, FirstDoor is not available in your area yet.", res.getMessage());
+        assertTrue(res.isServiceable());
+        assertEquals("Great! FirstDoor services are available in your area.", res.getMessage());
     }
 
     @Test
-    @DisplayName("Active pincode under inactive state is not serviceable")
-    void testCheckServiceability_InactiveState_ReturnsFalse() {
-        telanganaState.setIsActive(false); // deactivated state
-        when(pincodeRepository.findByPincode("500072")).thenReturn(Optional.of(pincode500072));
+    @DisplayName("Multiple localities associated with the same PIN code are all returned")
+    void testCheckServiceability_MultipleLocalities_ReturnsAllLocalities() {
+        ServiceablePincode pin2 = ServiceablePincode.builder()
+                .pincodeId(UUID.randomUUID())
+                .pincode("500072")
+                .city(hyderabadCity)
+                .state(telanganaState)
+                .areaName("KPHB Colony")
+                .isActive(true)
+                .build();
+
+        when(pincodeRepository.findAllByPincode("500072")).thenReturn(List.of(pincode500072, pin2));
 
         ServiceabilityResponse res = serviceAreaService.checkServiceability("500072");
 
-        assertFalse(res.isServiceable());
-        assertEquals("Sorry, FirstDoor is not available in your area yet.", res.getMessage());
+        assertTrue(res.isServiceable());
+        assertEquals("500072", res.getPincode());
+        assertEquals(2, res.getLocalities().size());
+        assertTrue(res.getLocalities().contains("Kukatpally"));
+        assertTrue(res.getLocalities().contains("KPHB Colony"));
     }
 
     @Test
     @DisplayName("Unknown pincode returns safe not-serviceable response without leaking internal details")
     void testCheckServiceability_UnknownPincode_ReturnsFalse() {
-        when(pincodeRepository.findByPincode("999999")).thenReturn(Optional.empty());
+        when(pincodeRepository.findAllByPincode("999999")).thenReturn(Collections.emptyList());
 
         ServiceabilityResponse res = serviceAreaService.checkServiceability("999999");
 
@@ -303,9 +388,9 @@ class ServiceAreaServiceTest {
     // ─────────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("assertServiceable passes when full chain is active")
+    @DisplayName("assertServiceable passes when pincode is active")
     void testAssertServiceable_ValidChain_NoException() {
-        when(pincodeRepository.findByPincode("500072")).thenReturn(Optional.of(pincode500072));
+        when(pincodeRepository.findAllByPincode("500072")).thenReturn(List.of(pincode500072));
 
         assertDoesNotThrow(() -> serviceAreaService.assertServiceable("500072"));
     }
@@ -322,7 +407,7 @@ class ServiceAreaServiceTest {
     @DisplayName("assertServiceable throws ServiceabilityException when pincode is inactive")
     void testAssertServiceable_InactivePincode_ThrowsException() {
         pincode500072.setIsActive(false);
-        when(pincodeRepository.findByPincode("500072")).thenReturn(Optional.of(pincode500072));
+        when(pincodeRepository.findAllByPincode("500072")).thenReturn(List.of(pincode500072));
 
         ServiceabilityException ex = assertThrows(ServiceabilityException.class,
                 () -> serviceAreaService.assertServiceable("500072"));
@@ -330,25 +415,13 @@ class ServiceAreaServiceTest {
     }
 
     @Test
-    @DisplayName("assertServiceable throws ServiceabilityException when city is inactive")
-    void testAssertServiceable_InactiveCity_ThrowsException() {
-        hyderabadCity.setIsActive(false);
-        when(pincodeRepository.findByPincode("500072")).thenReturn(Optional.of(pincode500072));
+    @DisplayName("assertServiceable passes when pincode is active even if city or state is inactive")
+    void testAssertServiceable_ActivePincode_PassesRegardlessOfCityState() {
+        hyderabadCity.setIsActive(false); // deactivated city
+        telanganaState.setIsActive(false); // deactivated state
+        when(pincodeRepository.findAllByPincode("500072")).thenReturn(List.of(pincode500072));
 
-        ServiceabilityException ex = assertThrows(ServiceabilityException.class,
-                () -> serviceAreaService.assertServiceable("500072"));
-        assertTrue(ex.getMessage().contains("not currently available in Hyderabad"));
-    }
-
-    @Test
-    @DisplayName("assertServiceable throws ServiceabilityException when state is inactive")
-    void testAssertServiceable_InactiveState_ThrowsException() {
-        telanganaState.setIsActive(false);
-        when(pincodeRepository.findByPincode("500072")).thenReturn(Optional.of(pincode500072));
-
-        ServiceabilityException ex = assertThrows(ServiceabilityException.class,
-                () -> serviceAreaService.assertServiceable("500072"));
-        assertTrue(ex.getMessage().contains("not currently available in Telangana"));
+        assertDoesNotThrow(() -> serviceAreaService.assertServiceable("500072"));
     }
 
     // ─────────────────────────────────────────────────────────────────

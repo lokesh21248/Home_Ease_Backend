@@ -288,8 +288,13 @@ public class ServiceAreaService {
 
     @Transactional(readOnly = true)
     public PincodePage searchPincodes(UUID stateId, UUID cityId, Boolean active, String q, int page, int size) {
-        Page<ServiceablePincode> result = pincodeRepository.search(
-                stateId, cityId, active, q, PageRequest.of(page, size));
+        String cleanQ = (q != null && !q.trim().isEmpty()) ? q.trim() : null;
+        Page<ServiceablePincode> result;
+        if (stateId == null && cityId == null) {
+            result = pincodeRepository.searchWithoutGeo(active, cleanQ, PageRequest.of(page, size));
+        } else {
+            result = pincodeRepository.search(stateId, cityId, active, cleanQ, PageRequest.of(page, size));
+        }
         return PincodePage.builder()
                 .content(result.getContent().stream().map(this::mapPincode).collect(Collectors.toList()))
                 .page(result.getNumber())
@@ -312,29 +317,68 @@ public class ServiceAreaService {
     }
 
     private PincodeResponse saveSinglePincode(CreatePincodeRequest req) {
-        if (pincodeRepository.findByPincode(req.getPincode()).isPresent()) {
-            throw new IllegalArgumentException("Pincode " + req.getPincode() + " already exists.");
+        String pincode = req.getPincode() != null ? req.getPincode().trim() : null;
+        if (pincode == null || !pincode.matches("^[0-9]{6}$")) {
+            throw new IllegalArgumentException("Pincode must be exactly 6 digits.");
         }
 
-        City city = cityRepository.findById(req.getCityId())
-                .orElseThrow(() -> new ResourceNotFoundException("City not found: " + req.getCityId()));
-        State state = stateRepository.findById(req.getStateId())
-                .orElseThrow(() -> new ResourceNotFoundException("State not found: " + req.getStateId()));
+        String rawArea = req.getAreaName() != null ? req.getAreaName().trim() : null;
+        String areaName = (rawArea != null && !rawArea.isEmpty()) ? rawArea : null;
 
-        // Validate city belongs to the given state
-        if (!city.getState().getStateId().equals(state.getStateId())) {
-            throw new IllegalArgumentException("City " + req.getCityId() + " does not belong to state " + req.getStateId());
+        // Duplicate handling: multiple localities can exist under the same PIN code,
+        // but identical (pincode, locality) combinations are rejected.
+        List<ServiceablePincode> existingPins = pincodeRepository.findAllByPincode(pincode);
+        if (existingPins.isEmpty()) {
+            pincodeRepository.findByPincode(pincode).ifPresent(existingPins::add);
         }
 
-        ServiceablePincode pincode = ServiceablePincode.builder()
-                .pincode(req.getPincode())
+        String normArea = areaName != null ? areaName.toUpperCase() : "";
+        boolean isDuplicate = existingPins.stream().anyMatch(p -> {
+            String existingArea = p.getAreaName() != null ? p.getAreaName().trim().toUpperCase() : "";
+            return existingArea.equals(normArea);
+        });
+
+        if (isDuplicate) {
+            if (areaName == null) {
+                throw new IllegalArgumentException("Pincode " + pincode + " already exists.");
+            } else {
+                throw new IllegalArgumentException("Pincode " + pincode + " with locality '" + areaName + "' already exists.");
+            }
+        }
+
+        // City and State are optional metadata for future expansion
+        City city = null;
+        State state = null;
+
+        if (req.getCityId() != null) {
+            city = cityRepository.findById(req.getCityId())
+                    .orElseThrow(() -> new ResourceNotFoundException("City not found: " + req.getCityId()));
+        }
+
+        if (req.getStateId() != null) {
+            state = stateRepository.findById(req.getStateId())
+                    .orElseThrow(() -> new ResourceNotFoundException("State not found: " + req.getStateId()));
+        }
+
+        // Validate city belongs to state if both are specified
+        if (city != null && state != null && city.getState() != null) {
+            if (!city.getState().getStateId().equals(state.getStateId())) {
+                throw new IllegalArgumentException("City " + req.getCityId() + " does not belong to state " + req.getStateId());
+            }
+        } else if (city != null && state == null && city.getState() != null) {
+            // Auto-populate state from city if state was omitted
+            state = city.getState();
+        }
+
+        ServiceablePincode pincodeEntity = ServiceablePincode.builder()
+                .pincode(pincode)
                 .city(city)
                 .state(state)
-                .areaName(req.getAreaName())
+                .areaName(areaName)
                 .isActive(req.getIsActive() != null && req.getIsActive())
                 .build();
 
-        return mapPincode(pincodeRepository.save(pincode));
+        return mapPincode(pincodeRepository.save(pincodeEntity));
     }
 
     @Transactional
@@ -343,6 +387,33 @@ public class ServiceAreaService {
 
         ServiceablePincode pin = pincodeRepository.findById(pincodeId)
                 .orElseThrow(() -> new ResourceNotFoundException("Pincode not found: " + pincodeId));
+
+        if (req.getAreaName() != null) {
+            String newArea = req.getAreaName().trim().isEmpty() ? null : req.getAreaName().trim();
+            String normNewArea = newArea != null ? newArea.toUpperCase() : "";
+
+            // Check if another record with the same pincode already has this locality
+            List<ServiceablePincode> others = pincodeRepository.findAllByPincode(pin.getPincode());
+            if (others.isEmpty()) {
+                pincodeRepository.findByPincode(pin.getPincode()).ifPresent(others::add);
+            }
+
+            boolean duplicate = others.stream()
+                    .filter(p -> !p.getPincodeId().equals(pincodeId))
+                    .anyMatch(p -> {
+                        String existingArea = p.getAreaName() != null ? p.getAreaName().trim().toUpperCase() : "";
+                        return existingArea.equals(normNewArea);
+                    });
+
+            if (duplicate) {
+                if (newArea == null) {
+                    throw new IllegalArgumentException("Pincode " + pin.getPincode() + " already exists.");
+                } else {
+                    throw new IllegalArgumentException("Pincode " + pin.getPincode() + " with locality '" + newArea + "' already exists.");
+                }
+            }
+            pin.setAreaName(newArea);
+        }
 
         if (req.getIsActive() != null && !req.getIsActive() && Boolean.TRUE.equals(pin.getIsActive())) {
             long affected = countUpcomingBookingsForPincode(pin.getPincode());
@@ -357,7 +428,6 @@ public class ServiceAreaService {
             }
         }
 
-        if (req.getAreaName() != null) pin.setAreaName(req.getAreaName());
         if (req.getIsActive() != null) pin.setIsActive(req.getIsActive());
 
         return DeactivationWarningResponse.builder()
@@ -378,16 +448,18 @@ public class ServiceAreaService {
     }
 
     // ════════════════════════════════════════════════════════════════
-    // CUSTOMER SERVICEABILITY CHECK
+    // CUSTOMER SERVICEABILITY CHECK (Simplified to PIN code)
     // ════════════════════════════════════════════════════════════════
 
     /**
      * Public — no authentication required. Returns a safe response that never
      * exposes internal IDs or administrative state to the customer.
+     * Serviceability is determined directly by PIN code. City and state are
+     * returned as optional metadata. Supports multiple localities.
      */
     @Transactional(readOnly = true)
     public ServiceabilityResponse checkServiceability(String rawPincode) {
-        if (rawPincode == null || !rawPincode.matches("^[0-9]{6}$")) {
+        if (rawPincode == null || !rawPincode.trim().matches("^[0-9]{6}$")) {
             return ServiceabilityResponse.builder()
                     .serviceable(false)
                     .pincode(rawPincode)
@@ -395,39 +467,69 @@ public class ServiceAreaService {
                     .build();
         }
 
-        return pincodeRepository.findByPincode(rawPincode)
-                .map(pin -> {
-                    boolean fullChainActive = Boolean.TRUE.equals(pin.getIsActive())
-                            && Boolean.TRUE.equals(pin.getCity().getIsActive())
-                            && Boolean.TRUE.equals(pin.getState().getIsActive());
+        String pin = rawPincode.trim();
+        List<ServiceablePincode> pins = pincodeRepository.findAllByPincode(pin);
+        if (pins.isEmpty()) {
+            pincodeRepository.findByPincode(pin).ifPresent(pins::add);
+        }
 
-                    if (fullChainActive) {
-                        return ServiceabilityResponse.builder()
-                                .serviceable(true)
-                                .pincode(rawPincode)
-                                .city(pin.getCity().getName())
-                                .state(pin.getState().getName())
-                                .areaName(pin.getAreaName())
-                                .message("Great! FirstDoor services are available in your area.")
-                                .build();
-                    } else {
-                        return ServiceabilityResponse.builder()
-                                .serviceable(false)
-                                .pincode(rawPincode)
-                                .message("Sorry, FirstDoor is not available in your area yet.")
-                                .build();
-                    }
-                })
-                .orElse(ServiceabilityResponse.builder()
-                        .serviceable(false)
-                        .pincode(rawPincode)
-                        .message("Sorry, FirstDoor is not available in your area yet.")
-                        .build());
+        if (pins.isEmpty()) {
+            return ServiceabilityResponse.builder()
+                    .serviceable(false)
+                    .pincode(pin)
+                    .message("Sorry, FirstDoor is not available in your area yet.")
+                    .build();
+        }
+
+        // Serviceable if at least one locality/entry under this PIN code is active
+        List<ServiceablePincode> activePins = pins.stream()
+                .filter(p -> Boolean.TRUE.equals(p.getIsActive()))
+                .collect(Collectors.toList());
+
+        if (activePins.isEmpty()) {
+            return ServiceabilityResponse.builder()
+                    .serviceable(false)
+                    .pincode(pin)
+                    .message("Sorry, FirstDoor is not available in your area yet.")
+                    .build();
+        }
+
+        // Extract all locality names associated with this PIN code
+        List<String> localities = pins.stream()
+                .map(ServiceablePincode::getAreaName)
+                .filter(a -> a != null && !a.isBlank())
+                .map(String::trim)
+                .distinct()
+                .collect(Collectors.toList());
+
+        String areaName = localities.isEmpty() ? null : String.join(", ", localities);
+
+        // Optional city and state metadata
+        String city = pins.stream()
+                .filter(p -> p.getCity() != null)
+                .map(p -> p.getCity().getName())
+                .findFirst().orElse(null);
+
+        String state = pins.stream()
+                .filter(p -> p.getState() != null)
+                .map(p -> p.getState().getName())
+                .findFirst().orElse(null);
+
+        return ServiceabilityResponse.builder()
+                .serviceable(true)
+                .pincode(pin)
+                .city(city)
+                .state(state)
+                .areaName(areaName)
+                .localities(localities)
+                .message("Great! FirstDoor services are available in your area.")
+                .build();
     }
 
     /**
      * Booking enforcement gate — throws ServiceabilityException (HTTP 422) if
-     * the pincode is unknown, inactive, or under an inactive city / state.
+     * the pincode is unknown or inactive.
+     * Serviceability is determined directly by PIN code.
      * Called inside BookingStateMachine.createBooking() within the same transaction.
      */
     @Transactional(readOnly = true)
@@ -437,21 +539,21 @@ public class ServiceAreaService {
                     "Sorry, FirstDoor is not available in your area yet. A valid 6-digit serviceable pincode is required.");
         }
 
-        ServiceablePincode pin = pincodeRepository.findByPincode(rawPincode.trim())
-                .orElseThrow(() -> new ServiceabilityException(
-                        "Sorry, FirstDoor is not available in your area yet. Pincode: " + rawPincode.trim()));
+        String pin = rawPincode.trim();
+        List<ServiceablePincode> pins = pincodeRepository.findAllByPincode(pin);
+        if (pins.isEmpty()) {
+            pincodeRepository.findByPincode(pin).ifPresent(pins::add);
+        }
 
-        if (!Boolean.TRUE.equals(pin.getIsActive())) {
+        if (pins.isEmpty()) {
             throw new ServiceabilityException(
-                    "Sorry, FirstDoor is not available in your area yet. Pincode: " + rawPincode.trim());
+                    "Sorry, FirstDoor is not available in your area yet. Pincode: " + pin);
         }
-        if (!Boolean.TRUE.equals(pin.getCity().getIsActive())) {
+
+        boolean hasActive = pins.stream().anyMatch(p -> Boolean.TRUE.equals(p.getIsActive()));
+        if (!hasActive) {
             throw new ServiceabilityException(
-                    "Sorry, FirstDoor is not currently available in " + pin.getCity().getName() + ".");
-        }
-        if (!Boolean.TRUE.equals(pin.getState().getIsActive())) {
-            throw new ServiceabilityException(
-                    "Sorry, FirstDoor is not currently available in " + pin.getState().getName() + ".");
+                    "Sorry, FirstDoor is not available in your area yet. Pincode: " + pin);
         }
     }
 
@@ -512,10 +614,10 @@ public class ServiceAreaService {
         return PincodeResponse.builder()
                 .pincodeId(p.getPincodeId())
                 .pincode(p.getPincode())
-                .cityId(p.getCity().getCityId())
-                .cityName(p.getCity().getName())
-                .stateId(p.getState().getStateId())
-                .stateName(p.getState().getName())
+                .cityId(p.getCity() != null ? p.getCity().getCityId() : null)
+                .cityName(p.getCity() != null ? p.getCity().getName() : null)
+                .stateId(p.getState() != null ? p.getState().getStateId() : null)
+                .stateName(p.getState() != null ? p.getState().getName() : null)
                 .areaName(p.getAreaName())
                 .isActive(p.getIsActive())
                 .createdAt(p.getCreatedAt())
