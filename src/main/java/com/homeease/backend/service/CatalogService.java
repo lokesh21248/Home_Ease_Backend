@@ -40,8 +40,32 @@ public class CatalogService {
     @Transactional(readOnly = true)
     public List<ServiceResponse> getAllActiveServices() {
         return serviceRepository.findByIsActiveTrue().stream()
+                .filter(this::isCustomerFacingService)
                 .map(this::mapServiceToResponse)
                 .collect(Collectors.toList());
+    }
+
+    private boolean isCustomerFacingService(ServiceEntity service) {
+        if (service == null || !Boolean.TRUE.equals(service.getIsActive())) {
+            return false;
+        }
+        String name = service.getName();
+        if (name == null || name.trim().isEmpty()) {
+            return false;
+        }
+        String lower = name.toLowerCase();
+        if (lower.contains("kafka") ||
+            lower.contains("verification") ||
+            lower.contains("test") ||
+            lower.startsWith("dummy") ||
+            lower.startsWith("temp")) {
+            return false;
+        }
+        String imageUrl = service.getImageUrl();
+        if (imageUrl == null || imageUrl.trim().isEmpty() || imageUrl.contains("example.com")) {
+            return false;
+        }
+        return true;
     }
 
     @Transactional(readOnly = true)

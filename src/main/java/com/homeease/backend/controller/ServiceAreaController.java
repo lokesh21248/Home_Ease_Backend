@@ -63,6 +63,15 @@ public class ServiceAreaController {
         return ResponseEntity.ok(serviceAreaService.updateState(callerId, stateId, request, confirm));
     }
 
+    @DeleteMapping("/api/v1/admin/service-areas/states/{id}")
+    public ResponseEntity<Void> deleteState(
+            @RequestHeader("X-User-Id") UUID callerId,
+            @PathVariable("id") UUID stateId,
+            @RequestParam(value = "cascade", defaultValue = "false") boolean cascade) {
+        serviceAreaService.deleteState(callerId, stateId, cascade);
+        return ResponseEntity.noContent().build();
+    }
+
     // ─────────────────────────────────────────────────────────────────
     // CITIES
     // ─────────────────────────────────────────────────────────────────
@@ -87,6 +96,15 @@ public class ServiceAreaController {
             @RequestBody UpdateCityRequest request,
             @RequestParam(value = "confirm", defaultValue = "false") boolean confirm) {
         return ResponseEntity.ok(serviceAreaService.updateCity(callerId, cityId, request, confirm));
+    }
+
+    @DeleteMapping("/api/v1/admin/service-areas/cities/{id}")
+    public ResponseEntity<Void> deleteCity(
+            @RequestHeader("X-User-Id") UUID callerId,
+            @PathVariable("id") UUID cityId,
+            @RequestParam(value = "cascade", defaultValue = "false") boolean cascade) {
+        serviceAreaService.deleteCity(callerId, cityId, cascade);
+        return ResponseEntity.noContent().build();
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -125,6 +143,14 @@ public class ServiceAreaController {
             @RequestBody UpdatePincodeRequest request,
             @RequestParam(value = "confirm", defaultValue = "false") boolean confirm) {
         return ResponseEntity.ok(serviceAreaService.updatePincode(callerId, pincodeId, request, confirm));
+    }
+
+    @DeleteMapping("/api/v1/admin/service-areas/pincodes/{id}")
+    public ResponseEntity<Void> deletePincode(
+            @RequestHeader("X-User-Id") UUID callerId,
+            @PathVariable("id") UUID pincodeId) {
+        serviceAreaService.deletePincode(callerId, pincodeId);
+        return ResponseEntity.noContent().build();
     }
 
     // ─────────────────────────────────────────────────────────────────

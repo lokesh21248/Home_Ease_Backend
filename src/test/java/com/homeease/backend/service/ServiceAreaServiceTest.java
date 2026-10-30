@@ -416,4 +416,44 @@ class ServiceAreaServiceTest {
         assertEquals(1, page.getContent().size());
         assertEquals("500072", page.getContent().get(0).getPincode());
     }
+    @Test
+    @DisplayName("Delete state without children succeeds")
+    void testDeleteState_NoChildren_Success() {
+        when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
+        when(stateRepository.findById(telanganaState.getStateId())).thenReturn(Optional.of(telanganaState));
+        when(cityRepository.countByState_StateId(telanganaState.getStateId())).thenReturn(0L);
+        when(pincodeRepository.countByState_StateId(telanganaState.getStateId())).thenReturn(0L);
+
+        assertDoesNotThrow(() -> serviceAreaService.deleteState(adminId, telanganaState.getStateId(), false));
+        verify(stateRepository).delete(telanganaState);
+    }
+
+    @Test
+    @DisplayName("Delete state with children without cascade throws exception")
+    void testDeleteState_WithChildren_NoCascade_ThrowsException() {
+        when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
+        when(stateRepository.findById(telanganaState.getStateId())).thenReturn(Optional.of(telanganaState));
+        when(cityRepository.countByState_StateId(telanganaState.getStateId())).thenReturn(2L);
+        when(pincodeRepository.countByState_StateId(telanganaState.getStateId())).thenReturn(5L);
+
+        assertThrows(IllegalArgumentException.class, () ->
+                serviceAreaService.deleteState(adminId, telanganaState.getStateId(), false));
+        verify(stateRepository, never()).delete(any());
+    }
+
+    @Test
+    @DisplayName("Delete state with cascade deletes children and state")
+    void testDeleteState_Cascade_Success() {
+        when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
+        when(stateRepository.findById(telanganaState.getStateId())).thenReturn(Optional.of(telanganaState));
+        when(cityRepository.countByState_StateId(telanganaState.getStateId())).thenReturn(1L);
+        when(pincodeRepository.countByState_StateId(telanganaState.getStateId())).thenReturn(1L);
+        when(pincodeRepository.findAll()).thenReturn(List.of(pincode500072));
+        when(cityRepository.findByState_StateIdOrderByNameAsc(telanganaState.getStateId())).thenReturn(List.of(hyderabadCity));
+
+        assertDoesNotThrow(() -> serviceAreaService.deleteState(adminId, telanganaState.getStateId(), true));
+        verify(pincodeRepository).deleteAll(anyList());
+        verify(cityRepository).deleteAll(anyList());
+        verify(stateRepository).delete(telanganaState);
+    }
 }

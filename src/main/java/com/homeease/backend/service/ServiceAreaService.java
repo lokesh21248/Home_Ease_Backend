@@ -148,6 +148,39 @@ public class ServiceAreaService {
                 .build();
     }
 
+    @Transactional
+    public void deleteState(UUID callerId, UUID stateId, boolean cascade) {
+        requireAdmin(callerId);
+
+        State state = stateRepository.findById(stateId)
+                .orElseThrow(() -> new ResourceNotFoundException("State not found: " + stateId));
+
+        long cityCount = cityRepository.countByState_StateId(stateId);
+        long pincodeCount = pincodeRepository.countByState_StateId(stateId);
+
+        if ((cityCount > 0 || pincodeCount > 0) && !cascade) {
+            throw new IllegalArgumentException("Cannot delete state '" + state.getName() +
+                    "' because it contains " + cityCount + " cities and " + pincodeCount +
+                    " pincodes. Delete or reassign them first, or confirm cascade delete.");
+        }
+
+        if (cascade) {
+            List<ServiceablePincode> pins = pincodeRepository.findAll().stream()
+                    .filter(p -> p.getState() != null && stateId.equals(p.getState().getStateId()))
+                    .collect(Collectors.toList());
+            if (!pins.isEmpty()) {
+                pincodeRepository.deleteAll(pins);
+            }
+
+            List<City> cities = cityRepository.findByState_StateIdOrderByNameAsc(stateId);
+            if (!cities.isEmpty()) {
+                cityRepository.deleteAll(cities);
+            }
+        }
+
+        stateRepository.delete(state);
+    }
+
     // ════════════════════════════════════════════════════════════════
     // CITY MANAGEMENT
     // ════════════════════════════════════════════════════════════════
@@ -221,6 +254,32 @@ public class ServiceAreaService {
                 .proceed(true)
                 .updatedEntity(mapCity(cityRepository.save(city)))
                 .build();
+    }
+
+    @Transactional
+    public void deleteCity(UUID callerId, UUID cityId, boolean cascade) {
+        requireAdmin(callerId);
+
+        City city = cityRepository.findById(cityId)
+                .orElseThrow(() -> new ResourceNotFoundException("City not found: " + cityId));
+
+        long pincodeCount = pincodeRepository.countByCity_CityId(cityId);
+        if (pincodeCount > 0 && !cascade) {
+            throw new IllegalArgumentException("Cannot delete city '" + city.getName() +
+                    "' because it contains " + pincodeCount +
+                    " pincodes. Delete or reassign them first, or confirm cascade delete.");
+        }
+
+        if (cascade && pincodeCount > 0) {
+            List<ServiceablePincode> pins = pincodeRepository.findAll().stream()
+                    .filter(p -> p.getCity() != null && cityId.equals(p.getCity().getCityId()))
+                    .collect(Collectors.toList());
+            if (!pins.isEmpty()) {
+                pincodeRepository.deleteAll(pins);
+            }
+        }
+
+        cityRepository.delete(city);
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -306,6 +365,16 @@ public class ServiceAreaService {
                 .proceed(true)
                 .updatedEntity(mapPincode(pincodeRepository.save(pin)))
                 .build();
+    }
+
+    @Transactional
+    public void deletePincode(UUID callerId, UUID pincodeId) {
+        requireAdmin(callerId);
+
+        ServiceablePincode pin = pincodeRepository.findById(pincodeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Pincode not found: " + pincodeId));
+
+        pincodeRepository.delete(pin);
     }
 
     // ════════════════════════════════════════════════════════════════

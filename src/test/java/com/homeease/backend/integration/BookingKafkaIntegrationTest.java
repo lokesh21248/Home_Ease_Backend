@@ -117,6 +117,17 @@ class BookingKafkaIntegrationTest {
                 .build());
     }
 
+    @org.junit.jupiter.api.AfterEach
+    void tearDown() {
+        if (testService != null) {
+            testService.setIsActive(false);
+            serviceRepository.save(testService);
+        }
+        if (testUser != null) {
+            userRepository.delete(testUser);
+        }
+    }
+
     @Test
     @DisplayName("End-to-End: Outbox -> Kafka -> Independent Consumers -> Analytics Projection")
     void testEndToEndBookingKafkaPipeline() {

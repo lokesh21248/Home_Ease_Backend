@@ -241,7 +241,7 @@ export const updateBookingStatusByAdmin = (bookingId, status, adminUserId) =>
 
 
 // ==========================================
-// 11. Service Area Management
+// 14. Service Area Management
 // ==========================================
 
 /** GET /admin/service-areas — overview stats + all states */
@@ -362,7 +362,7 @@ export const checkServiceability = (pincode) =>
   axios.get(`${MONOLITH_BASE_URL}/serviceability/check`, { params: { pincode } });
 
 // ==========================================
-// 14. Booking Event History (Audit Trail)
+// 15. Booking Event History (Audit Trail)
 // ==========================================
 /**
  * GET /bookings/:id/history
@@ -380,3 +380,17 @@ export const getBookingHistory = (bookingId, adminUserId, params = { page: 0, si
     params,
   });
 
+// ==========================================
+// 16. App Version Management
+// ==========================================
+export const getAppVersionConfigs = () =>
+  adminClient.get('/admin/app-versions');
+
+export const updateAppVersionConfig = (appType, config) =>
+  adminClient.put(`/admin/app-versions/${encodeURIComponent(appType)}`, config);
+
+// Public update check used by customer, admin, and partner apps.
+export const checkAppUpdate = (appType = 'CUSTOMER', currentVersion = '1.0.0', platform = 'android') =>
+  axios.get(`${MONOLITH_BASE_URL}/app/check-update`, {
+    params: { appType, currentVersion, platform },
+  });

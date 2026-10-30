@@ -125,7 +125,7 @@ Fetches system-wide aggregate metrics for the dashboard hero cards.
       "platformCommissionPercent": 15.00,
       "platformCommissionAmount": 134.85,
       "workerPayoutAmount": 764.15,
-      "status": "COMPLETED",
+      "status": "SUCCESS",
       "createdAt": "2026-10-26T10:15:30Z"
     }
   ]
@@ -146,7 +146,7 @@ Fetches system-wide aggregate metrics for the dashboard hero cards.
     "status": "REFUNDED"
   }
   ```
-  *(Allowed statuses: `PENDING`, `COMPLETED`, `FAILED`, `REFUNDED`)*
+  *(Allowed statuses: `PENDING`, `SUCCESS`, `FAILED`, `REFUNDED`)*
 
 ---
 
@@ -367,7 +367,11 @@ Returns all active and inactive service categories.
 * **Path**: `/admin/banners?activeOnly=false`
 * **Headers**: `Authorization: Bearer <ADMIN_TOKEN>`
 
-### 8.2 Create Banner
+### 8.2 Get Banner By ID
+* **Method**: `GET`
+* **Path**: `/admin/banners/{id}`
+
+### 8.3 Create Banner
 * **Method**: `POST`
 * **Path**: `/admin/banners`
 * **Headers**: `Authorization: Bearer <ADMIN_TOKEN>`, `Content-Type: application/json`
@@ -382,7 +386,7 @@ Returns all active and inactive service categories.
   }
   ```
 
-### 8.3 Patch Banner
+### 8.4 Patch Banner
 * **Method**: `PATCH`
 * **Path**: `/admin/banners/{id}`
 * **Headers**: `Authorization: Bearer <ADMIN_TOKEN>`, `Content-Type: application/json`
@@ -393,7 +397,7 @@ Returns all active and inactive service categories.
   }
   ```
 
-### 8.4 Delete Banner
+### 8.5 Delete Banner
 * **Method**: `DELETE`
 * **Path**: `/admin/banners/{id}?hard=false` *(Use `hard=true` for permanent deletion)*
 * **Headers**: `Authorization: Bearer <ADMIN_TOKEN>`
@@ -551,5 +555,121 @@ All file upload endpoints take `multipart/form-data` with parameter `file`.
 | Service | Port | Endpoint | Description |
 |---------|------|----------|-------------|
 | **Dispatch** | 8081 | `POST /api/v1/dispatch/trigger` | Manually trigger worker spatial search for a booking |
+| **Dispatch** | 8081 | `POST /api/v1/dispatch/accept` | Accept a dispatch job |
+| **Dispatch** | 8081 | `POST /api/v1/dispatch/reject` | Reject a dispatch job |
 | **Tracking** | 8082 | `GET /api/v1/tracking/latest/{bookingId}` | Query current partner GPS location |
+| **Tracking** | 8082 | `POST /api/v1/tracking/update-location` | Submit a tracking location update |
 | **Notification** | 8083 | `POST /api/v1/notifications/push` | Send direct FCM notification payload |
+
+---
+
+## 📍 14. Service Area Management
+
+These endpoints manage the state → city → pincode hierarchy used for serviceability.
+Write requests must include the admin's user ID in the `X-User-Id` header; the backend
+checks that this ID belongs to an admin. Pincode searches use zero-based pagination.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/admin/service-areas` | Overview statistics and states |
+| `GET` | `/admin/service-areas/states` | List states |
+| `POST` | `/admin/service-areas/states` | Create a state |
+| `PUT` | `/admin/service-areas/states/{id}?confirm=false` | Update a state |
+| `DELETE` | `/admin/service-areas/states/{id}?cascade=false` | Delete a state (set cascade=true to delete children) |
+| `GET` | `/admin/service-areas/cities?stateId={stateId}` | List cities, optionally filtered by state |
+| `POST` | `/admin/service-areas/cities` | Create a city |
+| `PUT` | `/admin/service-areas/cities/{id}?confirm=false` | Update a city |
+| `DELETE` | `/admin/service-areas/cities/{id}?cascade=false` | Delete a city (set cascade=true to delete children) |
+| `GET` | `/admin/service-areas/pincodes` | Search/filter pincodes |
+| `POST` | `/admin/service-areas/pincodes` | Create a pincode |
+| `POST` | `/admin/service-areas/pincodes/bulk` | Create multiple pincodes |
+| `PUT` | `/admin/service-areas/pincodes/{id}?confirm=false` | Update a pincode |
+| `DELETE` | `/admin/service-areas/pincodes/{id}` | Delete a pincode |
+
+Send `X-User-Id: <admin-user-uuid>` on create/update calls. For update calls that
+deactivate an area, retry with `confirm=true` if the server responds with a warning.
+
+**Create state** (`POST /admin/service-areas/states`):
+```json
+{
+  "name": "Telangana",
+  "isActive": true
+}
+```
+
+**Create city** (`POST /admin/service-areas/cities`):
+```json
+{
+  "stateId": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+  "name": "Hyderabad",
+  "isActive": true
+}
+```
+
+**Create pincode** (`POST /admin/service-areas/pincodes`):
+```json
+{
+  "pincode": "500072",
+  "cityId": "b1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+  "stateId": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+  "areaName": "Miyapur",
+  "isActive": true
+}
+```
+
+Pincode search accepts optional `stateId`, `cityId`, `active`, and `q` parameters,
+plus `page` (default `0`) and `size` (default `20`). The public customer check is
+`GET /serviceability/check?pincode=500072`; it does not require the admin client.
+
+---
+
+## 🧾 15. Booking Inspection & Audit History
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/bookings/{id}` | Fetch booking details |
+| `POST` | `/bookings/{id}/cancel?reason={reason}` | Cancel a booking |
+| `PATCH` | `/bookings/{id}/status?status={status}` | Update booking status |
+| `GET` | `/bookings/{id}/history?page=0&size=20` | Read paginated booking event history |
+
+The cancellation, status update, and history calls require `X-User-Id`. Booking
+history also accepts `X-User-Role: ADMIN`. The client helpers
+`cancelBookingByAdmin`, `updateBookingStatusByAdmin`, and `getBookingHistory` are
+available in `adminApi.js`.
+
+---
+
+## 🔄 16. App Version & Update Management
+
+The public check is used by clients to decide whether to prompt for an update.
+The admin routes read or update the version configuration for an app type
+(`CUSTOMER`, `ADMIN`, or `PARTNER`).
+
+### 16.1 Check for an App Update
+* **Method**: `GET`
+* **Path**: `/app/check-update?appType=CUSTOMER&currentVersion=1.0.0&platform=android`
+* **Authentication**: Not required.
+
+### 16.2 Get App Version Configurations
+* **Method**: `GET`
+* **Path**: `/admin/app-versions`
+
+### 16.3 Update an App Version Configuration
+* **Method**: `PUT`
+* **Path**: `/admin/app-versions/{appType}`
+* **Request Body**:
+  ```json
+  {
+    "latestVersion": "1.2.0",
+    "minimumVersion": "1.0.0",
+    "forceUpdate": false,
+    "releaseNotes": "Reliability improvements and bug fixes.",
+    "storeUrl": "https://example.com/app"
+  }
+  ```
+
+`latestVersion`, `minimumVersion`, `releaseNotes`, and `storeUrl` are retained from
+the current configuration when omitted. These configurations are currently held in
+memory and reset to defaults when the backend restarts. The app-version controller
+does not enforce admin authentication; do not treat these routes as access-controlled
+until authorization is implemented in the backend.
