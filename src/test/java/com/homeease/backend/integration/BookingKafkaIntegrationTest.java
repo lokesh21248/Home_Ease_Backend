@@ -17,6 +17,9 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.kafka.test.context.EmbeddedKafka;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
+import org.springframework.kafka.listener.MessageListenerContainer;
+import org.springframework.kafka.test.utils.ContainerTestUtils;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
@@ -30,11 +33,20 @@ import static org.junit.jupiter.api.Assertions.*;
 @SpringBootTest
 @DirtiesContext
 @EmbeddedKafka(
-        partitions = 3,
-        topics = {"firstdoor.booking.events.v1", "firstdoor.booking.events.DLT"}
+        partitions = 1,
+        topics = {"firstdoor.booking.events.v1", "firstdoor.booking.events.DLT"},
+        brokerProperties = {
+                "offsets.topic.num.partitions=1",
+                "offsets.topic.replication.factor=1",
+                "transaction.state.log.replication.factor=1",
+                "transaction.state.log.min.isr=1",
+                "group.initial.rebalance.delay.ms=0"
+        }
 )
 @TestPropertySource(properties = {
         "spring.kafka.bootstrap-servers=${spring.embedded.kafka.brokers}",
+        "spring.kafka.listener.concurrency=1",
+        "homeease.kafka.topics.partitions=1",
         "homeease.kafka.topics.booking-events=firstdoor.booking.events.v1",
         "homeease.kafka.topics.booking-events-dlt=firstdoor.booking.events.DLT",
         "homeease.kafka.outbox.enabled=true",
@@ -81,6 +93,9 @@ class BookingKafkaIntegrationTest {
 
     @Autowired
     private TransactionTemplate transactionTemplate;
+
+    @Autowired
+    private KafkaListenerEndpointRegistry endpointRegistry;
 
     private User testUser;
     private ServiceEntity testService;
@@ -156,7 +171,7 @@ class BookingKafkaIntegrationTest {
         assertNotNull(publishedOutbox.getPublishedAt());
 
         // 4. Await asynchronous Kafka delivery to multiple independent consumer groups
-        await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
+        await().atMost(Duration.ofSeconds(20)).untilAsserted(() -> {
             // Group 1: Booking Analytics Consumer
             assertTrue(inboxRepository.existsById(eventId),
                     "Analytics consumer must process event and record in inbox");

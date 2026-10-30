@@ -38,6 +38,9 @@ public class KafkaConfig {
     @Value("${homeease.kafka.topics.partitions:3}")
     private int topicPartitions;
 
+    @Value("${spring.kafka.listener.concurrency:3}")
+    private int listenerConcurrency;
+
     @Value("${homeease.kafka.topics.replication-factor:1}")
     private short topicReplicationFactor;
 
@@ -115,7 +118,7 @@ public class KafkaConfig {
 
         ConcurrentKafkaListenerContainerFactory<String, String> factory = new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory);
-        factory.setConcurrency(topicPartitions);
+        factory.setConcurrency(listenerConcurrency);
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
 
         // Dead letter publishing recoverer routes failed messages to DLT
