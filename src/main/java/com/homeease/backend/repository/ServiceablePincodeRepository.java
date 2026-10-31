@@ -46,7 +46,7 @@ public interface ServiceablePincodeRepository extends JpaRepository<ServiceableP
             WHERE (:stateId IS NULL OR s.stateId = :stateId)
               AND (:cityId  IS NULL OR c.cityId   = :cityId)
               AND (:active  IS NULL OR p.isActive       = :active)
-              AND (:q       IS NULL OR :q = ''
+              AND (CAST(:q AS string) IS NULL OR CAST(:q AS string) = ''
                    OR LOWER(p.pincode) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%'))
                    OR LOWER(p.areaName) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%')))
             ORDER BY p.pincode ASC, p.areaName ASC
@@ -65,7 +65,7 @@ public interface ServiceablePincodeRepository extends JpaRepository<ServiceableP
     @Query("""
             SELECT p FROM ServiceablePincode p
             WHERE (:active IS NULL OR p.isActive = :active)
-              AND (:q      IS NULL OR :q = ''
+              AND (CAST(:q AS string) IS NULL OR CAST(:q AS string) = ''
                    OR LOWER(p.pincode) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%'))
                    OR LOWER(p.areaName) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%')))
             ORDER BY p.pincode ASC, p.areaName ASC
