@@ -14,6 +14,8 @@ import java.util.UUID;
 @Repository
 public interface WorkerServiceLinkRepository extends JpaRepository<WorkerServiceLink, WorkerServiceId> {
     List<WorkerServiceLink> findById_WorkerId(UUID workerId);
+    List<WorkerServiceLink> findById_SubServiceId(UUID subServiceId);
+    boolean existsById_WorkerIdAndId_SubServiceId(UUID workerId, UUID subServiceId);
 
     @Modifying
     @Query("DELETE FROM WorkerServiceLink wsl WHERE wsl.id.workerId = :workerId")

@@ -99,11 +99,18 @@ public class BookingStateMachine {
                     });
         }
 
-        // P0-4: Business rule — bookings must be scheduled at least 30 minutes from now.
-        Instant minimumScheduledAt = Instant.now().plus(30, ChronoUnit.MINUTES);
-        if (request.getScheduledAt().isBefore(minimumScheduledAt)) {
-            throw new IllegalArgumentException(
-                    "Bookings must be scheduled at least 30 minutes from now.");
+        // P0-4: Business rule — scheduled bookings must be scheduled at least 30 minutes from now.
+        BookingType effectiveBookingType = request.getBookingType() != null ? request.getBookingType() : BookingType.INSTANT;
+        if (effectiveBookingType == BookingType.SCHEDULED) {
+            Instant minimumScheduledAt = Instant.now().plus(30, ChronoUnit.MINUTES);
+            if (request.getScheduledAt() == null || request.getScheduledAt().isBefore(minimumScheduledAt)) {
+                throw new IllegalArgumentException(
+                        "Bookings must be scheduled at least 30 minutes from now.");
+            }
+        } else {
+            if (request.getScheduledAt() == null) {
+                request.setScheduledAt(Instant.now());
+            }
         }
 
         User user = userRepository.findById(userId)
@@ -186,6 +193,7 @@ public class BookingStateMachine {
                 .user(user)
                 .service(service)
                 .coupon(coupon)
+                .bookingType(effectiveBookingType)
                 .status(BookingStage.SEARCHING)
                 .pinCode("0000") // Will be updated on worker acceptance
                 .scheduledAt(request.getScheduledAt())

@@ -8,6 +8,7 @@ import com.homeease.backend.repository.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.data.geo.Circle;
 import org.springframework.data.geo.Distance;
 import org.springframework.data.geo.GeoResults;
@@ -34,6 +35,7 @@ public class DispatchEngine {
     private final FcmNotificationService fcmNotificationService;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
     private final BookingDomainEventService domainEventService;
+    private final SimpMessagingTemplate messagingTemplate;
 
     @Value("${homeease.dispatch.radius-meters:5000}")
     private double radiusMeters;
@@ -44,7 +46,9 @@ public class DispatchEngine {
                           RedisTemplate<String, String> redisTemplate,
                           FcmNotificationService fcmNotificationService,
                           com.fasterxml.jackson.databind.ObjectMapper objectMapper,
-                          BookingDomainEventService domainEventService) {
+                          BookingDomainEventService domainEventService,
+                          SimpMessagingTemplate messagingTemplate) {
+        this.messagingTemplate = messagingTemplate;
         this.workerRepository = workerRepository;
         this.bookingRepository = bookingRepository;
         this.assignmentAttemptRepository = assignmentAttemptRepository;
@@ -114,6 +118,48 @@ public class DispatchEngine {
                     "New Nearby Job Request!",
                     "A customer requested " + booking.getService().getName() + " near your location. Accept now!"
             );
+
+            try {
+                String serviceName = booking.getService() != null ? booking.getService().getName() : "Home Service";
+                String customerName = booking.getRecipientName() != null && !booking.getRecipientName().isBlank()
+                        ? booking.getRecipientName()
+                        : (booking.getUser() != null ? booking.getUser().getFullName() : "Customer");
+                String customerPhone = booking.getRecipientPhone() != null && !booking.getRecipientPhone().isBlank()
+                        ? booking.getRecipientPhone()
+                        : (booking.getUser() != null ? booking.getUser().getPhoneNumber() : "");
+                String customerAddress = booking.getRecipientAddress() != null && !booking.getRecipientAddress().isBlank()
+                        ? booking.getRecipientAddress()
+                        : "Customer Location";
+
+                Map<String, Object> payload = new HashMap<>();
+                payload.put("type", "NEW_JOB_REQUEST");
+                payload.put("bookingId", booking.getBookingId().toString());
+                payload.put("serviceName", serviceName);
+                payload.put("subServiceName", serviceName);
+                payload.put("bookingType", booking.getBookingType() != null ? booking.getBookingType().name() : "INSTANT");
+                payload.put("totalAmount", booking.getTotalAmount());
+                payload.put("customerName", customerName);
+                payload.put("customerPhone", customerPhone);
+                payload.put("customerAddress", customerAddress);
+                payload.put("customerLat", booking.getUserLat());
+                payload.put("customerLng", booking.getUserLng());
+                payload.put("userLat", booking.getUserLat());
+                payload.put("userLng", booking.getUserLng());
+                payload.put("status", booking.getStatus() != null ? booking.getStatus().name() : "SEARCHING");
+                if (booking.getScheduledAt() != null) {
+                    payload.put("scheduledAt", booking.getScheduledAt().toString());
+                }
+                if (booking.getCreatedAt() != null) {
+                    payload.put("createdAt", booking.getCreatedAt().toString());
+                }
+
+                messagingTemplate.convertAndSend("/topic/worker/" + candidate.getWorkerId() + "/requests", payload);
+                if (candidate.getUser() != null && candidate.getUser().getUserId() != null) {
+                    messagingTemplate.convertAndSend("/topic/worker/" + candidate.getUser().getUserId() + "/requests", payload);
+                }
+            } catch (Exception e) {
+                logger.debug("WebSocket broadcast skipped in DispatchEngine: {}", e.getMessage());
+            }
         }
     }
 
@@ -125,7 +171,9 @@ public class DispatchEngine {
         Booking booking = bookingRepository.findByIdForUpdate(bookingId)
                 .orElseThrow(() -> new RuntimeException("Booking not found"));
 
-        if (booking.getStatus() != BookingStage.SEARCHING) {
+        if (booking.getStatus() != BookingStage.SEARCHING &&
+            booking.getStatus() != BookingStage.REQUESTED &&
+            booking.getStatus() != BookingStage.PENDING) {
             throw new RuntimeException("Booking is no longer searching for workers");
         }
 
@@ -239,20 +287,35 @@ public class DispatchEngine {
 
         for (AssignmentAttempt attempt : attempts) {
             Booking booking = attempt.getBooking();
-            if (booking != null && booking.getStatus() == BookingStage.SEARCHING) {
+            if (booking != null && (booking.getStatus() == BookingStage.SEARCHING ||
+                                    booking.getStatus() == BookingStage.REQUESTED ||
+                                    booking.getStatus() == BookingStage.PENDING)) {
                 String serviceName = booking.getService() != null ? booking.getService().getName() : "Home Service";
+                String customerName = booking.getRecipientName() != null && !booking.getRecipientName().isBlank()
+                        ? booking.getRecipientName()
+                        : (booking.getUser() != null ? booking.getUser().getFullName() : "Customer");
+                String customerPhone = booking.getRecipientPhone() != null && !booking.getRecipientPhone().isBlank()
+                        ? booking.getRecipientPhone()
+                        : (booking.getUser() != null ? booking.getUser().getPhoneNumber() : "");
+                String customerAddress = booking.getRecipientAddress() != null && !booking.getRecipientAddress().isBlank()
+                        ? booking.getRecipientAddress()
+                        : "Customer Location";
 
                 requests.add(com.homeease.backend.dto.WorkerDto.WorkerBookingRequestResponse.builder()
                         .bookingId(booking.getBookingId())
+                        .bookingType(booking.getBookingType() != null ? booking.getBookingType().name() : "INSTANT")
                         .status(booking.getStatus().name())
                         .serviceName(serviceName)
                         .subServiceName(serviceName)
-                        .customerName(booking.getUser() != null ? booking.getUser().getFullName() : "Customer")
-                        .customerPhone(booking.getUser() != null ? booking.getUser().getPhoneNumber() : "")
+                        .customerName(customerName)
+                        .customerPhone(customerPhone)
+                        .customerAddress(customerAddress)
                         .userLat(booking.getUserLat())
                         .userLng(booking.getUserLng())
                         .totalAmount(booking.getTotalAmount())
                         .scheduledAt(booking.getScheduledAt())
+                        .scheduledEndAt(booking.getScheduledEndAt())
+                        .estimatedArrivalMinutes(booking.getEstimatedArrivalMinutes())
                         .createdAt(booking.getCreatedAt())
                         .build());
             }

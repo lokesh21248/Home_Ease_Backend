@@ -1,6 +1,8 @@
 package com.homeease.backend.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.homeease.backend.model.enums.BookingStage;
+import com.homeease.backend.model.enums.BookingType;
 import com.homeease.backend.model.enums.PaymentMode;
 import com.homeease.backend.model.enums.TransactionState;
 import jakarta.validation.constraints.Future;
@@ -12,6 +14,8 @@ import lombok.*;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -46,6 +50,7 @@ public class BookingDto {
     @NoArgsConstructor
     @AllArgsConstructor
     @Builder
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     public static class CreateBookingRequest {
         @NotNull(message = "Service ID is required")
         private UUID serviceId;
@@ -53,60 +58,101 @@ public class BookingDto {
         private List<SubServiceRequestItem> subServices;
         private List<AddonRequestItem> addons;
         private String couponCode;
-        @NotNull(message = "Scheduled time is required")
-        @Future(message = "Scheduled time must be in the future")
+
+        private BookingType bookingType; // Defaults to INSTANT if scheduledAt is null/near-now
+
         private Instant scheduledAt;
+        private Instant scheduledEndAt;
+
         @NotNull(message = "User latitude is required")
         private Double userLat;
         @NotNull(message = "User longitude is required")
         private Double userLng;
         @NotNull(message = "Payment method is required")
         private PaymentMode paymentMethod;
-        /**
-         * 6-digit Indian pincode of the service address.
-         * The backend revalidates serviceability at transaction time
-         * before creating the booking. An area deactivated after the frontend check
-         * will be caught here.
-         */
+
         @NotBlank(message = "Service address pincode is required")
         @Pattern(regexp = "^[0-9]{6}$", message = "Pincode must be exactly 6 digits")
         private String pincode;
 
-        /**
-         * Optional saved address ID to verify ownership.
-         */
         private String addressId;
 
-        // ─── Friend / third-party booking fields (V8) ─────────────────────
-
-        /**
-         * True when the customer is booking on behalf of someone else.
-         * Omit (or send false) for a normal self-booking — backward compatible.
-         */
+        // Friend / third-party booking fields
         private Boolean isForFriend;
-
-        /**
-         * Full name of the service recipient.
-         * Required by the backend when isForFriend = true.
-         */
         @Size(max = 100, message = "Recipient name must be 100 characters or fewer")
         private String recipientName;
-
-        /**
-         * Mobile number of the service recipient.
-         * Required by the backend when isForFriend = true.
-         * Accepts 10-digit numbers with optional +91 or 0 prefix.
-         */
-        @Pattern(
-            regexp = "^(?:\\+91|0)?[6-9]\\d{9}$",
-            message = "Recipient phone must be a valid 10-digit Indian mobile number"
-        )
+        @Pattern(regexp = "^(?:\\+91|0)?[6-9]\\d{9}$", message = "Recipient phone must be a valid 10-digit Indian mobile number")
         private String recipientPhone;
+        private String recipientAddress;
+    }
 
-        /**
-         * Human-readable service address of the recipient
-         * (e.g. "Flat 4B, Banjara Hills, Hyderabad"). Optional.
-         */
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class InstantBookingRequest {
+        @NotNull(message = "Service ID is required")
+        private UUID serviceId;
+        @NotNull(message = "Sub-services list cannot be empty")
+        private List<SubServiceRequestItem> subServices;
+        private List<AddonRequestItem> addons;
+        private String couponCode;
+
+        @NotNull(message = "User latitude is required")
+        private Double userLat;
+        @NotNull(message = "User longitude is required")
+        private Double userLng;
+        @NotNull(message = "Payment method is required")
+        private PaymentMode paymentMethod;
+
+        @NotBlank(message = "Pincode is required")
+        @Pattern(regexp = "^[0-9]{6}$", message = "Pincode must be exactly 6 digits")
+        private String pincode;
+
+        private String addressId;
+        private Boolean isForFriend;
+        private String recipientName;
+        private String recipientPhone;
+        private String recipientAddress;
+    }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class ScheduledBookingRequest {
+        @NotNull(message = "Service ID is required")
+        private UUID serviceId;
+        @NotNull(message = "Sub-services list cannot be empty")
+        private List<SubServiceRequestItem> subServices;
+        private List<AddonRequestItem> addons;
+        private String couponCode;
+
+        @NotNull(message = "Scheduled date is required (YYYY-MM-DD)")
+        private LocalDate scheduledDate;
+
+        @NotBlank(message = "Selected time slot is required (e.g. '09:00 AM - 10:00 AM' or '09:00')")
+        private String timeSlot;
+
+        @NotNull(message = "User latitude is required")
+        private Double userLat;
+        @NotNull(message = "User longitude is required")
+        private Double userLng;
+        @NotNull(message = "Payment method is required")
+        private PaymentMode paymentMethod;
+
+        @NotBlank(message = "Pincode is required")
+        @Pattern(regexp = "^[0-9]{6}$", message = "Pincode must be exactly 6 digits")
+        private String pincode;
+
+        private String addressId;
+        private Boolean isForFriend;
+        private String recipientName;
+        private String recipientPhone;
         private String recipientAddress;
     }
 
@@ -118,6 +164,16 @@ public class BookingDto {
     public static class PinVerifyRequest {
         @NotBlank(message = "4-digit PIN is required")
         private String pinCode;
+    }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class CancelBookingRequest {
+        @NotBlank(message = "Cancellation reason is required")
+        private String reason;
     }
 
     @Getter
@@ -137,6 +193,54 @@ public class BookingDto {
     @NoArgsConstructor
     @AllArgsConstructor
     @Builder
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class AvailableSlotDto {
+        private String time; // e.g. "09:00 AM - 10:00 AM"
+        private String startTime; // "09:00"
+        private String endTime; // "10:00"
+        private Boolean available;
+        private String period; // "MORNING", "AFTERNOON", "EVENING"
+        private Integer availableWorkersCount;
+        private String reason; // Optional reason if unavailable
+    }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class AvailableDateDto {
+        private String date; // "2026-11-02"
+        private String dayName; // "Mon"
+        private String monthName; // "Nov"
+        private Integer dayOfMonth; // 2
+        private Boolean available;
+        private Integer availableSlotsCount;
+    }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class NearbyWorkerDto {
+        private UUID workerId;
+        private String fullName;
+        private Double rating;
+        private Double distanceMeters;
+        private Integer estimatedArrivalMinutes;
+        private String avatarUrl;
+        private Boolean isOnline;
+    }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     public static class BookingResponse {
         private UUID bookingId;
         private UUID userId;
@@ -145,13 +249,21 @@ public class BookingDto {
         private UUID workerId;
         private String workerName;
         private String workerPhone;
+        private String workerAvatarUrl;
+        private Double workerRating;
         private UUID serviceId;
         private String serviceName;
+        private BookingType bookingType;
         private BookingStage status;
         private String pinCode; // 4-digit worker unlock PIN
         private Instant scheduledAt;
+        private Instant scheduledEndAt;
         private Instant startedAt;
         private Instant completedAt;
+        private Instant workerAssignedAt;
+        private Integer estimatedArrivalMinutes;
+        private String cancellationReason;
+        private Instant cancelledAt;
         private Double userLat;
         private Double userLng;
         private BigDecimal baseAmount;
@@ -162,16 +274,11 @@ public class BookingDto {
         private PaymentMode paymentMethod;
         private Instant createdAt;
 
-        // ─── Friend / third-party booking fields (V8) ─────────────────
-        /** True when the booking was placed on behalf of another person. */
+        // Friend / third-party booking fields
         private Boolean isForFriend;
-        /** Full name of the service recipient; null for self-bookings. */
         private String  recipientName;
-        /** Mobile of the service recipient; returned to booking creator only. */
         private String  recipientPhone;
-        /** Human-readable service address of the recipient. */
         private String  recipientAddress;
-        /** 6-digit service-area pincode validated at booking creation time. */
         private String  servicePincode;
     }
 }

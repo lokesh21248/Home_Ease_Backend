@@ -119,12 +119,19 @@ class BookingKafkaIntegrationTest {
 
     @org.junit.jupiter.api.AfterEach
     void tearDown() {
+        if (testUser != null) {
+            try {
+                bookingRepository.deleteAll(bookingRepository.findByUser_UserId(testUser.getUserId()));
+            } catch (Exception ignored) {}
+        }
         if (testService != null) {
             testService.setIsActive(false);
             serviceRepository.save(testService);
         }
         if (testUser != null) {
-            userRepository.delete(testUser);
+            try {
+                userRepository.delete(testUser);
+            } catch (Exception ignored) {}
         }
     }
 

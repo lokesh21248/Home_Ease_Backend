@@ -1,0 +1,704 @@
+package com.homeease.backend.service;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.homeease.backend.dto.BookingDto.NearbyWorkerDto;
+import com.homeease.backend.dto.WorkerDto.WorkerBookingRequestResponse;
+import com.homeease.backend.exception.ResourceNotFoundException;
+import com.homeease.backend.model.entity.*;
+import com.homeease.backend.model.enums.*;
+import com.homeease.backend.repository.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.geo.Circle;
+import org.springframework.data.geo.Distance;
+import org.springframework.data.geo.GeoResults;
+import org.springframework.data.geo.Metrics;
+import org.springframework.data.geo.Point;
+import org.springframework.data.redis.connection.RedisGeoCommands;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.security.SecureRandom;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.*;
+
+@Service
+public class BookingAssignmentService {
+
+    private static final Logger logger = LoggerFactory.getLogger(BookingAssignmentService.class);
+
+    private final WorkerRepository workerRepository;
+    private final WorkerServiceLinkRepository workerServiceLinkRepository;
+    private final BookingRepository bookingRepository;
+    private final BookingAssignmentRepository assignmentRepository;
+    private final ReviewRepository reviewRepository;
+    private final NotificationDeliveryRepository deliveryRepository;
+    private final RedisTemplate<String, String> redisTemplate;
+    private final FcmNotificationService fcmNotificationService;
+    private final BookingDomainEventService domainEventService;
+    private final SimpMessagingTemplate messagingTemplate;
+    private final BookingOtpService bookingOtpService;
+    private final ObjectMapper objectMapper;
+
+    @Value("${homeease.dispatch.radius-meters:5000}")
+    private double radiusMeters = 5000.0;
+
+    @Value("${homeease.dispatch.batch-size:5}")
+    private int dispatchBatchSize = 5;
+
+    @Value("${homeease.dispatch.response-timeout-seconds:180}")
+    private int responseTimeoutSeconds = 180;
+
+    public BookingAssignmentService(WorkerRepository workerRepository,
+                                  WorkerServiceLinkRepository workerServiceLinkRepository,
+                                  BookingRepository bookingRepository,
+                                  BookingAssignmentRepository assignmentRepository,
+                                  ReviewRepository reviewRepository,
+                                  NotificationDeliveryRepository deliveryRepository,
+                                  RedisTemplate<String, String> redisTemplate,
+                                  FcmNotificationService fcmNotificationService,
+                                  BookingDomainEventService domainEventService,
+                                  SimpMessagingTemplate messagingTemplate,
+                                  BookingOtpService bookingOtpService,
+                                  ObjectMapper objectMapper) {
+        this.workerRepository = workerRepository;
+        this.workerServiceLinkRepository = workerServiceLinkRepository;
+        this.bookingRepository = bookingRepository;
+        this.assignmentRepository = assignmentRepository;
+        this.reviewRepository = reviewRepository;
+        this.deliveryRepository = deliveryRepository;
+        this.redisTemplate = redisTemplate;
+        this.fcmNotificationService = fcmNotificationService;
+        this.domainEventService = domainEventService;
+        this.messagingTemplate = messagingTemplate;
+        this.bookingOtpService = bookingOtpService;
+        this.objectMapper = objectMapper;
+    }
+
+    /**
+     * Dispatch Instant Booking: Finds eligible candidates in vicinity and dispatches to first batch.
+     */
+    @Transactional
+    public void dispatchInstantBooking(Booking booking, UUID targetSubServiceId) {
+        if (booking == null) return;
+        logger.info("Initiating candidate matching & batch dispatch for booking {}", booking.getBookingId());
+
+        List<Worker> eligibleCandidates = findEligibleCandidateWorkers(
+                booking.getService() != null ? booking.getService().getServiceId() : null,
+                targetSubServiceId,
+                booking.getUserLat(),
+                booking.getUserLng(),
+                radiusMeters
+        );
+
+        if (eligibleCandidates.isEmpty()) {
+            logger.warn("No eligible workers found nearby for booking {}", booking.getBookingId());
+            booking.setStatus(BookingStage.WORKER_NOT_FOUND);
+            bookingRepository.save(booking);
+
+            notifyCustomerWorkerNotFound(booking);
+            return;
+        }
+
+        // Dispatch to first batch of size dispatchBatchSize
+        dispatchToBatch(booking, eligibleCandidates, 1);
+    }
+
+    /**
+     * Dispatches booking request to a specific batch of workers.
+     */
+    @Transactional
+    public void dispatchToBatch(Booking booking, List<Worker> candidates, int attemptNo) {
+        if (booking.getStatus() != BookingStage.REQUESTED &&
+            booking.getStatus() != BookingStage.SEARCHING &&
+            booking.getStatus() != BookingStage.PENDING) {
+            logger.info("Booking {} is no longer searching for workers (current status: {})",
+                    booking.getBookingId(), booking.getStatus());
+            return;
+        }
+
+        booking.setStatus(BookingStage.SEARCHING);
+        bookingRepository.save(booking);
+
+        Instant expiresAt = Instant.now().plusSeconds(responseTimeoutSeconds);
+        int batchCount = 0;
+
+        for (Worker worker : candidates) {
+            if (batchCount >= dispatchBatchSize) {
+                break;
+            }
+
+            // Check if already dispatched to this worker
+            Optional<BookingAssignment> existing = assignmentRepository
+                    .findByBooking_BookingIdAndWorker_WorkerId(booking.getBookingId(), worker.getWorkerId());
+            if (existing.isPresent()) {
+                continue;
+            }
+
+            BookingAssignment assignment = BookingAssignment.builder()
+                    .booking(booking)
+                    .worker(worker)
+                    .status(AssignmentStatus.PENDING)
+                    .attemptNo(attemptNo)
+                    .requestedAt(Instant.now())
+                    .expiresAt(expiresAt)
+                    .build();
+
+            assignmentRepository.save(assignment);
+            batchCount++;
+
+            // Alert worker via WebSocket & FCM
+            sendWorkerJobAlert(worker, booking);
+        }
+
+        logger.info("Dispatched booking {} to {} candidate workers (batch {})",
+                booking.getBookingId(), batchCount, attemptNo);
+    }
+
+    /**
+     * Worker acceptance logic with atomic lock and guarantee that exactly one worker wins.
+     */
+    @Transactional
+    public Booking handleWorkerAcceptance(UUID bookingId, UUID workerUserId) {
+        Booking booking = bookingRepository.findByIdForUpdate(bookingId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
+
+        if (booking.getStatus() != BookingStage.SEARCHING &&
+            booking.getStatus() != BookingStage.REQUESTED &&
+            booking.getStatus() != BookingStage.PENDING) {
+            throw new IllegalStateException("Booking is no longer searching for workers. Current status: " + booking.getStatus());
+        }
+
+        Worker worker = workerRepository.findByUser_UserId(workerUserId)
+                .orElseThrow(() -> new ResourceNotFoundException("Worker profile not found for user: " + workerUserId));
+
+        // Generate preliminary 4-digit PIN
+        String pinCode = String.format("%04d", new SecureRandom().nextInt(10000));
+
+        booking.setWorker(worker);
+        booking.setStatus(BookingStage.ACCEPTED);
+        booking.setWorkerAssignedAt(Instant.now());
+        booking.setPinCode(pinCode);
+        booking = bookingRepository.save(booking);
+
+        // Update winning assignment to ACCEPTED
+        assignmentRepository.findByBooking_BookingIdAndWorker_WorkerId(bookingId, worker.getWorkerId())
+                .ifPresent(a -> {
+                    a.setStatus(AssignmentStatus.ACCEPTED);
+                    a.setRespondedAt(Instant.now());
+                    a.setAcceptedAt(Instant.now());
+                    assignmentRepository.save(a);
+                });
+
+        // Drop all other pending assignments for this booking
+        assignmentRepository.dropOtherPendingAssignments(bookingId, worker.getWorkerId(), AssignmentStatus.DROPPED, Instant.now());
+
+        // Notify customer
+        notifyCustomerWorkerAssigned(booking, worker, pinCode);
+
+        // Record domain event
+        try {
+            domainEventService.recordEvent(
+                    booking,
+                    BookingEventType.PARTNER_ACCEPTED,
+                    BookingStage.SEARCHING,
+                    BookingStage.ACCEPTED,
+                    BookingActorType.WORKER,
+                    workerUserId
+            );
+        } catch (Exception e) {
+            logger.warn("Domain event record skipped: {}", e.getMessage());
+        }
+
+        // Cache tracking assignment in Redis
+        cacheTrackingAssignment(booking, worker, pinCode);
+
+        logger.info("Worker {} successfully accepted booking {}", worker.getWorkerId(), bookingId);
+        return booking;
+    }
+
+    /**
+     * Worker decline / rejection logic.
+     */
+    @Transactional
+    public void handleWorkerRejection(UUID bookingId, UUID workerUserId, UUID targetSubServiceId) {
+        Booking booking = bookingRepository.findById(bookingId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
+
+        Worker worker = workerRepository.findByUser_UserId(workerUserId)
+                .orElseThrow(() -> new ResourceNotFoundException("Worker profile not found: " + workerUserId));
+
+        assignmentRepository.findByBooking_BookingIdAndWorker_WorkerId(bookingId, worker.getWorkerId())
+                .ifPresent(a -> {
+                    a.setStatus(AssignmentStatus.REJECTED);
+                    a.setRespondedAt(Instant.now());
+                    assignmentRepository.save(a);
+                });
+
+        logger.info("Worker {} rejected booking {}", worker.getWorkerId(), bookingId);
+
+        // If no more active pending assignments exist for this booking, cascade to next batch
+        List<BookingAssignment> pending = assignmentRepository.findByBooking_BookingIdAndStatus(bookingId, AssignmentStatus.PENDING);
+        if (pending.isEmpty() && booking.getStatus() == BookingStage.SEARCHING) {
+            cascadeToNextBatch(booking, targetSubServiceId);
+        }
+    }
+
+    /**
+     * Worker arrival verification: marks booking as ARRIVED and issues 4-digit OTP to customer.
+     */
+    @Transactional
+    public Booking handleWorkerArrival(UUID bookingId, UUID workerUserId) {
+        Booking booking = bookingRepository.findById(bookingId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
+
+        if (booking.getWorker() == null || booking.getWorker().getUser() == null ||
+                !booking.getWorker().getUser().getUserId().equals(workerUserId)) {
+            throw new SecurityException("Unauthorized: Only the assigned worker can confirm arrival.");
+        }
+
+        if (booking.getStatus() != BookingStage.ACCEPTED &&
+            booking.getStatus() != BookingStage.CONFIRMED &&
+            booking.getStatus() != BookingStage.ON_THE_WAY) {
+            throw new IllegalStateException("Cannot arrive for booking in status: " + booking.getStatus());
+        }
+
+        Instant arrivedAt = Instant.now();
+        booking.setStatus(BookingStage.ARRIVED);
+        booking.setArrivedAt(arrivedAt);
+        booking = bookingRepository.save(booking);
+
+        // Issue 4-digit OTP to customer
+        bookingOtpService.issueOtp(booking);
+
+        // Broadcast arrival status to customer & worker
+        broadcastBookingUpdate(booking, "WORKER_ARRIVED");
+
+        logger.info("Worker {} arrived at customer location for booking {}", workerUserId, bookingId);
+        return booking;
+    }
+
+    /**
+     * Periodic scheduled poller (every 10 seconds): checks expired pending assignments and cascades.
+     */
+    @Scheduled(fixedDelay = 10000)
+    @Transactional
+    public void processExpiredAssignments() {
+        Instant now = Instant.now();
+        List<BookingAssignment> expiredList = assignmentRepository.findByStatusAndExpiresAtBefore(AssignmentStatus.PENDING, now);
+
+        if (expiredList.isEmpty()) {
+            return;
+        }
+
+        Set<UUID> affectedBookings = new HashSet<>();
+        for (BookingAssignment assignment : expiredList) {
+            assignment.setStatus(AssignmentStatus.TIMEOUT);
+            assignment.setRespondedAt(now);
+            assignmentRepository.save(assignment);
+            if (assignment.getBooking() != null) {
+                affectedBookings.add(assignment.getBooking().getBookingId());
+            }
+        }
+
+        for (UUID bookingId : affectedBookings) {
+            bookingRepository.findById(bookingId).ifPresent(booking -> {
+                if (booking.getStatus() == BookingStage.SEARCHING || booking.getStatus() == BookingStage.REQUESTED) {
+                    List<BookingAssignment> remainingPending = assignmentRepository
+                            .findByBooking_BookingIdAndStatus(bookingId, AssignmentStatus.PENDING);
+                    if (remainingPending.isEmpty()) {
+                        cascadeToNextBatch(booking, null);
+                    }
+                }
+            });
+        }
+    }
+
+    private void cascadeToNextBatch(Booking booking, UUID targetSubServiceId) {
+        List<Worker> allCandidates = findEligibleCandidateWorkers(
+                booking.getService() != null ? booking.getService().getServiceId() : null,
+                targetSubServiceId,
+                booking.getUserLat(),
+                booking.getUserLng(),
+                radiusMeters
+        );
+
+        // Filter out workers who already received an assignment for this booking
+        List<BookingAssignment> pastAssignments = assignmentRepository.findByBooking_BookingId(booking.getBookingId());
+        Set<UUID> attemptedWorkerIds = new HashSet<>();
+        for (BookingAssignment a : pastAssignments) {
+            attemptedWorkerIds.add(a.getWorker().getWorkerId());
+        }
+
+        List<Worker> nextCandidates = allCandidates.stream()
+                .filter(w -> !attemptedWorkerIds.contains(w.getWorkerId()))
+                .toList();
+
+        if (nextCandidates.isEmpty()) {
+            logger.warn("Exhausted all eligible worker batches for booking {}", booking.getBookingId());
+            booking.setStatus(BookingStage.WORKER_NOT_FOUND);
+            bookingRepository.save(booking);
+            notifyCustomerWorkerNotFound(booking);
+        } else {
+            int nextAttempt = pastAssignments.size() / dispatchBatchSize + 1;
+            dispatchToBatch(booking, nextCandidates, nextAttempt);
+        }
+    }
+
+    /**
+     * Candidate discovery: Redis GEO + PostGIS fallback with strict category, skills, and online filtering.
+     */
+    public List<Worker> findEligibleCandidateWorkers(UUID serviceId, UUID subServiceId,
+                                                    double userLat, double userLng,
+                                                    double effectiveRadius) {
+        List<Worker> candidates = new ArrayList<>();
+        Set<UUID> workerIds = new HashSet<>();
+
+        // 1. Redis GEO radius query
+        try {
+            Circle searchArea = new Circle(new Point(userLng, userLat), new Distance(effectiveRadius, Metrics.NEUTRAL));
+            GeoResults<RedisGeoCommands.GeoLocation<String>> results =
+                    redisTemplate.opsForGeo().radius("active_workers_geo", searchArea);
+            if (results != null && !results.getContent().isEmpty()) {
+                for (var res : results.getContent()) {
+                    try {
+                        UUID workerId = UUID.fromString(res.getContent().getName());
+                        workerRepository.findById(workerId).ifPresent(w -> {
+                            if (isCandidateEligible(w, subServiceId) && workerIds.add(w.getWorkerId())) {
+                                candidates.add(w);
+                            }
+                        });
+                    } catch (Exception ignored) {}
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("Redis GEO lookup fallback to PostGIS query: {}", e.getMessage());
+        }
+
+        // 2. PostGIS Fallback Query if Redis GEO returned no eligible candidates
+        if (candidates.isEmpty() && subServiceId != null) {
+            try {
+                List<Worker> dbNearby = workerRepository.findCandidateWorkersNearby(
+                        subServiceId.toString(), userLat, userLng, effectiveRadius);
+                for (Worker w : dbNearby) {
+                    if (isCandidateEligible(w, subServiceId) && workerIds.add(w.getWorkerId())) {
+                        candidates.add(w);
+                    }
+                }
+            } catch (Exception e) {
+                logger.warn("PostGIS candidate query exception: {}", e.getMessage());
+            }
+        }
+
+        // 3. Fallback: query active verified online workers
+        if (candidates.isEmpty()) {
+            List<Worker> onlineWorkers = workerRepository.findAll().stream()
+                    .filter(w -> isCandidateEligible(w, subServiceId))
+                    .filter(w -> {
+                        if (w.getCurrentLat() == null || w.getCurrentLng() == null) return false;
+                        double dist = calculateHaversineDistance(userLat, userLng, w.getCurrentLat(), w.getCurrentLng());
+                        return dist <= effectiveRadius;
+                    })
+                    .toList();
+            for (Worker w : onlineWorkers) {
+                if (workerIds.add(w.getWorkerId())) {
+                    candidates.add(w);
+                }
+            }
+        }
+
+        // Sort candidates by proximity to customer
+        candidates.sort(Comparator.comparingDouble(w ->
+                calculateHaversineDistance(userLat, userLng,
+                        w.getCurrentLat() != null ? w.getCurrentLat() : userLat,
+                        w.getCurrentLng() != null ? w.getCurrentLng() : userLng)));
+
+        return candidates;
+    }
+
+    public boolean isCandidateEligible(Worker worker, UUID targetSubServiceId) {
+        if (worker == null) return false;
+        if (!Boolean.TRUE.equals(worker.getIsOnline())) return false;
+        if (!Boolean.TRUE.equals(worker.getIsVerified())) return false;
+        if (worker.getBlockedUntil() != null && worker.getBlockedUntil().isAfter(Instant.now())) return false;
+
+        // Verify service category/subservice link if specified
+        if (targetSubServiceId != null) {
+            boolean hasSkill = workerServiceLinkRepository
+                    .existsById_WorkerIdAndId_SubServiceId(worker.getWorkerId(), targetSubServiceId);
+            if (!hasSkill) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    public List<NearbyWorkerDto> findNearbyAvailableWorkers(UUID serviceId, UUID subServiceId,
+                                                          double userLat, double userLng,
+                                                          Double radiusMeters) {
+        double effectiveRadius = (radiusMeters != null && radiusMeters > 0) ? radiusMeters : this.radiusMeters;
+        List<Worker> candidates = findEligibleCandidateWorkers(serviceId, subServiceId, userLat, userLng, effectiveRadius);
+
+        List<NearbyWorkerDto> dtoList = new ArrayList<>();
+        for (Worker w : candidates) {
+            double distanceMeters = calculateHaversineDistance(
+                    userLat, userLng,
+                    w.getCurrentLat() != null ? w.getCurrentLat() : userLat,
+                    w.getCurrentLng() != null ? w.getCurrentLng() : userLng);
+            int etaMins = Math.max(10, (int) Math.round((distanceMeters / 400.0) + 5));
+
+            dtoList.add(NearbyWorkerDto.builder()
+                    .workerId(w.getWorkerId())
+                    .fullName(w.getUser() != null ? w.getUser().getFullName() : "HomeEase Partner")
+                    .rating(4.8)
+                    .distanceMeters((double) Math.round(distanceMeters))
+                    .estimatedArrivalMinutes(etaMins)
+                    .avatarUrl(w.getAvatarUrl())
+                    .isOnline(w.getIsOnline())
+                    .build());
+        }
+        return dtoList;
+    }
+
+    @Transactional(readOnly = true)
+    public List<WorkerBookingRequestResponse> getPendingRequestsForWorker(UUID userId) {
+        Worker worker = workerRepository.findByUser_UserId(userId).orElse(null);
+        if (worker == null) {
+            return Collections.emptyList();
+        }
+
+        List<BookingAssignment> pending = assignmentRepository
+                .findByWorker_WorkerIdAndStatus(worker.getWorkerId(), AssignmentStatus.PENDING);
+
+        List<WorkerBookingRequestResponse> requests = new ArrayList<>();
+        Instant now = Instant.now();
+
+        for (BookingAssignment assignment : pending) {
+            if (assignment.getExpiresAt().isBefore(now)) {
+                continue;
+            }
+
+            Booking booking = assignment.getBooking();
+            if (booking != null && (booking.getStatus() == BookingStage.SEARCHING ||
+                                    booking.getStatus() == BookingStage.REQUESTED ||
+                                    booking.getStatus() == BookingStage.PENDING)) {
+
+                String serviceName = booking.getService() != null ? booking.getService().getName() : "Home Service";
+                String customerName = booking.getRecipientName() != null && !booking.getRecipientName().isBlank()
+                        ? booking.getRecipientName()
+                        : (booking.getUser() != null ? booking.getUser().getFullName() : "Customer");
+                String customerPhone = booking.getRecipientPhone() != null && !booking.getRecipientPhone().isBlank()
+                        ? booking.getRecipientPhone()
+                        : (booking.getUser() != null ? booking.getUser().getPhoneNumber() : "");
+                String customerAddress = booking.getRecipientAddress() != null && !booking.getRecipientAddress().isBlank()
+                        ? booking.getRecipientAddress()
+                        : "Customer Location";
+
+                requests.add(WorkerBookingRequestResponse.builder()
+                        .bookingId(booking.getBookingId())
+                        .bookingType(booking.getBookingType() != null ? booking.getBookingType().name() : "INSTANT")
+                        .status(booking.getStatus().name())
+                        .serviceName(serviceName)
+                        .subServiceName(serviceName)
+                        .customerName(customerName)
+                        .customerPhone(customerPhone)
+                        .customerAddress(customerAddress)
+                        .userLat(booking.getUserLat())
+                        .userLng(booking.getUserLng())
+                        .totalAmount(booking.getTotalAmount())
+                        .scheduledAt(booking.getScheduledAt())
+                        .scheduledEndAt(booking.getScheduledEndAt())
+                        .estimatedArrivalMinutes(booking.getEstimatedArrivalMinutes())
+                        .createdAt(booking.getCreatedAt())
+                        .build());
+            }
+        }
+        return requests;
+    }
+
+    private void sendWorkerJobAlert(Worker worker, Booking booking) {
+        String serviceName = booking.getService() != null ? booking.getService().getName() : "Home Service";
+        String customerName = booking.getRecipientName() != null && !booking.getRecipientName().isBlank()
+                ? booking.getRecipientName()
+                : (booking.getUser() != null ? booking.getUser().getFullName() : "Customer");
+        String customerPhone = booking.getRecipientPhone() != null && !booking.getRecipientPhone().isBlank()
+                ? booking.getRecipientPhone()
+                : (booking.getUser() != null ? booking.getUser().getPhoneNumber() : "");
+        String customerAddress = booking.getRecipientAddress() != null && !booking.getRecipientAddress().isBlank()
+                ? booking.getRecipientAddress()
+                : "Customer Location";
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("type", "NEW_JOB_REQUEST");
+        payload.put("bookingId", booking.getBookingId().toString());
+        payload.put("serviceName", serviceName);
+        payload.put("subServiceName", serviceName);
+        payload.put("bookingType", booking.getBookingType() != null ? booking.getBookingType().name() : "INSTANT");
+        payload.put("totalAmount", booking.getTotalAmount());
+        payload.put("customerName", customerName);
+        payload.put("customerPhone", customerPhone);
+        payload.put("customerAddress", customerAddress);
+        payload.put("customerLat", booking.getUserLat());
+        payload.put("customerLng", booking.getUserLng());
+        payload.put("userLat", booking.getUserLat());
+        payload.put("userLng", booking.getUserLng());
+        payload.put("status", booking.getStatus() != null ? booking.getStatus().name() : "SEARCHING");
+        payload.put("createdAt", booking.getCreatedAt() != null ? booking.getCreatedAt().toString() : Instant.now().toString());
+
+        // 1. WebSocket topic dispatch
+        try {
+            messagingTemplate.convertAndSend("/topic/worker/" + worker.getWorkerId() + "/requests", payload);
+            if (worker.getUser() != null) {
+                messagingTemplate.convertAndSend("/topic/worker/" + worker.getUser().getUserId() + "/requests", payload);
+            }
+            recordNotificationDelivery(booking, null, worker, DeliveryChannel.WS, "/topic/worker/" + worker.getWorkerId() + "/requests", DeliveryStatus.SENT);
+        } catch (Exception e) {
+            logger.debug("WebSocket alert dispatch failed: {}", e.getMessage());
+        }
+
+        // 2. FCM Push Notification
+        if (worker.getUser() != null) {
+            try {
+                fcmNotificationService.sendPushNotification(
+                        worker.getUser().getUserId(),
+                        "New Nearby Job Request!",
+                        "A customer requested " + serviceName + " near your location. Tap to accept!"
+                );
+                recordNotificationDelivery(booking, null, worker, DeliveryChannel.FCM, "FCM_PUSH", DeliveryStatus.SENT);
+            } catch (Exception e) {
+                logger.debug("FCM alert dispatch failed: {}", e.getMessage());
+            }
+        }
+    }
+
+    private void notifyCustomerWorkerAssigned(Booking booking, Worker worker, String pinCode) {
+        if (booking.getUser() == null) return;
+        UUID customerId = booking.getUser().getUserId();
+        String workerName = worker.getUser() != null ? worker.getUser().getFullName() : "HomeEase Partner";
+
+        // WebSocket
+        try {
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("type", "WORKER_ASSIGNED");
+            payload.put("bookingId", booking.getBookingId().toString());
+            payload.put("workerId", worker.getWorkerId().toString());
+            payload.put("workerName", workerName);
+            payload.put("workerPhone", worker.getUser() != null ? worker.getUser().getPhoneNumber() : "");
+            payload.put("status", "ACCEPTED");
+            payload.put("pinCode", pinCode);
+
+            messagingTemplate.convertAndSend("/topic/booking/" + booking.getBookingId(), payload);
+            messagingTemplate.convertAndSend("/topic/customer/" + customerId + "/booking", payload);
+            recordNotificationDelivery(booking, booking.getUser(), worker, DeliveryChannel.WS, "/topic/booking/" + booking.getBookingId(), DeliveryStatus.SENT);
+        } catch (Exception e) {
+            logger.debug("WebSocket notify error: {}", e.getMessage());
+        }
+
+        // FCM
+        try {
+            fcmNotificationService.sendPushNotification(
+                    customerId,
+                    "Partner Assigned!",
+                    workerName + " has accepted your booking and is preparing for your service."
+            );
+            recordNotificationDelivery(booking, booking.getUser(), worker, DeliveryChannel.FCM, "FCM_PUSH", DeliveryStatus.SENT);
+        } catch (Exception e) {
+            logger.debug("FCM notify error: {}", e.getMessage());
+        }
+    }
+
+    private void notifyCustomerWorkerNotFound(Booking booking) {
+        if (booking.getUser() == null) return;
+        UUID customerId = booking.getUser().getUserId();
+
+        try {
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("type", "WORKER_NOT_FOUND");
+            payload.put("bookingId", booking.getBookingId().toString());
+            payload.put("status", "WORKER_NOT_FOUND");
+            payload.put("message", "No partner is currently available in your area. Please try again shortly.");
+
+            messagingTemplate.convertAndSend("/topic/booking/" + booking.getBookingId(), payload);
+            messagingTemplate.convertAndSend("/topic/customer/" + customerId + "/booking", payload);
+        } catch (Exception ignored) {}
+
+        try {
+            fcmNotificationService.sendPushNotification(
+                    customerId,
+                    "Booking Update",
+                    "We are sorry, all partners in your area are currently occupied. Please try again shortly."
+            );
+        } catch (Exception ignored) {}
+    }
+
+    private void broadcastBookingUpdate(Booking booking, String eventType) {
+        try {
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("type", eventType);
+            payload.put("bookingId", booking.getBookingId().toString());
+            payload.put("status", booking.getStatus().name());
+            messagingTemplate.convertAndSend("/topic/booking/" + booking.getBookingId(), payload);
+            if (booking.getUser() != null) {
+                messagingTemplate.convertAndSend("/topic/customer/" + booking.getUser().getUserId() + "/booking", payload);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void cacheTrackingAssignment(Booking booking, Worker worker, String pinCode) {
+        try {
+            Map<String, Object> assignment = new HashMap<>();
+            assignment.put("bookingId", booking.getBookingId().toString());
+            assignment.put("workerId", worker.getWorkerId().toString());
+            assignment.put("userId", worker.getUser() != null ? worker.getUser().getUserId().toString() : "");
+            assignment.put("customerId", booking.getUser() != null ? booking.getUser().getUserId().toString() : "");
+            assignment.put("status", "ACCEPTED");
+            assignment.put("pinCode", pinCode);
+            assignment.put("acceptedAt", Instant.now().toString());
+            if (booking.getUserLocation() != null) {
+                assignment.put("customerLat", booking.getUserLocation().getY());
+                assignment.put("customerLng", booking.getUserLocation().getX());
+            }
+
+            String json = objectMapper.writeValueAsString(assignment);
+            redisTemplate.opsForValue().set("tracking:assignment:" + booking.getBookingId(), json, Duration.ofHours(24));
+        } catch (Exception e) {
+            logger.warn("Redis tracking assignment cache error: {}", e.getMessage());
+        }
+    }
+
+    private void recordNotificationDelivery(Booking booking, User user, Worker worker,
+                                            DeliveryChannel channel, String dest, DeliveryStatus status) {
+        try {
+            NotificationDelivery delivery = NotificationDelivery.builder()
+                    .booking(booking)
+                    .user(user)
+                    .worker(worker)
+                    .channel(channel)
+                    .topicDestination(dest)
+                    .status(status)
+                    .attemptNo(1)
+                    .sentAt(Instant.now())
+                    .deliveredAt(Instant.now())
+                    .build();
+            deliveryRepository.save(delivery);
+        } catch (Exception ignored) {}
+    }
+
+    public static double calculateHaversineDistance(double lat1, double lon1, double lat2, double lon2) {
+        double r = 6371000; // meters
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLon = Math.toRadians(lon2 - lon1);
+        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return r * c;
+    }
+}

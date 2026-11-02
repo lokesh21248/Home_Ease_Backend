@@ -208,6 +208,10 @@ public class WorkerService {
             try {
                 redisTemplate.opsForGeo().remove("active_workers_geo", worker.getWorkerId().toString());
             } catch (Exception ignored) {}
+        } else if (isOnline && worker.getWorkerId() != null && worker.getCurrentLat() != null && worker.getCurrentLng() != null && Boolean.TRUE.equals(worker.getIsVerified())) {
+            try {
+                redisTemplate.opsForGeo().add("active_workers_geo", new org.springframework.data.geo.Point(worker.getCurrentLng(), worker.getCurrentLat()), worker.getWorkerId().toString());
+            } catch (Exception ignored) {}
         }
 
         return mapToProfileResponse(worker);
