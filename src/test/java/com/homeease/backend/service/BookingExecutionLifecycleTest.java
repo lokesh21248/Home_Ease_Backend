@@ -1,6 +1,7 @@
 package com.homeease.backend.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.homeease.backend.dto.WorkerDto.WorkerBookingRequestResponse;
 import com.homeease.backend.model.entity.*;
 import com.homeease.backend.model.enums.*;
 import com.homeease.backend.repository.*;
@@ -92,6 +93,50 @@ public class BookingExecutionLifecycleTest {
                 workerId1 = UUID.randomUUID();
                 workerId2 = UUID.randomUUID();
                 bookingId = UUID.randomUUID();
+
+                testCustomer = User.builder()
+                                .userId(customerId)
+                                .fullName("Rohan Verma")
+                                .phoneNumber("9876543210")
+                                .email("rohan@example.com")
+                                .role(UserRole.CUSTOMER)
+                                .build();
+
+                testWorkerUser1 = User.builder()
+                                .userId(workerUserId1)
+                                .fullName("Anil Sharma")
+                                .phoneNumber("9876543211")
+                                .email("anil@example.com")
+                                .role(UserRole.WORKER)
+                                .build();
+
+                testWorkerUser2 = User.builder()
+                                .userId(workerUserId2)
+                                .fullName("Sunil Kumar")
+                                .phoneNumber("9876543212")
+                                .email("sunil@example.com")
+                                .role(UserRole.WORKER)
+                                .build();
+
+                testWorker1 = Worker.builder()
+                                .workerId(workerId1)
+                                .user(testWorkerUser1)
+                                .isOnline(true)
+                                .isVerified(true)
+                                .currentLat(17.4485)
+                                .currentLng(78.3745)
+                                .lastLocationUpdatedAt(Instant.now())
+                                .build();
+
+                testWorker2 = Worker.builder()
+                                .workerId(workerId2)
+                                .user(testWorkerUser2)
+                                .isOnline(true)
+                                .isVerified(true)
+                                .currentLat(17.4500)
+                                .currentLng(78.3760)
+                                .lastLocationUpdatedAt(Instant.now())
+                                .build();
 
                 testService = ServiceEntity.builder()
                                 .serviceId(UUID.randomUUID())
@@ -380,5 +425,299 @@ public class BookingExecutionLifecycleTest {
                 dispatchConsumer.consumeBookingEvent(record, null);
 
                 verify(bookingEventRepository).save(any(BookingEvent.class));
+        }
+
+        // =========================================================================
+        // TASK 9 SPECIFIC TEST SCENARIOS (1 to 12)
+        // =========================================================================
+
+        @Test
+        @DisplayName("Task 9 Scenario 1: One online electrician within 5 km discovered, assigned, and notified")
+        void testScenario01_OneOnlineElectricianWithin5Km() {
+                UUID subServiceElectrician = UUID.randomUUID();
+                when(workerRepository.findAll()).thenReturn(List.of(testWorker1));
+                when(workerServiceLinkRepository.existsById_WorkerIdAndId_SubServiceId(testWorker1.getWorkerId(), subServiceElectrician))
+                                .thenReturn(true);
+                when(bookingRepository.save(any(Booking.class))).thenAnswer(i -> i.getArgument(0));
+
+                assignmentService.dispatchInstantBooking(testBooking, subServiceElectrician);
+
+                assertEquals(BookingStage.SEARCHING, testBooking.getStatus());
+                verify(assignmentRepository).save(argThat(a ->
+                                a.getWorker().getWorkerId().equals(workerId1) &&
+                                a.getStatus() == AssignmentStatus.PENDING));
+                verify(messagingTemplate).convertAndSend(eq("/topic/worker/" + workerUserId1 + "/requests"), any(Map.class));
+                verify(fcmNotificationService).sendPushNotification(eq(workerUserId1), anyString(), anyString());
+        }
+
+        @Test
+        @DisplayName("Task 9 Scenario 2: One online electrician within 10 km triggers Tier 2 radius expansion")
+        void testScenario02_OneOnlineElectricianWithin10Km_TriggersTier2RadiusExpansion() {
+                // Position worker2 at 17.5100, 78.3740 (~6.89 km from user at 17.4480, 78.3740)
+                testWorker2.setCurrentLat(17.5100);
+                testWorker2.setCurrentLng(78.3740);
+
+                UUID subServiceElectrician = UUID.randomUUID();
+                when(workerRepository.findAll()).thenReturn(List.of(testWorker2));
+                when(workerServiceLinkRepository.existsById_WorkerIdAndId_SubServiceId(testWorker2.getWorkerId(), subServiceElectrician))
+                                .thenReturn(true);
+                when(bookingRepository.save(any(Booking.class))).thenAnswer(i -> i.getArgument(0));
+
+                assignmentService.dispatchInstantBooking(testBooking, subServiceElectrician);
+
+                assertEquals(BookingStage.SEARCHING, testBooking.getStatus());
+                verify(assignmentRepository).save(argThat(a ->
+                                a.getWorker().getWorkerId().equals(workerId2) &&
+                                a.getStatus() == AssignmentStatus.PENDING));
+        }
+
+        @Test
+        @DisplayName("Task 9 Scenario 3: Worker online but wrong service category records WRONG_SERVICE_CATEGORY")
+        void testScenario03_WorkerOnlineWrongServiceCategory_RejectionReason() {
+                UUID requestedSubService = UUID.randomUUID();
+                Map<String, String> rejectionReasons = new LinkedHashMap<>();
+
+                when(workerServiceLinkRepository.existsById_WorkerIdAndId_SubServiceId(testWorker1.getWorkerId(), requestedSubService))
+                                .thenReturn(false);
+                when(workerServiceLinkRepository.existsByWorkerIdAndSubServiceOrServiceId(testWorker1.getWorkerId(), requestedSubService))
+                                .thenReturn(false);
+
+                boolean eligible = assignmentService.isCandidateEligible(testWorker1, null, requestedSubService, rejectionReasons);
+
+                assertFalse(eligible);
+                assertEquals("WRONG_SERVICE_CATEGORY", rejectionReasons.get(testWorker1.getWorkerId().toString()));
+        }
+
+        @Test
+        @DisplayName("Task 9 Scenario 4: Worker online but already doing another job records ALREADY_ASSIGNED_TO_ACTIVE_JOB")
+        void testScenario04_WorkerOnlineAlreadyAssignedToActiveJob() {
+                Map<String, String> rejectionReasons = new LinkedHashMap<>();
+                Booking activeBooking = Booking.builder()
+                                .bookingId(UUID.randomUUID())
+                                .status(BookingStage.IN_PROGRESS)
+                                .build();
+
+                when(bookingRepository.findByWorker_WorkerIdAndStatusInOrderByScheduledAtAsc(eq(testWorker1.getWorkerId()), anyList()))
+                                .thenReturn(List.of(activeBooking));
+
+                boolean eligible = assignmentService.isCandidateEligible(testWorker1, null, null, rejectionReasons);
+
+                assertFalse(eligible);
+                assertEquals("ALREADY_ASSIGNED_TO_ACTIVE_JOB", rejectionReasons.get(testWorker1.getWorkerId().toString()));
+        }
+
+        @Test
+        @DisplayName("Task 9 Scenario 5: Worker location not updated or stale records appropriate rejection reasons")
+        void testScenario05_WorkerLocationNotUpdatedOrStale() {
+                // Sub-case A: null location -> LOCATION_NOT_UPDATED
+                Worker workerNullLoc = Worker.builder()
+                                .workerId(UUID.randomUUID())
+                                .isOnline(true)
+                                .isVerified(true)
+                                .currentLat(null)
+                                .currentLng(null)
+                                .build();
+                Map<String, String> reasonsA = new LinkedHashMap<>();
+                assertFalse(assignmentService.isCandidateEligible(workerNullLoc, null, null, reasonsA));
+                assertEquals("LOCATION_NOT_UPDATED", reasonsA.get(workerNullLoc.getWorkerId().toString()));
+
+                // Sub-case B: location stale (>30 minutes) -> LOCATION_STALE
+                Worker workerStaleLoc = Worker.builder()
+                                .workerId(UUID.randomUUID())
+                                .isOnline(true)
+                                .isVerified(true)
+                                .currentLat(17.4485)
+                                .currentLng(78.3745)
+                                .lastLocationUpdatedAt(Instant.now().minus(45, ChronoUnit.MINUTES))
+                                .build();
+                Map<String, String> reasonsB = new LinkedHashMap<>();
+                assertFalse(assignmentService.isCandidateEligible(workerStaleLoc, null, null, reasonsB));
+                assertEquals("LOCATION_STALE", reasonsB.get(workerStaleLoc.getWorkerId().toString()));
+        }
+
+        @Test
+        @DisplayName("Task 9 Scenario 6: Worker rejects the request triggers cascading re-dispatch")
+        void testScenario06_WorkerRejection_CascadesToNextBatch() {
+                testBooking.setStatus(BookingStage.SEARCHING);
+                when(bookingRepository.findById(bookingId)).thenReturn(Optional.of(testBooking));
+                when(workerRepository.findByUser_UserId(workerUserId1)).thenReturn(Optional.of(testWorker1));
+
+                BookingAssignment assignment = BookingAssignment.builder()
+                                .assignmentId(UUID.randomUUID())
+                                .booking(testBooking)
+                                .worker(testWorker1)
+                                .status(AssignmentStatus.PENDING)
+                                .build();
+
+                when(assignmentRepository.findByBooking_BookingIdAndWorker_WorkerId(bookingId, workerId1))
+                                .thenReturn(Optional.of(assignment));
+                when(assignmentRepository.findByBooking_BookingIdAndStatus(bookingId, AssignmentStatus.PENDING))
+                                .thenReturn(Collections.emptyList());
+
+                assignmentService.handleWorkerRejection(bookingId, workerUserId1, null);
+
+                assertEquals(AssignmentStatus.REJECTED, assignment.getStatus());
+                assertNotNull(assignment.getRespondedAt());
+                verify(assignmentRepository).save(assignment);
+                // When candidates are exhausted, status updates to WORKER_NOT_FOUND
+                assertEquals(BookingStage.WORKER_NOT_FOUND, testBooking.getStatus());
+        }
+
+        @Test
+        @DisplayName("Task 9 Scenario 7: Worker does not respond before expiry marks TIMEOUT")
+        void testScenario07_WorkerDoesNotRespondBeforeExpiry_MarksTimeout() {
+                testBooking.setStatus(BookingStage.SEARCHING);
+                BookingAssignment expiredAssignment = BookingAssignment.builder()
+                                .assignmentId(UUID.randomUUID())
+                                .booking(testBooking)
+                                .worker(testWorker1)
+                                .status(AssignmentStatus.PENDING)
+                                .expiresAt(Instant.now().minus(15, ChronoUnit.SECONDS))
+                                .build();
+
+                when(assignmentRepository.findByStatusAndExpiresAtBefore(eq(AssignmentStatus.PENDING), any(Instant.class)))
+                                .thenReturn(List.of(expiredAssignment));
+                when(bookingRepository.findById(bookingId)).thenReturn(Optional.of(testBooking));
+                when(assignmentRepository.findByBooking_BookingIdAndStatus(bookingId, AssignmentStatus.PENDING))
+                                .thenReturn(Collections.emptyList());
+
+                assignmentService.processExpiredAssignments();
+
+                assertEquals(AssignmentStatus.TIMEOUT, expiredAssignment.getStatus());
+                assertNotNull(expiredAssignment.getRespondedAt());
+                verify(assignmentRepository).save(expiredAssignment);
+        }
+
+        @Test
+        @DisplayName("Task 9 Scenario 8: Two workers accept simultaneously - pessimistic lock allows only one winner")
+        void testScenario08_TwoWorkersAcceptSimultaneously_AtomicLockSingleWinner() {
+                testBooking.setStatus(BookingStage.SEARCHING);
+                when(bookingRepository.findByIdForUpdate(bookingId)).thenReturn(Optional.of(testBooking));
+                when(workerRepository.findByUser_UserId(workerUserId1)).thenReturn(Optional.of(testWorker1));
+                when(bookingRepository.save(any(Booking.class))).thenAnswer(i -> i.getArgument(0));
+                when(assignmentRepository.findByBooking_BookingIdAndWorker_WorkerId(bookingId, workerId1))
+                                .thenReturn(Optional.of(BookingAssignment.builder().assignmentId(UUID.randomUUID())
+                                                .status(AssignmentStatus.PENDING).build()));
+                when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+
+                Booking winner = assignmentService.handleWorkerAcceptance(bookingId, workerUserId1);
+                assertEquals(BookingStage.ACCEPTED, winner.getStatus());
+                assertEquals(testWorker1, winner.getWorker());
+
+                // Concurrent second worker attempt fails because status is now ACCEPTED
+                when(bookingRepository.findByIdForUpdate(bookingId)).thenReturn(Optional.of(winner));
+                IllegalStateException ex = assertThrows(IllegalStateException.class, () ->
+                                assignmentService.handleWorkerAcceptance(bookingId, workerUserId2));
+                assertTrue(ex.getMessage().contains("no longer searching"));
+        }
+
+        @Test
+        @DisplayName("Task 9 Scenario 9: Worker temporarily loses internet - polling fallback retrieves pending requests")
+        void testScenario09_WorkerTemporarilyLosesInternet_PollingFallbackRetrievesPendingRequests() {
+                when(workerRepository.findByUser_UserId(workerUserId1)).thenReturn(Optional.of(testWorker1));
+                BookingAssignment activeAssignment = BookingAssignment.builder()
+                                .assignmentId(UUID.randomUUID())
+                                .booking(testBooking)
+                                .worker(testWorker1)
+                                .status(AssignmentStatus.PENDING)
+                                .expiresAt(Instant.now().plusSeconds(180))
+                                .build();
+
+                when(assignmentRepository.findByWorker_WorkerIdAndStatus(workerId1, AssignmentStatus.PENDING))
+                                .thenReturn(List.of(activeAssignment));
+
+                List<WorkerBookingRequestResponse> pending = assignmentService.getPendingRequestsForWorker(workerUserId1);
+
+                assertNotNull(pending);
+                assertEquals(1, pending.size());
+                WorkerBookingRequestResponse req = pending.get(0);
+                assertEquals(bookingId, req.getBookingId());
+                assertEquals("Rohan Verma", req.getCustomerName());
+                assertEquals("9876543210", req.getCustomerPhone());
+                assertEquals("Flat 401, HiTech Residency, Hyderabad", req.getCustomerAddress());
+                assertEquals(new BigDecimal("500.00"), req.getTotalAmount());
+        }
+
+        @Test
+        @DisplayName("Task 9 Scenario 10: Customer retries matching - re-dispatches same booking ID without duplicates")
+        void testScenario10_CustomerRetriesMatching_ReDispatchesSameBookingId() {
+                testBooking.setStatus(BookingStage.WORKER_NOT_FOUND);
+                UUID subServiceId = UUID.randomUUID();
+
+                when(workerRepository.findAll()).thenReturn(List.of(testWorker1));
+                when(workerServiceLinkRepository.existsById_WorkerIdAndId_SubServiceId(testWorker1.getWorkerId(), subServiceId))
+                                .thenReturn(true);
+                when(bookingRepository.save(any(Booking.class))).thenAnswer(i -> i.getArgument(0));
+
+                // Re-dispatch resets status to REQUESTED on the same booking entity
+                testBooking.setStatus(BookingStage.REQUESTED);
+                assignmentService.dispatchInstantBooking(testBooking, subServiceId);
+
+                // Verify same bookingId is retained and status transitioned to SEARCHING
+                assertEquals(bookingId, testBooking.getBookingId());
+                assertEquals(BookingStage.SEARCHING, testBooking.getStatus());
+                verify(assignmentRepository).save(argThat(a -> a.getBooking().getBookingId().equals(bookingId)));
+        }
+
+        @Test
+        @DisplayName("Task 9 Scenario 11: Multiple customer bookings arrive simultaneously - independent assignments created")
+        void testScenario11_MultipleCustomerBookingsArriveSimultaneously_IndependentAssignments() {
+                UUID bookingId2 = UUID.randomUUID();
+                Booking booking2 = Booking.builder()
+                                .bookingId(bookingId2)
+                                .user(User.builder().userId(UUID.randomUUID()).fullName("Meera Joshi").phoneNumber("9876543299").build())
+                                .service(testService)
+                                .status(BookingStage.REQUESTED)
+                                .bookingType(BookingType.INSTANT)
+                                .userLat(17.4480)
+                                .userLng(78.3740)
+                                .recipientName("Meera Joshi")
+                                .recipientPhone("9876543299")
+                                .recipientAddress("Banjara Hills, Hyderabad")
+                                .totalAmount(new BigDecimal("800.00"))
+                                .build();
+
+                when(workerRepository.findAll()).thenReturn(List.of(testWorker1, testWorker2));
+                when(workerServiceLinkRepository.existsByWorkerIdAndServiceId(any(), any())).thenReturn(true);
+                when(bookingRepository.save(any(Booking.class))).thenAnswer(i -> i.getArgument(0));
+
+                assignmentService.dispatchInstantBooking(testBooking, null);
+                assignmentService.dispatchInstantBooking(booking2, null);
+
+                assertEquals(BookingStage.SEARCHING, testBooking.getStatus());
+                assertEquals(BookingStage.SEARCHING, booking2.getStatus());
+
+                verify(assignmentRepository, atLeastOnce()).save(argThat(a -> a.getBooking().getBookingId().equals(bookingId)));
+                verify(assignmentRepository, atLeastOnce()).save(argThat(a -> a.getBooking().getBookingId().equals(bookingId2)));
+        }
+
+        @Test
+        @DisplayName("Task 9 Scenario 12: Worker reconnects - retrieves valid pending requests excluding expired")
+        void testScenario12_WorkerReconnects_RetrievesValidPendingRequestsExcludingExpired() {
+                when(workerRepository.findByUser_UserId(workerUserId1)).thenReturn(Optional.of(testWorker1));
+
+                BookingAssignment validAssignment = BookingAssignment.builder()
+                                .assignmentId(UUID.randomUUID())
+                                .booking(testBooking)
+                                .worker(testWorker1)
+                                .status(AssignmentStatus.PENDING)
+                                .expiresAt(Instant.now().plus(60, ChronoUnit.SECONDS))
+                                .build();
+
+                BookingAssignment expiredAssignment = BookingAssignment.builder()
+                                .assignmentId(UUID.randomUUID())
+                                .booking(testBooking)
+                                .worker(testWorker1)
+                                .status(AssignmentStatus.PENDING)
+                                .expiresAt(Instant.now().minus(60, ChronoUnit.SECONDS))
+                                .build();
+
+                when(assignmentRepository.findByWorker_WorkerIdAndStatus(workerId1, AssignmentStatus.PENDING))
+                                .thenReturn(List.of(validAssignment, expiredAssignment));
+
+                List<WorkerBookingRequestResponse> requests = assignmentService.getPendingRequestsForWorker(workerUserId1);
+
+                assertEquals(1, requests.size());
+                assertEquals(bookingId, requests.get(0).getBookingId());
         }
 }

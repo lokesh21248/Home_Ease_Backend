@@ -66,7 +66,8 @@ public class DispatchEngine {
 
         // 1. Attempt Redis GEOSEARCH first
         try {
-            Circle area = new Circle(new org.springframework.data.geo.Point(booking.getUserLng(), booking.getUserLat()), new Distance(radiusMeters, Metrics.NEUTRAL));
+            double radiusKm = radiusMeters > 0 ? radiusMeters / 1000.0 : 5.0;
+            Circle area = new Circle(new org.springframework.data.geo.Point(booking.getUserLng(), booking.getUserLat()), new Distance(radiusKm, Metrics.KILOMETERS));
             GeoResults<RedisGeoCommands.GeoLocation<String>> results = redisTemplate.opsForGeo().radius("active_workers_geo", area);
             if (results != null && !results.getContent().isEmpty()) {
                 for (var result : results.getContent()) {

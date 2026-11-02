@@ -78,6 +78,9 @@ public class Worker {
     @Column(name = "current_lng")
     private Double currentLng;
 
+    @Column(name = "last_location_updated_at")
+    private Instant lastLocationUpdatedAt;
+
     @Transient
     private Point location;
 

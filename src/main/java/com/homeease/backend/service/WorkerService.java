@@ -205,13 +205,29 @@ public class WorkerService {
         worker = workerRepository.save(worker);
 
         if (!isOnline && worker.getWorkerId() != null) {
+            // Going OFFLINE: remove from Redis GEO dispatch pool
             try {
                 redisTemplate.opsForGeo().remove("active_workers_geo", worker.getWorkerId().toString());
+                logger.info("[WorkerService] Removed worker {} from active_workers_geo (OFFLINE)", worker.getWorkerId());
             } catch (Exception ignored) {}
-        } else if (isOnline && worker.getWorkerId() != null && worker.getCurrentLat() != null && worker.getCurrentLng() != null && Boolean.TRUE.equals(worker.getIsVerified())) {
-            try {
-                redisTemplate.opsForGeo().add("active_workers_geo", new org.springframework.data.geo.Point(worker.getCurrentLng(), worker.getCurrentLat()), worker.getWorkerId().toString());
-            } catch (Exception ignored) {}
+        } else if (isOnline && worker.getWorkerId() != null && Boolean.TRUE.equals(worker.getIsVerified())) {
+            // Going ONLINE: add to Redis GEO if we have coordinates
+            if (worker.getCurrentLat() != null && worker.getCurrentLng() != null) {
+                try {
+                    redisTemplate.opsForGeo().add(
+                        "active_workers_geo",
+                        new org.springframework.data.geo.Point(worker.getCurrentLng(), worker.getCurrentLat()),
+                        worker.getWorkerId().toString()
+                    );
+                    logger.info("[WorkerService] Added worker {} to active_workers_geo at ({},{}) (ONLINE)",
+                            worker.getWorkerId(), worker.getCurrentLat(), worker.getCurrentLng());
+                } catch (Exception e) {
+                    logger.warn("[WorkerService] Failed to add worker {} to GEO on ONLINE toggle: {}", worker.getWorkerId(), e.getMessage());
+                }
+            } else {
+                logger.warn("[WorkerService] Worker {} is ONLINE but has no GPS coordinates yet. Send location heartbeat to become discoverable.",
+                        worker.getWorkerId());
+            }
         }
 
         return mapToProfileResponse(worker);
@@ -224,8 +240,13 @@ public class WorkerService {
 
         worker.setCurrentLat(lat);
         worker.setCurrentLng(lng);
+        worker.setLastLocationUpdatedAt(Instant.now());
 
         workerRepository.save(worker);
+
+        try {
+            redisTemplate.opsForValue().set("worker:last_location_time:" + worker.getWorkerId(), String.valueOf(Instant.now().toEpochMilli()));
+        } catch (Exception ignored) {}
 
         if (Boolean.TRUE.equals(worker.getIsOnline()) && Boolean.TRUE.equals(worker.getIsVerified())) {
             try {

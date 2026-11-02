@@ -49,6 +49,7 @@ public class BookingExecutionControllerIntegrationTest {
     @MockBean private ServiceSessionService sessionService;
     @MockBean private BookingEventRepository bookingEventRepository;
     @MockBean private BookingRepository bookingRepository;
+    @MockBean private com.homeease.backend.repository.BookingServiceItemRepository bookingServiceItemRepository;
     @MockBean private WorkerRepository workerRepository;
     @MockBean private JwtService jwtService;
 

@@ -17,6 +17,26 @@ public interface WorkerServiceLinkRepository extends JpaRepository<WorkerService
     List<WorkerServiceLink> findById_SubServiceId(UUID subServiceId);
     boolean existsById_WorkerIdAndId_SubServiceId(UUID workerId, UUID subServiceId);
 
+    @Query("""
+        SELECT COUNT(wsl) > 0 FROM WorkerServiceLink wsl
+        WHERE wsl.id.workerId = :workerId
+          AND (
+              wsl.id.subServiceId = :subServiceId
+              OR wsl.subService.service.serviceId = :subServiceId
+          )
+    """)
+    boolean existsByWorkerIdAndSubServiceOrServiceId(@Param("workerId") UUID workerId, @Param("subServiceId") UUID subServiceId);
+
+    @Query("""
+        SELECT COUNT(wsl) > 0 FROM WorkerServiceLink wsl
+        WHERE wsl.id.workerId = :workerId
+          AND (
+              wsl.subService.service.serviceId = :serviceId
+              OR wsl.id.subServiceId = :serviceId
+          )
+    """)
+    boolean existsByWorkerIdAndServiceId(@Param("workerId") UUID workerId, @Param("serviceId") UUID serviceId);
+
     @Modifying
     @Query("DELETE FROM WorkerServiceLink wsl WHERE wsl.id.workerId = :workerId")
     void deleteByWorkerId(@Param("workerId") UUID workerId);

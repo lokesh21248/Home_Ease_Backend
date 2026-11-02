@@ -9,6 +9,7 @@ import com.homeease.backend.model.enums.*;
 import com.homeease.backend.repository.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.geo.Circle;
 import org.springframework.data.geo.Distance;
@@ -45,15 +46,48 @@ public class BookingAssignmentService {
     private final SimpMessagingTemplate messagingTemplate;
     private final BookingOtpService bookingOtpService;
     private final ObjectMapper objectMapper;
+    private final DispatchAuditLogRepository auditLogRepository;
 
     @Value("${homeease.dispatch.radius-meters:5000}")
     private double radiusMeters = 5000.0;
+
+    // Radius expansion tiers (meters): 5km → 10km → 15km → 20km (Task 4)
+    private static final double[] RADIUS_EXPANSION_TIERS = {5000.0, 10000.0, 15000.0, 20000.0};
 
     @Value("${homeease.dispatch.batch-size:5}")
     private int dispatchBatchSize = 5;
 
     @Value("${homeease.dispatch.response-timeout-seconds:180}")
     private int responseTimeoutSeconds = 180;
+
+    @Autowired
+    public BookingAssignmentService(WorkerRepository workerRepository,
+                                  WorkerServiceLinkRepository workerServiceLinkRepository,
+                                  BookingRepository bookingRepository,
+                                  BookingAssignmentRepository assignmentRepository,
+                                  ReviewRepository reviewRepository,
+                                  NotificationDeliveryRepository deliveryRepository,
+                                  RedisTemplate<String, String> redisTemplate,
+                                  FcmNotificationService fcmNotificationService,
+                                  BookingDomainEventService domainEventService,
+                                  SimpMessagingTemplate messagingTemplate,
+                                  BookingOtpService bookingOtpService,
+                                  ObjectMapper objectMapper,
+                                  @Autowired(required = false) DispatchAuditLogRepository auditLogRepository) {
+        this.workerRepository = workerRepository;
+        this.workerServiceLinkRepository = workerServiceLinkRepository;
+        this.bookingRepository = bookingRepository;
+        this.assignmentRepository = assignmentRepository;
+        this.reviewRepository = reviewRepository;
+        this.deliveryRepository = deliveryRepository;
+        this.redisTemplate = redisTemplate;
+        this.fcmNotificationService = fcmNotificationService;
+        this.domainEventService = domainEventService;
+        this.messagingTemplate = messagingTemplate;
+        this.bookingOtpService = bookingOtpService;
+        this.objectMapper = objectMapper;
+        this.auditLogRepository = auditLogRepository;
+    }
 
     public BookingAssignmentService(WorkerRepository workerRepository,
                                   WorkerServiceLinkRepository workerServiceLinkRepository,
@@ -67,38 +101,59 @@ public class BookingAssignmentService {
                                   SimpMessagingTemplate messagingTemplate,
                                   BookingOtpService bookingOtpService,
                                   ObjectMapper objectMapper) {
-        this.workerRepository = workerRepository;
-        this.workerServiceLinkRepository = workerServiceLinkRepository;
-        this.bookingRepository = bookingRepository;
-        this.assignmentRepository = assignmentRepository;
-        this.reviewRepository = reviewRepository;
-        this.deliveryRepository = deliveryRepository;
-        this.redisTemplate = redisTemplate;
-        this.fcmNotificationService = fcmNotificationService;
-        this.domainEventService = domainEventService;
-        this.messagingTemplate = messagingTemplate;
-        this.bookingOtpService = bookingOtpService;
-        this.objectMapper = objectMapper;
+        this(workerRepository, workerServiceLinkRepository, bookingRepository, assignmentRepository,
+             reviewRepository, deliveryRepository, redisTemplate, fcmNotificationService,
+             domainEventService, messagingTemplate, bookingOtpService, objectMapper, null);
     }
 
     /**
-     * Dispatch Instant Booking: Finds eligible candidates in vicinity and dispatches to first batch.
+     * Dispatch Instant Booking: Finds eligible candidates using radius expansion tiers (5→10→15→20km).
      */
     @Transactional
     public void dispatchInstantBooking(Booking booking, UUID targetSubServiceId) {
         if (booking == null) return;
-        logger.info("Initiating candidate matching & batch dispatch for booking {}", booking.getBookingId());
+        UUID serviceId = booking.getService() != null ? booking.getService().getServiceId() : null;
+        logger.info("Initiating candidate matching & batch dispatch for booking {} (serviceId={}, subServiceId={})",
+                booking.getBookingId(), serviceId, targetSubServiceId);
 
-        List<Worker> eligibleCandidates = findEligibleCandidateWorkers(
-                booking.getService() != null ? booking.getService().getServiceId() : null,
-                targetSubServiceId,
-                booking.getUserLat(),
-                booking.getUserLng(),
-                radiusMeters
+        List<Worker> eligibleCandidates = new ArrayList<>();
+        double usedRadius = radiusMeters;
+        Map<String, String> rejectionReasons = new LinkedHashMap<>();
+
+        for (double tier : RADIUS_EXPANSION_TIERS) {
+            rejectionReasons.clear();
+            eligibleCandidates = findEligibleCandidateWorkers(
+                    serviceId,
+                    targetSubServiceId,
+                    booking.getUserLat(),
+                    booking.getUserLng(),
+                    tier,
+                    rejectionReasons
+            );
+            usedRadius = tier;
+            if (!eligibleCandidates.isEmpty()) {
+                logger.info("Found {} eligible workers within {} m for booking {}", eligibleCandidates.size(), tier, booking.getBookingId());
+                break;
+            }
+            logger.info("No workers found within {} m for booking {}, expanding radius...", tier, booking.getBookingId());
+        }
+
+        // Record Dispatch Audit Log (Task 8)
+        recordDispatchAuditLog(
+                booking,
+                serviceId,
+                usedRadius,
+                eligibleCandidates.size(),
+                rejectionReasons,
+                null,
+                "CONSUMED",
+                eligibleCandidates.isEmpty() ? "SKIPPED" : "SENT",
+                eligibleCandidates.isEmpty() ? "SKIPPED" : "SENT",
+                eligibleCandidates.isEmpty() ? "WORKER_NOT_FOUND" : "SEARCHING"
         );
 
         if (eligibleCandidates.isEmpty()) {
-            logger.warn("No eligible workers found nearby for booking {}", booking.getBookingId());
+            logger.warn("No eligible workers found in any radius tier for booking {}", booking.getBookingId());
             booking.setStatus(BookingStage.WORKER_NOT_FOUND);
             bookingRepository.save(booking);
 
@@ -219,6 +274,20 @@ public class BookingAssignmentService {
         // Cache tracking assignment in Redis
         cacheTrackingAssignment(booking, worker, pinCode);
 
+        // Record acceptance in dispatch audit log
+        recordDispatchAuditLog(
+                booking,
+                booking.getService() != null ? booking.getService().getServiceId() : null,
+                radiusMeters,
+                1,
+                Collections.emptyMap(),
+                worker.getWorkerId(),
+                "CONSUMED",
+                "DELIVERED",
+                "DELIVERED",
+                "ACCEPTED"
+        );
+
         logger.info("Worker {} successfully accepted booking {}", worker.getWorkerId(), bookingId);
         return booking;
     }
@@ -321,13 +390,18 @@ public class BookingAssignmentService {
     }
 
     private void cascadeToNextBatch(Booking booking, UUID targetSubServiceId) {
-        List<Worker> allCandidates = findEligibleCandidateWorkers(
-                booking.getService() != null ? booking.getService().getServiceId() : null,
-                targetSubServiceId,
-                booking.getUserLat(),
-                booking.getUserLng(),
-                radiusMeters
-        );
+        UUID serviceId = booking.getService() != null ? booking.getService().getServiceId() : null;
+        List<Worker> allCandidates = new ArrayList<>();
+        for (double tier : RADIUS_EXPANSION_TIERS) {
+            allCandidates = findEligibleCandidateWorkers(
+                    serviceId,
+                    targetSubServiceId,
+                    booking.getUserLat(),
+                    booking.getUserLng(),
+                    tier
+            );
+            if (!allCandidates.isEmpty()) break;
+        }
 
         // Filter out workers who already received an assignment for this booking
         List<BookingAssignment> pastAssignments = assignmentRepository.findByBooking_BookingId(booking.getBookingId());
@@ -345,6 +419,19 @@ public class BookingAssignmentService {
             booking.setStatus(BookingStage.WORKER_NOT_FOUND);
             bookingRepository.save(booking);
             notifyCustomerWorkerNotFound(booking);
+
+            recordDispatchAuditLog(
+                    booking,
+                    serviceId,
+                    radiusMeters,
+                    0,
+                    Map.of("ALL_WORKERS", "EXHAUSTED_OR_DECLINED"),
+                    null,
+                    "CONSUMED",
+                    "SENT",
+                    "SENT",
+                    "WORKER_NOT_FOUND"
+            );
         } else {
             int nextAttempt = pastAssignments.size() / dispatchBatchSize + 1;
             dispatchToBatch(booking, nextCandidates, nextAttempt);
@@ -357,12 +444,25 @@ public class BookingAssignmentService {
     public List<Worker> findEligibleCandidateWorkers(UUID serviceId, UUID subServiceId,
                                                     double userLat, double userLng,
                                                     double effectiveRadius) {
+        return findEligibleCandidateWorkers(serviceId, subServiceId, userLat, userLng, effectiveRadius, new LinkedHashMap<>());
+    }
+
+    public List<Worker> findEligibleCandidateWorkers(UUID serviceId, UUID subServiceId,
+                                                    double userLat, double userLng,
+                                                    double effectiveRadius,
+                                                    Map<String, String> rejectionReasons) {
         List<Worker> candidates = new ArrayList<>();
         Set<UUID> workerIds = new HashSet<>();
 
-        // 1. Redis GEO radius query
+        if (Double.isNaN(userLat) || Double.isNaN(userLng) || Math.abs(userLat) > 90.0 || Math.abs(userLng) > 180.0) {
+            logger.warn("Invalid customer coordinates for dispatch: lat={}, lng={}", userLat, userLng);
+            return Collections.emptyList();
+        }
+
+        // 1. Redis GEO radius query — use KILOMETERS metric (convert meters→km)
         try {
-            Circle searchArea = new Circle(new Point(userLng, userLat), new Distance(effectiveRadius, Metrics.NEUTRAL));
+            double radiusKm = effectiveRadius / 1000.0;
+            Circle searchArea = new Circle(new Point(userLng, userLat), new Distance(radiusKm, Metrics.KILOMETERS));
             GeoResults<RedisGeoCommands.GeoLocation<String>> results =
                     redisTemplate.opsForGeo().radius("active_workers_geo", searchArea);
             if (results != null && !results.getContent().isEmpty()) {
@@ -370,7 +470,7 @@ public class BookingAssignmentService {
                     try {
                         UUID workerId = UUID.fromString(res.getContent().getName());
                         workerRepository.findById(workerId).ifPresent(w -> {
-                            if (isCandidateEligible(w, subServiceId) && workerIds.add(w.getWorkerId())) {
+                            if (isCandidateEligible(w, serviceId, subServiceId, rejectionReasons) && workerIds.add(w.getWorkerId())) {
                                 candidates.add(w);
                             }
                         });
@@ -387,7 +487,7 @@ public class BookingAssignmentService {
                 List<Worker> dbNearby = workerRepository.findCandidateWorkersNearby(
                         subServiceId.toString(), userLat, userLng, effectiveRadius);
                 for (Worker w : dbNearby) {
-                    if (isCandidateEligible(w, subServiceId) && workerIds.add(w.getWorkerId())) {
+                    if (isCandidateEligible(w, serviceId, subServiceId, rejectionReasons) && workerIds.add(w.getWorkerId())) {
                         candidates.add(w);
                     }
                 }
@@ -399,7 +499,7 @@ public class BookingAssignmentService {
         // 3. Fallback: query active verified online workers
         if (candidates.isEmpty()) {
             List<Worker> onlineWorkers = workerRepository.findAll().stream()
-                    .filter(w -> isCandidateEligible(w, subServiceId))
+                    .filter(w -> isCandidateEligible(w, serviceId, subServiceId, rejectionReasons))
                     .filter(w -> {
                         if (w.getCurrentLat() == null || w.getCurrentLng() == null) return false;
                         double dist = calculateHaversineDistance(userLat, userLng, w.getCurrentLat(), w.getCurrentLng());
@@ -423,16 +523,85 @@ public class BookingAssignmentService {
     }
 
     public boolean isCandidateEligible(Worker worker, UUID targetSubServiceId) {
-        if (worker == null) return false;
-        if (!Boolean.TRUE.equals(worker.getIsOnline())) return false;
-        if (!Boolean.TRUE.equals(worker.getIsVerified())) return false;
-        if (worker.getBlockedUntil() != null && worker.getBlockedUntil().isAfter(Instant.now())) return false;
+        return isCandidateEligible(worker, null, targetSubServiceId, new LinkedHashMap<>());
+    }
 
-        // Verify service category/subservice link if specified
-        if (targetSubServiceId != null) {
-            boolean hasSkill = workerServiceLinkRepository
-                    .existsById_WorkerIdAndId_SubServiceId(worker.getWorkerId(), targetSubServiceId);
-            if (!hasSkill) {
+    public boolean isCandidateEligible(Worker worker, UUID serviceId, UUID targetSubServiceId, Map<String, String> rejectionReasons) {
+        if (worker == null) return false;
+        String wId = worker.getWorkerId() != null ? worker.getWorkerId().toString() : "unknown";
+
+        // 1. Online check (Task 2)
+        if (!Boolean.TRUE.equals(worker.getIsOnline())) {
+            if (rejectionReasons != null) rejectionReasons.put(wId, "WORKER_OFFLINE");
+            return false;
+        }
+
+        // 2. Verification check (Task 2)
+        if (!Boolean.TRUE.equals(worker.getIsVerified())) {
+            if (rejectionReasons != null) rejectionReasons.put(wId, "WORKER_UNVERIFIED");
+            return false;
+        }
+
+        // 3. Blocked / Penalty penalty check (Task 2)
+        if (worker.getBlockedUntil() != null && worker.getBlockedUntil().isAfter(Instant.now())) {
+            if (rejectionReasons != null) rejectionReasons.put(wId, "WORKER_TEMPORARILY_BLOCKED");
+            return false;
+        }
+
+        // 4. Active job check (Task 2 & Task 9 Test 4)
+        List<BookingStage> activeStages = List.of(
+                BookingStage.ACCEPTED,
+                BookingStage.CONFIRMED,
+                BookingStage.ON_THE_WAY,
+                BookingStage.ARRIVED,
+                BookingStage.IN_PROGRESS
+        );
+        List<Booking> activeBookings = bookingRepository.findByWorker_WorkerIdAndStatusInOrderByScheduledAtAsc(
+                worker.getWorkerId(), activeStages);
+        if (!activeBookings.isEmpty()) {
+            if (rejectionReasons != null) rejectionReasons.put(wId, "ALREADY_ASSIGNED_TO_ACTIVE_JOB");
+            return false;
+        }
+
+        List<BookingAssignment> activeAssignments = assignmentRepository.findByWorker_WorkerIdAndStatus(
+                worker.getWorkerId(), AssignmentStatus.ACCEPTED);
+        if (!activeAssignments.isEmpty()) {
+            if (rejectionReasons != null) rejectionReasons.put(wId, "ACTIVE_ASSIGNMENT_IN_PROGRESS");
+            return false;
+        }
+
+        // 5. Location validity & freshness check (Task 2 & Task 9 Test 5)
+        if (worker.getCurrentLat() == null || worker.getCurrentLng() == null) {
+            if (rejectionReasons != null) rejectionReasons.put(wId, "LOCATION_NOT_UPDATED");
+            return false;
+        }
+        if (Math.abs(worker.getCurrentLat()) > 90.0 || Math.abs(worker.getCurrentLng()) > 180.0 ||
+            (worker.getCurrentLat() == 0.0 && worker.getCurrentLng() == 0.0)) {
+            if (rejectionReasons != null) rejectionReasons.put(wId, "INVALID_COORDINATES");
+            return false;
+        }
+        if (worker.getLastLocationUpdatedAt() != null) {
+            if (worker.getLastLocationUpdatedAt().isBefore(Instant.now().minus(30, ChronoUnit.MINUTES))) {
+                if (rejectionReasons != null) rejectionReasons.put(wId, "LOCATION_STALE");
+                return false;
+            }
+        }
+
+        // 6. Category / Sub-service trade skill qualification check (Task 3 & Task 9 Test 3)
+        if (targetSubServiceId != null || serviceId != null) {
+            boolean qualified = false;
+
+            if (targetSubServiceId != null) {
+                qualified = workerServiceLinkRepository.existsById_WorkerIdAndId_SubServiceId(worker.getWorkerId(), targetSubServiceId)
+                        || workerServiceLinkRepository.existsByWorkerIdAndSubServiceOrServiceId(worker.getWorkerId(), targetSubServiceId);
+            }
+
+            if (!qualified && serviceId != null) {
+                qualified = workerServiceLinkRepository.existsByWorkerIdAndServiceId(worker.getWorkerId(), serviceId);
+            }
+
+            if (!qualified) {
+                if (rejectionReasons != null) rejectionReasons.put(wId, "WRONG_SERVICE_CATEGORY");
                 return false;
             }
         }
@@ -689,6 +858,37 @@ public class BookingAssignmentService {
                     .build();
             deliveryRepository.save(delivery);
         } catch (Exception ignored) {}
+    }
+
+    private void recordDispatchAuditLog(Booking booking, UUID serviceId, double radiusMeters,
+                                        int eligibleCount, Map<String, String> rejectionReasons,
+                                        UUID selectedWorkerId, String kafkaStatus,
+                                        String wsStatus, String fcmStatus, String assignmentStatus) {
+        if (auditLogRepository == null || booking == null) return;
+        try {
+            String reasonsJson = rejectionReasons != null && !rejectionReasons.isEmpty()
+                    ? objectMapper.writeValueAsString(rejectionReasons)
+                    : null;
+
+            DispatchAuditLog log = DispatchAuditLog.builder()
+                    .booking(booking)
+                    .serviceId(serviceId)
+                    .customerLat(booking.getUserLat())
+                    .customerLng(booking.getUserLng())
+                    .searchRadiusMeters(radiusMeters)
+                    .eligibleWorkersCount(eligibleCount)
+                    .rejectedWorkerReasons(reasonsJson)
+                    .selectedWorkerId(selectedWorkerId)
+                    .kafkaStatus(kafkaStatus)
+                    .websocketStatus(wsStatus)
+                    .fcmStatus(fcmStatus)
+                    .assignmentStatus(assignmentStatus)
+                    .build();
+
+            auditLogRepository.save(log);
+        } catch (Exception e) {
+            logger.debug("Dispatch audit log save skipped: {}", e.getMessage());
+        }
     }
 
     public static double calculateHaversineDistance(double lat1, double lon1, double lat2, double lon2) {

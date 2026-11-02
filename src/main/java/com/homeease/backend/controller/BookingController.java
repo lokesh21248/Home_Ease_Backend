@@ -10,6 +10,7 @@ import com.homeease.backend.model.enums.BookingStage;
 import com.homeease.backend.model.enums.BookingType;
 import com.homeease.backend.repository.BookingEventRepository;
 import com.homeease.backend.repository.BookingRepository;
+import com.homeease.backend.repository.BookingServiceItemRepository;
 import com.homeease.backend.repository.WorkerRepository;
 import com.homeease.backend.security.JwtService;
 import com.homeease.backend.service.*;
@@ -36,6 +37,7 @@ public class BookingController {
     private final ServiceSessionService sessionService;
     private final BookingEventRepository bookingEventRepository;
     private final BookingRepository bookingRepository;
+    private final BookingServiceItemRepository bookingServiceItemRepository;
     private final WorkerRepository workerRepository;
     private final JwtService jwtService;
 
@@ -50,6 +52,7 @@ public class BookingController {
                              ServiceSessionService sessionService,
                              BookingEventRepository bookingEventRepository,
                              BookingRepository bookingRepository,
+                             BookingServiceItemRepository bookingServiceItemRepository,
                              WorkerRepository workerRepository,
                              JwtService jwtService) {
         this.bookingStateMachine = bookingStateMachine;
@@ -63,6 +66,7 @@ public class BookingController {
         this.sessionService = sessionService;
         this.bookingEventRepository = bookingEventRepository;
         this.bookingRepository = bookingRepository;
+        this.bookingServiceItemRepository = bookingServiceItemRepository;
         this.workerRepository = workerRepository;
         this.jwtService = jwtService;
     }
@@ -452,6 +456,43 @@ public class BookingController {
         response.put("durationMinutes", session.getDurationMinutes());
         response.put("finalPrice", session.getFinalPrice());
         return ResponseEntity.ok(response);
+    }
+
+    @PostMapping({"/bookings/{id}/retry-dispatch"})
+    public ResponseEntity<Map<String, String>> retryDispatch(
+            @PathVariable("id") UUID bookingId,
+            @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestParam(value = "userId", required = false) UUID queryUserId) {
+        UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
+        Booking booking = bookingRepository.findById(bookingId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
+        // Only retry if in a retryable state
+        if (booking.getStatus() != BookingStage.WORKER_NOT_FOUND &&
+            booking.getStatus() != BookingStage.SEARCHING &&
+            booking.getStatus() != BookingStage.REQUESTED &&
+            booking.getStatus() != BookingStage.PENDING) {
+            return ResponseEntity.ok(Map.of(
+                "status", "SKIPPED",
+                "message", "Booking is not in a retryable state: " + booking.getStatus()
+            ));
+        }
+        // Reset to REQUESTED and re-dispatch
+        booking.setStatus(BookingStage.REQUESTED);
+        bookingRepository.save(booking);
+
+        UUID targetSubServiceId = null;
+        List<com.homeease.backend.model.entity.BookingServiceItem> items =
+                bookingServiceItemRepository.findByBooking_BookingId(bookingId);
+        if (!items.isEmpty() && items.get(0).getSubService() != null) {
+            targetSubServiceId = items.get(0).getSubService().getSubServiceId();
+        }
+        assignmentService.dispatchInstantBooking(booking, targetSubServiceId);
+
+        return ResponseEntity.ok(Map.of(
+            "status", "DISPATCHING",
+            "message", "Retry dispatch initiated for booking " + bookingId
+        ));
     }
 
     @GetMapping("/bookings/{id}/events")
