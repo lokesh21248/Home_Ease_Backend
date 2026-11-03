@@ -81,7 +81,7 @@ public class BookingDto {
         private Boolean isForFriend;
         @Size(max = 100, message = "Recipient name must be 100 characters or fewer")
         private String recipientName;
-        @Pattern(regexp = "^(?:\\+91|0)?[6-9]\\d{9}$", message = "Recipient phone must be a valid 10-digit Indian mobile number")
+        @Pattern(regexp = "^(?:$|(?:\\+91|0)?[6-9]\\d{9})$", message = "Recipient phone must be a valid 10-digit Indian mobile number")
         private String recipientPhone;
         private String recipientAddress;
     }

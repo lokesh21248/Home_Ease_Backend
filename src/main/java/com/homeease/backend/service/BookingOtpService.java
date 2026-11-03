@@ -72,7 +72,12 @@ public class BookingOtpService {
             otpRepository.save(active);
         }
 
-        String rawOtp = String.format("%04d", SECURE_RANDOM.nextInt(10000));
+        String rawOtp = (booking.getPinCode() != null && !booking.getPinCode().isBlank())
+                ? booking.getPinCode().trim()
+                : String.format("%04d", SECURE_RANDOM.nextInt(10000));
+        if (booking.getPinCode() == null || booking.getPinCode().isBlank()) {
+            booking.setPinCode(rawOtp);
+        }
         String hashedOtp = hashOtp(rawOtp, booking.getBookingId());
         String customerPhone = booking.getRecipientPhone() != null && !booking.getRecipientPhone().isBlank()
                 ? booking.getRecipientPhone()
@@ -114,11 +119,40 @@ public class BookingOtpService {
             throw new SecurityException("Unauthorized: Only the assigned worker may verify OTP for this booking.");
         }
 
-        BookingOtp otp = otpRepository.findFirstByBooking_BookingIdAndStatus(
-                booking.getBookingId(), OtpStatus.ACTIVE)
-                .orElseThrow(() -> new IllegalStateException("No active OTP found for this booking."));
-
         Instant now = Instant.now();
+        String trimmedOtp = submittedOtp.trim();
+
+        // 1. Direct canonical fallback match against booking.pinCode
+        boolean matchesPinCode = booking.getPinCode() != null &&
+                booking.getPinCode().trim().equals(trimmedOtp);
+
+        Optional<BookingOtp> otpOpt = otpRepository.findFirstByBooking_BookingIdAndStatus(
+                booking.getBookingId(), OtpStatus.ACTIVE);
+
+        if (otpOpt.isEmpty()) {
+            if (matchesPinCode) {
+                // Synthesize USED record to log successful verification
+                String customerPhone = booking.getRecipientPhone() != null && !booking.getRecipientPhone().isBlank()
+                        ? booking.getRecipientPhone()
+                        : (booking.getUser() != null ? booking.getUser().getPhoneNumber() : "UNKNOWN");
+                BookingOtp syn = BookingOtp.builder()
+                        .booking(booking)
+                        .hashedOtp(hashOtp(trimmedOtp, booking.getBookingId()))
+                        .phoneHash(hashValue(customerPhone))
+                        .expiresAt(now.plusSeconds(otpTtlSeconds))
+                        .maxAttempts(maxAttempts)
+                        .attempts(1)
+                        .resendCooldownUntil(now)
+                        .status(OtpStatus.USED)
+                        .build();
+                otpRepository.save(syn);
+                logger.info("Canonical PIN verified successfully for booking {} by worker {}", booking.getBookingId(), workerUserId);
+                return true;
+            }
+            throw new IllegalStateException("No active OTP found for this booking.");
+        }
+
+        BookingOtp otp = otpOpt.get();
 
         // Check expiration
         if (otp.getExpiresAt().isBefore(now)) {
@@ -136,13 +170,13 @@ public class BookingOtpService {
             throw new IllegalStateException("Maximum verification attempts exceeded. OTP is locked.");
         }
 
-        String computedHash = hashOtp(submittedOtp.trim(), booking.getBookingId());
-        boolean matches = MessageDigest.isEqual(
+        String computedHash = hashOtp(trimmedOtp, booking.getBookingId());
+        boolean matchesHash = MessageDigest.isEqual(
                 computedHash.getBytes(StandardCharsets.UTF_8),
                 otp.getHashedOtp().getBytes(StandardCharsets.UTF_8)
         );
 
-        if (!matches) {
+        if (!matchesHash && !matchesPinCode) {
             otp.setAttempts(otp.getAttempts() + 1);
             otp.setUpdatedAt(now);
             if (otp.getAttempts() >= otp.getMaxAttempts()) {

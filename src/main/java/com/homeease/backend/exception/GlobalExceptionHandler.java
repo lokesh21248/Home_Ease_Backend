@@ -184,12 +184,19 @@ public class GlobalExceptionHandler {
         for (FieldError error : ex.getBindingResult().getFieldErrors()) {
             fieldErrors.put(error.getField(), error.getDefaultMessage());
         }
+        for (org.springframework.validation.ObjectError err : ex.getBindingResult().getGlobalErrors()) {
+            fieldErrors.put(err.getObjectName(), err.getDefaultMessage());
+        }
 
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("timestamp", Instant.now().toString());
         body.put("status", HttpStatus.BAD_REQUEST.value());
         body.put("error", "VALIDATION_FAILED");
-        body.put("message", "Validation failed for one or more fields.");
+        String detailedMessage = fieldErrors.isEmpty()
+                ? "Validation failed for one or more fields."
+                : String.join("; ", fieldErrors.values());
+        log.warn("Validation failed for request: {}", fieldErrors);
+        body.put("message", detailedMessage);
         body.put("fieldErrors", fieldErrors);
 
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);

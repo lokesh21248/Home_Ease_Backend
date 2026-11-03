@@ -320,6 +320,28 @@ public class BookingAssignmentService {
     }
 
     /**
+     * Worker start travel: transitions booking from ACCEPTED/CONFIRMED to ON_THE_WAY and broadcasts update.
+     */
+    @Transactional
+    public Booking handleWorkerStartTravel(UUID bookingId, UUID workerUserId) {
+        Booking booking = bookingRepository.findById(bookingId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
+
+        if (booking.getWorker() == null || booking.getWorker().getUser() == null ||
+                !booking.getWorker().getUser().getUserId().equals(workerUserId)) {
+            throw new SecurityException("Unauthorized: Only the assigned worker can start travel.");
+        }
+
+        if (booking.getStatus() == BookingStage.ACCEPTED || booking.getStatus() == BookingStage.CONFIRMED) {
+            booking.setStatus(BookingStage.ON_THE_WAY);
+            booking = bookingRepository.save(booking);
+            broadcastBookingUpdate(booking, "WORKER_ON_THE_WAY");
+            logger.info("Worker {} started travelling for booking {}", workerUserId, bookingId);
+        }
+        return booking;
+    }
+
+    /**
      * Worker arrival verification: marks booking as ARRIVED and issues 4-digit OTP to customer.
      */
     @Transactional

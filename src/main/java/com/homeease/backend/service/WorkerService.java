@@ -202,6 +202,9 @@ public class WorkerService {
         }
 
         worker.setIsOnline(isOnline);
+        if (Boolean.TRUE.equals(isOnline) && worker.getCurrentLat() != null) {
+            worker.setLastLocationUpdatedAt(Instant.now());
+        }
         worker = workerRepository.save(worker);
 
         if (!isOnline && worker.getWorkerId() != null) {

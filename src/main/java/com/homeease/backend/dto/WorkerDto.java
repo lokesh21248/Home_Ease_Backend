@@ -227,4 +227,49 @@ public class WorkerDto {
         private Integer completedCount;
         private List<WorkerScheduleSlotDto> schedule;
     }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class UpdateWorkerServicesRequest {
+        private List<String> subServiceIds;
+        private List<String> serviceIds;
+    }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class WorkerServicesResponse {
+        private UUID workerId;
+        private List<UUID> serviceIds;
+        private List<String> serviceNames;
+        private List<UUID> subServiceIds;
+        private List<String> subServiceNames;
+    }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class WorkerEligibilityResponse {
+        private UUID workerId;
+        private String fullName;
+        private Boolean online;
+        private Boolean verified;
+        private Boolean serviceMatched;
+        private Boolean locationValid;
+        private Boolean withinRadius;
+        private Double distanceKm;
+        private Boolean workingDayMatched;
+        private Boolean workingHoursMatched;
+        private Boolean slotAvailable;
+        private Boolean eligible;
+        private List<String> rejectionReasons;
+    }
 }

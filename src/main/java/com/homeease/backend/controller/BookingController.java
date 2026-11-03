@@ -375,6 +375,17 @@ public class BookingController {
         ));
     }
 
+    @PostMapping({"/bookings/{id}/on-the-way", "/workers/bookings/{id}/on-the-way", "/workers/bookings/{id}/start-travel"})
+    public ResponseEntity<BookingResponse> startTravel(
+            @PathVariable("id") UUID bookingId,
+            @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestParam(value = "userId", required = false) UUID queryUserId) {
+        UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
+        var booking = assignmentService.handleWorkerStartTravel(bookingId, userId);
+        return ResponseEntity.ok(bookingStateMachine.mapToBookingResponse(booking));
+    }
+
     @PostMapping({"/bookings/{id}/arrive", "/workers/bookings/{id}/arrive"})
     public ResponseEntity<BookingResponse> arriveAtCustomer(
             @PathVariable("id") UUID bookingId,
