@@ -209,6 +209,13 @@ public class LiveTrackingService {
     }
 
     /**
+     * Direct processing invoked by Kafka consumer.
+     */
+    public LocationPayload processLocationUpdateDirect(String bookingId, LocationPayload payload, String authenticatedUserId) {
+        return processLocationUpdate(bookingId, payload, authenticatedUserId);
+    }
+
+    /**
      * Records partner live coordinates in L1 Cache & Redis (Key-Value + Redis GEO)
      * and broadcasts live to customer WebSocket subscribers.
      *

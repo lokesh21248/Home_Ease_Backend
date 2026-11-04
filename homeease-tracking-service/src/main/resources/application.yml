@@ -11,11 +11,29 @@ spring:
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
 
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      acks: 1
+      retries: 3
+      properties:
+        enable.idempotence: false
+        compression.type: lz4
+        batch.size: 65536
+        linger.ms: 5
+    consumer:
+      group-id: ${TRACKING_KAFKA_GROUP:homeease-tracking-ingestion-group}
+      auto-offset-reset: latest
+      enable-auto-commit: true
+      properties:
+        fetch.min.bytes: 1024
+        fetch.max.wait.ms: 100
+
 management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus
   endpoint:
     health:
       show-details: always
@@ -27,6 +45,9 @@ homeease:
     maps:
       api-key: ${GOOGLE_MAPS_API_KEY:}
   tracking:
+    kafka:
+      enabled: ${TRACKING_KAFKA_ENABLED:false}
+      topic: ${TRACKING_KAFKA_TOPIC:homeease.tracking.locations.v1}
     rate-limit:
       window-seconds: ${TRACKING_RATE_LIMIT_WINDOW:60}
       max-updates: ${TRACKING_RATE_LIMIT_MAX:30}
