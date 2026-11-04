@@ -1,0 +1,112 @@
+# ==============================================================================
+# HOME EASE – Phase 1 Application Configuration
+# File: application-prod.yml  (homeease-tracking-service)
+#
+# ENVIRONMENT VARIABLES required on the backend EC2:
+#   REDIS_HOST          = 127.0.0.1    (co-located Redis, localhost only)
+#   REDIS_PORT          = 6379
+#   REDIS_PASSWORD      = <secret>     # Set in /etc/systemd/system/homeease-tracking.service
+#   JWT_SECRET          = <secret>
+#   GOOGLE_MAPS_API_KEY = <key>
+#
+# Optional / for future scale-up:
+#   TRACKING_KAFKA_ENABLED = false     # flip to true when enabling Kafka
+#   TRACKING_KAFKA_TOPIC   = homeease.tracking.locations.v1
+# ==============================================================================
+
+server:
+  port: 8082
+
+spring:
+  application:
+    name: homeease-tracking-service
+
+  # ── Redis Configuration ────────────────────────────────────────────────────
+  # Phase 1: Redis co-located on backend EC2 (127.0.0.1)
+  # Phase 2+: Change to Redis ElastiCache or Redis Cluster endpoint
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2000ms
+      connect-timeout: 1000ms
+      lettuce:
+        pool:
+          # Min idle keeps connections warm; max avoids overloading Redis
+          min-idle: 4
+          max-idle: 16
+          max-active: 64
+          max-wait: 500ms
+        # Reconnect configuration for Redis failover
+        shutdown-timeout: 100ms
+
+  # ── Kafka Configuration (disabled by default for Phase 1) ─────────────────
+  # Set TRACKING_KAFKA_ENABLED=true in environment to enable at scale
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      acks: 1
+      retries: 3
+      properties:
+        enable.idempotence: false
+        compression.type: lz4
+        batch.size: 65536
+        linger.ms: 5
+    consumer:
+      group-id: ${TRACKING_KAFKA_GROUP:homeease-tracking-ingestion-group}
+      auto-offset-reset: latest
+      enable-auto-commit: true
+
+# ── Management / Actuator ─────────────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+  metrics:
+    tags:
+      application: homeease-tracking
+      environment: production
+
+# ── HomeEase Tracking Configuration ──────────────────────────────────────────
+homeease:
+  jwt:
+    secret: ${JWT_SECRET:}
+
+  google:
+    maps:
+      api-key: ${GOOGLE_MAPS_API_KEY:}
+
+  tracking:
+    kafka:
+      enabled: ${TRACKING_KAFKA_ENABLED:false}
+      topic: ${TRACKING_KAFKA_TOPIC:homeease.tracking.locations.v1}
+
+    rate-limit:
+      # 60-second sliding window; max 30 updates per worker per minute
+      # (1 update/5s = 12 expected; 30 permits reconnect burst)
+      window-seconds: ${TRACKING_RATE_LIMIT_WINDOW:60}
+      max-updates:    ${TRACKING_RATE_LIMIT_MAX:30}
+      # Worker must move at least 15m to bypass rate limit check
+      movement-threshold-meters: ${TRACKING_MOVEMENT_THRESHOLD:15.0}
+
+    # Reject GPS fixes with accuracy worse than 50 metres (towers, indoor GPS)
+    max-accuracy-meters: ${TRACKING_MAX_ACCURACY_METERS:50.0}
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging:
+  level:
+    root: WARN
+    com.homeease.tracking: INFO
+    # Set to DEBUG temporarily when diagnosing a tracking issue in production
+    # com.homeease.tracking.service.LiveTrackingService: DEBUG
+  file:
+    name: /var/log/homeease/tracking-service.log
+  logback:
+    rollingpolicy:
+      max-file-size: 50MB
+      max-history: 7

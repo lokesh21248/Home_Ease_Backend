@@ -105,3 +105,4 @@ export default function () {
 
   gpsSuccess.add(ok);
 }
+

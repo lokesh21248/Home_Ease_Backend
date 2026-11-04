@@ -1,0 +1,65 @@
+# ==============================================================================
+# HOME EASE – Systemd Service Unit for Tracking Service
+# File: /etc/systemd/system/homeease-tracking.service
+# Apply: sudo systemctl daemon-reload && sudo systemctl enable homeease-tracking
+# ==============================================================================
+
+[Unit]
+Description=HomeEase Live Tracking Service (Port 8082)
+After=network.target redis.service
+Requires=redis.service
+
+[Service]
+Type=simple
+User=homeease
+Group=homeease
+
+WorkingDirectory=/opt/homeease/tracking
+
+# ── Environment variables ──────────────────────────────────────────────────────
+# Sensitive values: load from /etc/homeease/tracking.env (not committed to git)
+EnvironmentFile=/etc/homeease/tracking.env
+
+Environment=SPRING_PROFILES_ACTIVE=prod
+Environment=REDIS_HOST=127.0.0.1
+Environment=REDIS_PORT=6379
+
+# ── JVM tuning for t4g.small (2 vCPU, 2 GB RAM) ─────────────────────────────
+# Heap: 512 MB max (leaves room for OS, Redis, and Spring Boot overhead)
+# G1GC with 100ms max pause target
+Environment=JAVA_OPTS=-Xms256m -Xmx512m \
+  -XX:+UseG1GC \
+  -XX:MaxGCPauseMillis=100 \
+  -XX:G1HeapRegionSize=4m \
+  -XX:+UseStringDeduplication \
+  -XX:+HeapDumpOnOutOfMemoryError \
+  -XX:HeapDumpPath=/var/log/homeease/ \
+  -Djava.security.egd=file:/dev/./urandom \
+  -Dspring.profiles.active=prod
+
+ExecStart=/usr/bin/java $JAVA_OPTS -jar /opt/homeease/tracking/homeease-tracking-service.jar
+
+# Graceful shutdown: allow up to 30s for in-flight GPS requests to complete
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+Restart=always
+RestartSec=5
+
+# Output logs to journald (use: journalctl -u homeease-tracking -f)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=homeease-tracking
+
+# ── Security hardening ────────────────────────────────────────────────────────
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/log/homeease /opt/homeease/tracking
+
+# File descriptor limit: 1,000 WebSocket connections × 2 + API + Redis overhead
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
