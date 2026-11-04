@@ -1,6 +1,6 @@
 // ==============================================================================
-// HOME EASE - ENTERPRISE GPS INGESTION K6 BENCHMARK SCRIPT
-// Target: 100,000 GPS Ingestion Events/sec into Nginx -> Gateway -> Kafka -> Redis
+// HOME EASE - GPS INGESTION K6 BENCHMARK SCRIPT
+// Target: GPS Ingestion Events into Nginx -> Spring Boot Tracking Service -> Redis
 // ==============================================================================
 
 import http from 'k6/http';

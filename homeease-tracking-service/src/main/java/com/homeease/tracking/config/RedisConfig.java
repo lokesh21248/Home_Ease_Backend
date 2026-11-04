@@ -19,14 +19,11 @@ import org.springframework.data.redis.serializer.StringRedisSerializer;
 import java.time.Duration;
 
 /**
- * Redis connection configuration for Phase 1 deployment.
+ * Redis connection configuration for HomeEase Single-EC2 deployment.
  *
- * <p>Phase 1: Redis co-located on backend EC2 (127.0.0.1:6379).
+ * <p>Redis co-located on backend EC2 (127.0.0.1:6379).
  * Lettuce connection pool: 4 min-idle, 64 max-active.
  * Socket timeout: 2 seconds (fail fast on Redis latency spike).
- *
- * <p>Upgrade path: change REDIS_HOST to ElastiCache endpoint or
- * Redis Cluster endpoint (no code change required).
  */
 @Configuration
 public class RedisConfig {

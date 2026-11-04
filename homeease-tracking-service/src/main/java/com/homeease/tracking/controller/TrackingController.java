@@ -22,19 +22,11 @@ public class TrackingController {
 
     private final LiveTrackingService trackingService;
     private final JwtTokenValidator jwtValidator;
-    private final com.homeease.tracking.kafka.KafkaLocationProducer kafkaProducer;
 
-    @org.springframework.beans.factory.annotation.Autowired
     public TrackingController(LiveTrackingService trackingService,
-                              JwtTokenValidator jwtValidator,
-                              com.homeease.tracking.kafka.KafkaLocationProducer kafkaProducer) {
+                              JwtTokenValidator jwtValidator) {
         this.trackingService = trackingService;
         this.jwtValidator = jwtValidator;
-        this.kafkaProducer = kafkaProducer;
-    }
-
-    public TrackingController(LiveTrackingService trackingService, JwtTokenValidator jwtValidator) {
-        this(trackingService, jwtValidator, null);
     }
 
     /**
@@ -80,18 +72,6 @@ public class TrackingController {
         if (authenticatedUserId != null) {
             payload.setWorkerId(authenticatedUserId);
             payload.setPartnerId(authenticatedUserId);
-        }
-
-        // High-throughput Kafka ingestion path if Kafka streaming is enabled
-        if (kafkaProducer != null && kafkaProducer.isKafkaEnabled()) {
-            boolean queued = kafkaProducer.publishLocationEvent(payload.getBookingId(), payload);
-            if (queued) {
-                return ResponseEntity.ok(Map.of(
-                        "status", "QUEUED",
-                        "message", "Live GPS update queued to Kafka streaming pipeline",
-                        "data", payload
-                ));
-            }
         }
 
         try {

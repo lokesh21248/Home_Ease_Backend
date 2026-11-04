@@ -209,7 +209,7 @@ public class LiveTrackingService {
     }
 
     /**
-     * Direct processing invoked by Kafka consumer.
+     * Direct processing of location updates.
      */
     public LocationPayload processLocationUpdateDirect(String bookingId, LocationPayload payload, String authenticatedUserId) {
         return processLocationUpdate(bookingId, payload, authenticatedUserId);

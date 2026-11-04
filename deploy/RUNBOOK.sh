@@ -143,20 +143,15 @@ bash deploy/redis/monitor-redis.sh
 echo '*/5 * * * * homeease bash /opt/homeease/deploy/redis/monitor-redis.sh >> /var/log/homeease/redis-monitor.log 2>&1' | crontab -
 
 ======================================================================
- UPGRADE PATH – When to scale up
+ SINGLE-EC2 OPERATIONS SUMMARY
 ======================================================================
- ┌─────────────────┬────────────────────────────────────────────────┐
- │ Sessions        │ Action                                         │
- ├─────────────────┼────────────────────────────────────────────────┤
- │ 0 – 1,000       │ Current Phase 1: single backend + Redis local  │
- │ 1,000 – 5,000   │ Add second backend EC2, uncomment second       │
- │                 │ server line in Nginx upstream config           │
- │ 5,000 – 10,000  │ Migrate Redis to ElastiCache t3.micro          │
- │                 │ Change REDIS_HOST in tracking.env              │
- │ 10,000 – 50,000 │ Set TRACKING_KAFKA_ENABLED=true, deploy Kafka  │
- │                 │ MSK cluster (3 brokers, t3.small)              │
- │ 50,000+         │ Upgrade to Redis Cluster, Kafka partitioning   │
- │                 │ by bookingId already implemented in code       │
- └─────────────────┴────────────────────────────────────────────────┘
+ - Ingress:       Nginx Open Source reverse proxy (Port 80/443)
+ - Core Backend:  Spring Boot Core (127.0.0.1:8080)
+ - Tracking:      Live Tracking Service (127.0.0.1:8082)
+ - Cache:         Redis Standalone (127.0.0.1:6379, protected mode)
+ - Database:      Supabase PostgreSQL (persistent data)
+ - Maps:          Google Maps Platform (in-process LRU cache)
+ - Monthly Cost:  ₹0 incremental (uses existing EC2)
+======================================================================
 "
 
