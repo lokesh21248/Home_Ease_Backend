@@ -401,5 +401,120 @@ public class LiveTrackingServiceTest {
                 "Update above noise threshold must broadcast new coordinates");
         assertNotNull(result.getSequenceNumber(), "Broadcast update must carry a sequenceNumber");
     }
+
+    @Test
+    void testGeohashEncodingAndSpatialPartitioning() {
+        String bookingId = "BK-GEOHASH";
+        LocationPayload payload = LocationPayload.builder()
+                .bookingId(bookingId)
+                .lat(17.4485)
+                .lng(78.3748)
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        LocationPayload result = trackingService.processLocationUpdate(bookingId, payload, null);
+        assertNotNull(result.getGeohash(), "Geohash must be computed and populated");
+        assertEquals(7, result.getGeohash().length(), "Default Geohash length must be 7 characters (~150m cell)");
+        assertTrue(result.getGeohash().startsWith("tep"), "Hyderabad coordinates must produce 'tep' prefix");
+    }
+
+    @Test
+    void testBoundedBreadcrumbHistory_CappedAtMax20() {
+        String bookingId = "BK-HISTORY";
+        // Start in the past so timestamps are not clamped to future threshold
+        long startTs = System.currentTimeMillis() - (30 * 5000L);
+
+        // Feed 25 consecutive movement fixes
+        for (int i = 0; i < 25; i++) {
+            LocationPayload p = LocationPayload.builder()
+                    .bookingId(bookingId)
+                    .lat(17.4485 + (i * 0.001))
+                    .lng(78.3748 + (i * 0.001))
+                    .bearing(45.0)
+                    .timestamp(startTs + (i * 5000L))
+                    .build();
+            trackingService.processLocationUpdate(bookingId, p, null);
+        }
+
+        var history = trackingService.getRecentHistory(bookingId);
+        assertNotNull(history);
+        assertEquals(20, history.size(), "Breadcrumbs history must be bounded to MAX_HISTORY_ENTRIES (20)");
+        // Last element in history should be fix #24 (most recent)
+        assertEquals(17.4485 + (24 * 0.001), history.get(history.size() - 1).getLat(), 0.0001);
+    }
+
+    @Test
+    void testDeduplicationCache_ExactPacketRetry_Dropped() {
+        String bookingId = "BK-DEDUP";
+        long ts = System.currentTimeMillis();
+
+        LocationPayload first = LocationPayload.builder()
+                .bookingId(bookingId)
+                .lat(17.4485)
+                .lng(78.3748)
+                .bearing(30.0)
+                .timestamp(ts)
+                .build();
+
+        LocationPayload firstResult = trackingService.processLocationUpdate(bookingId, first, null);
+        assertNotNull(firstResult);
+        long firstSeq = firstResult.getSequenceNumber();
+
+        // Exact packet retry with identical timestamp and coordinates
+        LocationPayload duplicate = LocationPayload.builder()
+                .bookingId(bookingId)
+                .lat(17.4485)
+                .lng(78.3748)
+                .bearing(30.0)
+                .timestamp(ts)
+                .build();
+
+        LocationPayload dupResult = trackingService.processLocationUpdate(bookingId, duplicate, null);
+        // Duplicate should return cached payload with identical sequenceNumber (not incremented)
+        assertEquals(firstSeq, dupResult.getSequenceNumber(), "Duplicate retransmission must return cached frame without incrementing sequence");
+    }
+
+    @Test
+    void testTeleportationAnomaly_ImpossibleSpeed_Rejected() {
+        String bookingId = "BK-TELEPORT";
+        long ts = System.currentTimeMillis();
+
+        LocationPayload first = LocationPayload.builder()
+                .bookingId(bookingId)
+                .lat(17.4485)
+                .lng(78.3748)
+                .timestamp(ts)
+                .build();
+        trackingService.processLocationUpdate(bookingId, first, null);
+
+        // Impossible jump: moves ~11 km (0.1 degree lat) in 1 second (speed ~ 40,000 km/h)
+        LocationPayload teleport = LocationPayload.builder()
+                .bookingId(bookingId)
+                .lat(17.5485)
+                .lng(78.3748)
+                .timestamp(ts + 1000)
+                .build();
+
+        LocationPayload result = trackingService.processLocationUpdate(bookingId, teleport, null);
+        // Teleportation anomaly should be rejected; returns the original location
+        assertEquals(17.4485, result.getLat(), 0.0001, "Teleportation anomaly must be rejected and previous position retained");
+    }
+
+    @Test
+    void testBearingNormalizationAndSpeedSanity() {
+        String bookingId = "BK-BEARING";
+        LocationPayload payload = LocationPayload.builder()
+                .bookingId(bookingId)
+                .lat(17.4485)
+                .lng(78.3748)
+                .bearing(450.0) // > 360 degrees
+                .speed(-5.0)   // negative speed
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        LocationPayload result = trackingService.processLocationUpdate(bookingId, payload, null);
+        assertEquals(90.0, result.getBearing(), 0.1, "Bearing 450 mod 360 should normalize to 90.0 degrees");
+        assertEquals(0.0, result.getSpeed(), 0.01, "Negative speed should clamp to 0.0");
+    }
 }
 

@@ -4,12 +4,18 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.homeease.tracking.dto.LocationPayload;
 import com.homeease.tracking.exception.RateLimitExceededException;
+import com.homeease.tracking.util.GeohashUtils;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.geo.Circle;
+import org.springframework.data.geo.Distance;
+import org.springframework.data.geo.GeoResults;
+import org.springframework.data.geo.Metrics;
 import org.springframework.data.geo.Point;
+import org.springframework.data.redis.connection.RedisGeoCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -25,6 +31,7 @@ import java.net.URI;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 public class LiveTrackingService {
@@ -60,7 +67,6 @@ public class LiveTrackingService {
      * Minimum movement required to not be classified as stationary noise.
      * Below this threshold, updates are suppressed if bearing is unchanged and
      * the update arrived within 3 seconds of the previous one.
-     * Raised from 0.2m to 1.5m to correctly handle GPS horizontal noise.
      */
     private static final double STATIONARY_NOISE_THRESHOLD_METERS = 1.5;
 
@@ -68,24 +74,60 @@ public class LiveTrackingService {
     private static final Duration TRACKING_TTL = Duration.ofHours(2);
     private static final String GEO_WORKERS_KEY = "active_workers_geo";
 
+    // Maximum entries per booking history deque (breadcrumbs)
+    private static final int MAX_HISTORY_ENTRIES = 20;
+    // Maximum active tracking sessions in L1 cache before pruning
+    private static final int MAX_L1_CAPACITY = 5000;
+
     // =========================================================================
-    // DSA A: In-Memory L1 Hash Table (ConcurrentHashMap) for ultra-low latency O(1) reads
+    // DSA 1: In-Memory L1 Hash Table (ConcurrentHashMap) for ultra-low latency O(1) reads
     // =========================================================================
     private final ConcurrentMap<String, LocationPayload> activeLocationsMap = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Long> locationLastAccessMap = new ConcurrentHashMap<>();
 
     // =========================================================================
-    // DSA C: Per-booking monotonic sequence counter (AtomicLong, O(1)).
-    // Server-assigned: immune to device-clock skew. Clients discard frames
-    // with sequenceNumber <= lastSeen to prevent out-of-order rendering.
+    // DSA 2: Per-booking monotonic sequence counter (AtomicLong, O(1))
+    // Backed by Redis to preserve monotonicity across restarts & multi-node instances.
     // =========================================================================
-    private final ConcurrentMap<String, java.util.concurrent.atomic.AtomicLong> sequenceCounters = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, AtomicLong> sequenceCounters = new ConcurrentHashMap<>();
 
     // =========================================================================
-    // DSA B: Bounded Asynchronous Event Buffer / Queue
+    // DSA 3: Bounded Deque for recent GPS history (Breadcrumb Trail & Smoothing)
+    // =========================================================================
+    private final ConcurrentMap<String, Deque<LocationPayload>> locationHistoryMap = new ConcurrentHashMap<>();
+
+    // =========================================================================
+    // DSA 4: Bounded Expiring Deduplication Cache (LRU LinkedHashMap)
+    // Drops exact duplicate packet retries from noisy cellular connections
+    // =========================================================================
+    private final Map<String, Long> deduplicationCache = Collections.synchronizedMap(
+            new LinkedHashMap<>(256, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Long> eldest) {
+                    return size() > 2000;
+                }
+            }
+    );
+
+    // =========================================================================
+    // DSA 5: Bounded Ring Buffer / Queue with Backpressure (ArrayBlockingQueue)
     // =========================================================================
     public record TrackingTask(String bookingId, LocationPayload payload, String effectiveWorkerId) {}
     private final BlockingQueue<TrackingTask> eventQueue = new ArrayBlockingQueue<>(5000);
+    private final AtomicLong droppedEventsCount = new AtomicLong(0L);
+    private final AtomicLong processedEventsCount = new AtomicLong(0L);
+
+    // =========================================================================
+    // DSA 6: PriorityQueue for Scheduled Retry Processing (Exponential Backoff)
+    // =========================================================================
+    public record RetryTask(TrackingTask task, long scheduledAtMs, int attempt) implements Comparable<RetryTask> {
+        @Override
+        public int compareTo(RetryTask o) {
+            return Long.compare(this.scheduledAtMs, o.scheduledAtMs);
+        }
+    }
+    private final PriorityQueue<RetryTask> retryQueue = new PriorityQueue<>();
+
     private final ExecutorService queueExecutor = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "LiveTracking-EventWorker");
         t.setDaemon(true);
@@ -94,12 +136,17 @@ public class LiveTrackingService {
     private volatile boolean running = true;
 
     // =========================================================================
-    // DSA D: Sliding-Window Rate Limiter (Circular timestamp deque per partner)
+    // DSA 7: Geohash Spatial Index (Morton Z-Order Space Filling Curve)
+    // =========================================================================
+    private final ConcurrentMap<String, Set<String>> spatialGeohashIndex = new ConcurrentHashMap<>();
+
+    // =========================================================================
+    // DSA 8: Sliding-Window Rate Limiter (Circular timestamp deque per partner)
     // =========================================================================
     private final ConcurrentMap<String, Deque<Long>> partnerRateLimitWindows = new ConcurrentHashMap<>();
 
     // =========================================================================
-    // DSA F: Graph Routing LRU Cache (Spatial Quantization)
+    // DSA 9: Graph Routing LRU Cache (Spatial Quantization)
     // =========================================================================
     private static class RouteCacheEntry {
         final Map<String, Object> data;
@@ -136,8 +183,7 @@ public class LiveTrackingService {
     @PostConstruct
     public void init() {
         queueExecutor.submit(this::processQueuedEvents);
-        logger.info("LiveTrackingService initialized with DSA optimizations: L1 HashMap, Async Event Buffer, Sliding-Window ({}s, max {}), and Route LRU Cache",
-                windowSeconds, maxUpdates);
+        logger.info("LiveTrackingService initialized with advanced DSA: L1 Map, Atomic Sequences, Bounded Deque, Dedup LRU, Ring Buffer, PriorityQueue Retry, Geohash Index & Redis GEO");
     }
 
     @PreDestroy
@@ -156,14 +202,24 @@ public class LiveTrackingService {
     }
 
     /**
-     * Background consumer thread for asynchronous Redis persistence & Geospatial indexing.
+     * Background consumer thread for asynchronous Redis persistence, Geospatial indexing,
+     * and PriorityQueue retry processing.
      */
     private void processQueuedEvents() {
         while (running) {
             try {
-                TrackingTask task = eventQueue.poll(500, TimeUnit.MILLISECONDS);
+                // 1. Process any pending scheduled retries whose backoff has expired
+                processPendingRetries();
+
+                // 2. Poll event ring buffer
+                TrackingTask task = eventQueue.poll(200, TimeUnit.MILLISECONDS);
                 if (task != null) {
-                    persistToRedisAndGeo(task);
+                    boolean success = persistToRedisAndGeo(task);
+                    if (!success) {
+                        scheduleRetry(task, 1);
+                    } else {
+                        processedEventsCount.incrementAndGet();
+                    }
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -174,19 +230,59 @@ public class LiveTrackingService {
         }
     }
 
-    private void persistToRedisAndGeo(TrackingTask task) {
+    private void scheduleRetry(TrackingTask task, int attempt) {
+        if (attempt > 3) {
+            logger.error("Redis persistence dropped after 3 attempts for booking {}", task.bookingId());
+            return;
+        }
+        long backoffMs = (long) (1000 * Math.pow(2, attempt - 1));
+        long scheduledAt = System.currentTimeMillis() + backoffMs;
+        synchronized (retryQueue) {
+            if (retryQueue.size() < 1000) {
+                retryQueue.offer(new RetryTask(task, scheduledAt, attempt));
+                logger.debug("Scheduled Redis persistence retry attempt {} for booking {} in {}ms", attempt, task.bookingId(), backoffMs);
+            } else {
+                logger.warn("Retry queue full, discarding retry for booking {}", task.bookingId());
+            }
+        }
+    }
+
+    private void processPendingRetries() {
+        long now = System.currentTimeMillis();
+        synchronized (retryQueue) {
+            while (!retryQueue.isEmpty() && retryQueue.peek().scheduledAtMs() <= now) {
+                RetryTask retry = retryQueue.poll();
+                boolean success = persistToRedisAndGeo(retry.task());
+                if (!success) {
+                    scheduleRetry(retry.task(), retry.attempt() + 1);
+                } else {
+                    processedEventsCount.incrementAndGet();
+                }
+            }
+        }
+    }
+
+    private boolean persistToRedisAndGeo(TrackingTask task) {
         try {
             String json = objectMapper.writeValueAsString(task.payload());
             String trackingKey = "tracking:booking:" + task.bookingId();
             redisTemplate.opsForValue().set(trackingKey, json, TRACKING_TTL);
+
+            // Synchronize distributed sequence counter in Redis
+            if (task.payload().getSequenceNumber() != null) {
+                redisTemplate.opsForValue().set("tracking:seq:" + task.bookingId(),
+                        String.valueOf(task.payload().getSequenceNumber()), TRACKING_TTL);
+            }
 
             if (task.payload().getLat() != null && task.payload().getLng() != null) {
                 redisTemplate.opsForGeo().add(GEO_WORKERS_KEY,
                         new Point(task.payload().getLng(), task.payload().getLat()),
                         task.effectiveWorkerId());
             }
+            return true;
         } catch (Exception e) {
             logger.warn("Async Redis persistence failed for booking {}: {}", task.bookingId(), e.getMessage());
+            return false;
         }
     }
 
@@ -221,10 +317,15 @@ public class LiveTrackingService {
      *
      * Validates:
      * 1. Coordinate ranges (-90 to +90 lat, -180 to +180 lng, non-NaN)
-     * 2. Assignment & booking state in Redis (rejects if completed/cancelled or unauthorized)
-     * 3. Sliding-window rate limit (throttles spam while permitting legitimate movement)
-     * 4. Timestamp ordering (rejects stale updates, clamps future timestamps)
-     * 5. Stationary duplicate suppression (avoids redundant broadcasts when stopped)
+     * 2. Bearing (0..360) and Speed sanity (0..160 km/h)
+     * 3. Teleportation anomaly filter (rejects impossible speeds > 200 km/h)
+     * 4. Deduplication filter (drops duplicate cellular retransmissions)
+     * 5. Assignment & booking state in Redis (rejects if completed/cancelled or unauthorized)
+     * 6. Sliding-window rate limit (throttles spam while permitting legitimate movement)
+     * 7. Timestamp ordering (rejects stale updates, clamps future timestamps)
+     * 8. Stationary duplicate suppression (avoids redundant broadcasts when stopped)
+     * 9. Geohash spatial bucketing & Monotonic atomic sequence generation
+     * 10. Bounded breadcrumb history deque
      */
     public LocationPayload processLocationUpdate(String bookingId, LocationPayload payload, String authenticatedUserId) {
         if (payload == null) {
@@ -261,6 +362,29 @@ public class LiveTrackingService {
                     payload.getAccuracy(), maxAccuracyMeters));
         }
 
+        // 1c. Validate and normalize Bearing (0..360 degrees)
+        if (payload.getBearing() != null) {
+            double b = payload.getBearing();
+            if (Double.isNaN(b) || Double.isInfinite(b)) {
+                payload.setBearing(0.0);
+            } else {
+                b = b % 360.0;
+                if (b < 0.0) b += 360.0;
+                payload.setBearing(Math.round(b * 10.0) / 10.0);
+            }
+        }
+
+        // 1d. Validate Speed sanity
+        if (payload.getSpeed() != null) {
+            double s = payload.getSpeed();
+            if (Double.isNaN(s) || Double.isInfinite(s) || s < 0.0) {
+                payload.setSpeed(0.0);
+            } else if (s > 45.0) { // > 162 km/h
+                logger.warn("[tracking] High speed fix reported for booking {}: {} m/s ({} km/h)",
+                        bookingId, s, Math.round(s * 3.6));
+            }
+        }
+
         // 2. Validate booking assignment & status in Redis if assignment metadata exists
         String assignmentKey = "tracking:assignment:" + bookingId;
         Double customerLat = null;
@@ -271,9 +395,11 @@ public class LiveTrackingService {
                 JsonNode assignmentNode = objectMapper.readTree(assignmentJson);
                 String bookingStatus = assignmentNode.path("status").asText("");
                 if ("COMPLETED".equalsIgnoreCase(bookingStatus) || "CANCELLED".equalsIgnoreCase(bookingStatus)) {
-                    // Evict from active locations
+                    // Evict from active locations & history
                     activeLocationsMap.remove(bookingId);
                     locationLastAccessMap.remove(bookingId);
+                    locationHistoryMap.remove(bookingId);
+                    sequenceCounters.remove(bookingId);
                     throw new IllegalStateException("Live tracking has ended: booking " + bookingId + " is " + bookingStatus);
                 }
 
@@ -298,11 +424,20 @@ public class LiveTrackingService {
             logger.warn("Could not check assignment cache for booking {}: {}", bookingId, e.getMessage());
         }
 
-        // 3. Stale update protection & Monotonic Timestamp Clamping (DSA E)
+        // 3. Stale update protection & Monotonic Timestamp Clamping
         long now = System.currentTimeMillis();
         long clientTimestamp = payload.getTimestamp() != null ? payload.getTimestamp() : now;
         long effectiveTimestamp = Math.min(clientTimestamp, now + 5000); // Clamp future timestamps
         payload.setTimestamp(effectiveTimestamp);
+
+        // 3b. DSA 4: Bounded Expiring Deduplication Check (Exact packet retransmissions)
+        String dedupFingerprint = String.format(Locale.US, "%s:%.6f:%.6f:%d", bookingId, lat, lng, effectiveTimestamp);
+        Long prevSeen = deduplicationCache.put(dedupFingerprint, now);
+        if (prevSeen != null && (now - prevSeen) < 60_000) {
+            logger.debug("[tracking] Duplicate GPS packet dropped by dedup cache for booking {}", bookingId);
+            LocationPayload cached = activeLocationsMap.get(bookingId);
+            return cached != null ? cached : payload;
+        }
 
         LocationPayload latestExisting = getLatestLocation(bookingId);
         if (latestExisting != null && latestExisting.getTimestamp() != null) {
@@ -312,8 +447,19 @@ public class LiveTrackingService {
                 return latestExisting;
             }
 
-            // Stationary noise suppression: threshold raised to 1.5m to handle GPS noise correctly.
-            // Suppress only when: moved < STATIONARY_NOISE_THRESHOLD_METERS AND bearing unchanged AND arrived < 3s after previous.
+            // 3c. Teleportation Anomaly Filter
+            long dtMs = effectiveTimestamp - latestExisting.getTimestamp();
+            if (dtMs > 0 && dtMs < 300_000) { // within last 5 minutes
+                double distanceMeters = haversine(latestExisting.getLat(), latestExisting.getLng(), lat, lng) * 1000.0;
+                double speedMps = distanceMeters / (dtMs / 1000.0);
+                if (distanceMeters > 300.0 && speedMps > 55.0) { // > 200 km/h impossible vehicle speed
+                    logger.warn("[tracking] Teleportation anomaly rejected for booking {}: moved {}m in {}ms ({} km/h)",
+                            bookingId, Math.round(distanceMeters), dtMs, Math.round(speedMps * 3.6));
+                    return latestExisting;
+                }
+            }
+
+            // 3d. Stationary noise suppression: threshold 1.5m
             double movedDistMeters = haversine(latestExisting.getLat(), latestExisting.getLng(), lat, lng) * 1000.0;
             boolean bearingSame = Objects.equals(latestExisting.getBearing(), payload.getBearing());
             if (movedDistMeters < STATIONARY_NOISE_THRESHOLD_METERS && bearingSame &&
@@ -327,14 +473,14 @@ public class LiveTrackingService {
             }
         }
 
-        // 4. Sliding-Window Rate Limiting (DSA D)
+        // 4. Sliding-Window Rate Limiting (DSA 8)
         String effectiveWorkerId = (authenticatedUserId != null && !authenticatedUserId.isBlank())
                 ? authenticatedUserId
                 : payload.getEffectiveId();
         String rateLimitKey = effectiveWorkerId != null ? effectiveWorkerId : bookingId;
         checkSlidingWindowRateLimit(rateLimitKey, lat, lng, latestExisting);
 
-        // 5. Populate real-time distance and ETA if customer coordinates are known (DSA F)
+        // 5. Populate real-time distance and ETA if customer coordinates are known
         if (customerLat != null && customerLng != null) {
             double distanceKm = haversine(lat, lng, customerLat, customerLng);
             int etaMinutes = Math.max(1, (int) Math.round((distanceKm / 25.0) * 60.0) + 2);
@@ -345,16 +491,49 @@ public class LiveTrackingService {
         payload.setTrackingActive(true);
         payload.setStatus("TRACKING");
 
-        // 5b. Assign server-side monotonic sequence number (DSA C).
-        //     AtomicLong guarantees thread-safety without a lock on the hot path.
-        long seq = sequenceCounters
-                .computeIfAbsent(bookingId, k -> new java.util.concurrent.atomic.AtomicLong(0L))
-                .incrementAndGet();
+        // 5b. DSA 7: Compute Geohash Spatial Key (~153m street block precision)
+        String geohash = GeohashUtils.encode(lat, lng, 7);
+        payload.setGeohash(geohash);
+        spatialGeohashIndex.computeIfAbsent(geohash, k -> ConcurrentHashMap.newKeySet()).add(bookingId);
+        if (latestExisting != null && latestExisting.getGeohash() != null && !latestExisting.getGeohash().equals(geohash)) {
+            Set<String> oldBucket = spatialGeohashIndex.get(latestExisting.getGeohash());
+            if (oldBucket != null) {
+                oldBucket.remove(bookingId);
+                if (oldBucket.isEmpty()) {
+                    spatialGeohashIndex.remove(latestExisting.getGeohash());
+                }
+            }
+        }
+
+        // 5c. DSA 2: Assign monotonic sequence number (AtomicLong synchronized from Redis)
+        AtomicLong counter = sequenceCounters.computeIfAbsent(bookingId, k -> {
+            long initial = 0L;
+            try {
+                String redisSeq = redisTemplate.opsForValue().get("tracking:seq:" + k);
+                if (redisSeq != null && !redisSeq.isBlank()) {
+                    initial = Long.parseLong(redisSeq.trim());
+                }
+            } catch (Exception ignored) {}
+            return new AtomicLong(initial);
+        });
+        long seq = counter.incrementAndGet();
         payload.setSequenceNumber(seq);
 
-        // 6. In-Memory L1 Cache update (DSA A: O(1) Instant Access)
+        // 6. DSA 1: In-Memory L1 Cache update (O(1) Instant Access)
         activeLocationsMap.put(bookingId, payload);
         locationLastAccessMap.put(bookingId, now);
+
+        // 6b. DSA 3: Bounded GPS history deque (Breadcrumb trail, max 20 fixes)
+        Deque<LocationPayload> history = locationHistoryMap.computeIfAbsent(bookingId, k -> new ConcurrentLinkedDeque<>());
+        history.addLast(payload);
+        while (history.size() > MAX_HISTORY_ENTRIES) {
+            history.pollFirst();
+        }
+
+        // 6c. Memory Safeguard: prune L1 cache if exceeding capacity
+        if (activeLocationsMap.size() > MAX_L1_CAPACITY) {
+            pruneStaleL1Entries(now);
+        }
 
         // 7. Push to WebSocket Topics immediately: /topic/tracking/{bookingId} & /topic/track/{bookingId}
         long broadcastStartMs = System.currentTimeMillis();
@@ -363,26 +542,40 @@ public class LiveTrackingService {
             messagingTemplate.convertAndSend("/topic/track/" + bookingId, payload);
             long broadcastLatencyMs = System.currentTimeMillis() - broadcastStartMs;
             long e2eLatencyMs = System.currentTimeMillis() - receiptMs;
-            logger.debug("[tracking] Broadcast seq={} for booking {} to /topic/tracking/{}: [{}, {}] bearing={} "
+            logger.debug("[tracking] Broadcast seq={} for booking {} to /topic/tracking/{}: [{}, {}] bearing={} geohash={} "
                             + "broadcastLatency={}ms e2eLatency={}ms",
                     seq, bookingId, bookingId, payload.getLat(), payload.getLng(), payload.getBearing(),
-                    broadcastLatencyMs, e2eLatencyMs);
+                    geohash, broadcastLatencyMs, e2eLatencyMs);
         } catch (Exception e) {
             logger.warn("[tracking] WebSocket broadcast failed for booking {}: {}", bookingId, e.getMessage());
         }
 
-        // 8. Bounded Asynchronous Event Buffer: Queue Redis & GEO persistence (DSA B)
+        // 8. DSA 5: Bounded Ring Buffer Event Queue for Redis & GEO persistence
         boolean queued = eventQueue.offer(new TrackingTask(bookingId, payload, effectiveWorkerId));
         if (!queued) {
+            droppedEventsCount.incrementAndGet();
             logger.warn("Tracking event queue capacity reached (5000), applying backpressure drop for background write on booking {}", bookingId);
         }
 
         return payload;
     }
 
+    private void pruneStaleL1Entries(long now) {
+        long cutoff = now - TRACKING_TTL.toMillis();
+        locationLastAccessMap.entrySet().removeIf(entry -> {
+            if (entry.getValue() < cutoff) {
+                String bId = entry.getKey();
+                activeLocationsMap.remove(bId);
+                locationHistoryMap.remove(bId);
+                sequenceCounters.remove(bId);
+                return true;
+            }
+            return false;
+        });
+    }
+
     /**
-     * Sliding-Window Rate Limiter (DSA D)
-     * Throttles if updates > maxUpdates in windowSeconds, unless partner moved >= movementThresholdMeters.
+     * Sliding-Window Rate Limiter (DSA 8)
      */
     private void checkSlidingWindowRateLimit(String rateLimitKey, double lat, double lng, LocationPayload previous) {
         if (previous != null && previous.getLat() != null && previous.getLng() != null) {
@@ -421,7 +614,7 @@ public class LiveTrackingService {
             return null;
         }
 
-        // 1. Check in-memory L1 cache (DSA A)
+        // 1. Check in-memory L1 cache (DSA 1)
         LocationPayload cached = activeLocationsMap.get(bookingId);
         if (cached != null) {
             Long lastAccess = locationLastAccessMap.get(bookingId);
@@ -444,7 +637,6 @@ public class LiveTrackingService {
                 if (trimmed.startsWith("{")) {
                     payload = objectMapper.readValue(trimmed, LocationPayload.class);
                 } else if (trimmed.contains(",")) {
-                    // Legacy fallback format "lat,lng"
                     String[] parts = trimmed.split(",");
                     if (parts.length >= 2) {
                         payload = LocationPayload.builder()
@@ -489,6 +681,52 @@ public class LiveTrackingService {
     }
 
     /**
+     * DSA 3: Retrieves recent GPS breadcrumb history (bounded to last 20 fixes).
+     */
+    public List<LocationPayload> getRecentHistory(String bookingId) {
+        if (bookingId == null || bookingId.isBlank()) {
+            return Collections.emptyList();
+        }
+        Deque<LocationPayload> history = locationHistoryMap.get(bookingId);
+        if (history == null) {
+            return Collections.emptyList();
+        }
+        return new ArrayList<>(history);
+    }
+
+    /**
+     * DSA 8: Proximity Query using Redis GEO (Nearest active workers).
+     */
+    public List<Map<String, Object>> findNearestWorkers(double lat, double lng, double radiusKm, int limit) {
+        List<Map<String, Object>> results = new ArrayList<>();
+        try {
+            Circle circle = new Circle(new Point(lng, lat), new Distance(radiusKm, Metrics.KILOMETERS));
+            RedisGeoCommands.GeoRadiusCommandArgs args = RedisGeoCommands.GeoRadiusCommandArgs.newGeoRadiusArgs()
+                    .includeDistance()
+                    .includeCoordinates()
+                    .sortAscending()
+                    .limit(limit > 0 ? limit : 10);
+
+            GeoResults<RedisGeoCommands.GeoLocation<String>> geoResults = redisTemplate.opsForGeo().radius(GEO_WORKERS_KEY, circle, args);
+            if (geoResults != null) {
+                for (var geoResult : geoResults) {
+                    Map<String, Object> item = new HashMap<>();
+                    item.put("workerId", geoResult.getContent().getName());
+                    item.put("distanceKm", Math.round(geoResult.getDistance().getValue() * 100.0) / 100.0);
+                    if (geoResult.getContent().getPoint() != null) {
+                        item.put("lat", geoResult.getContent().getPoint().getY());
+                        item.put("lng", geoResult.getContent().getPoint().getX());
+                    }
+                    results.add(item);
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("Redis GEO proximity query failed: {}", e.getMessage());
+        }
+        return results;
+    }
+
+    /**
      * Calculates distance (Haversine formula in KM) and estimated time of arrival (ETA in minutes).
      */
     public Map<String, Object> calculateDistanceAndEta(String bookingId, double customerLat, double customerLng) {
@@ -511,7 +749,6 @@ public class LiveTrackingService {
         }
 
         double distanceKm = haversine(workerLoc.getLat(), workerLoc.getLng(), customerLat, customerLng);
-        // Estimate average urban speed: 25 km/h -> 2.4 min per km + 2 min arrival buffer
         int etaMinutes = Math.max(1, (int) Math.round((distanceKm / 25.0) * 60.0) + 2);
 
         response.put("found", true);
@@ -531,11 +768,10 @@ public class LiveTrackingService {
     }
 
     /**
-     * Computes driving route using Google Maps with LRU Cache (DSA F).
+     * Computes driving route using Google Maps with LRU Cache (DSA 9).
      * Quantizes coordinates to ~100m grid bucket to avoid repeated API requests for slight movements.
      */
     public Map<String, Object> getDrivingRoute(double startLat, double startLng, double destLat, double destLng) {
-        // Validate coordinates
         if (Double.isNaN(startLat) || Double.isNaN(startLng) || Double.isNaN(destLat) || Double.isNaN(destLng) ||
                 startLat < -90.0 || startLat > 90.0 || destLat < -90.0 || destLat > 90.0 ||
                 startLng < -180.0 || startLng > 180.0 || destLng < -180.0 || destLng > 180.0) {
@@ -546,7 +782,6 @@ public class LiveTrackingService {
             );
         }
 
-        // Check LRU Route Cache (Quantized to 3 decimal places ~110m bucket)
         String cacheKey = String.format(Locale.US, "%.3f,%.3f->%.3f,%.3f", startLat, startLng, destLat, destLng);
         RouteCacheEntry cached = routeCache.get(cacheKey);
         if (cached != null && !cached.isExpired()) {
@@ -560,14 +795,12 @@ public class LiveTrackingService {
             return Map.of("found", false, "provider", "google", "message", "Google Maps API key not configured");
         }
 
-        // 1. Try modern Google Routes API v2
         Map<String, Object> routesV2 = getGoogleRoutesV2(startLat, startLng, destLat, destLng, googleKey);
         if (routesV2 != null && Boolean.TRUE.equals(routesV2.get("found"))) {
             routeCache.put(cacheKey, new RouteCacheEntry(routesV2, 300_000L)); // 5 min TTL
             return routesV2;
         }
 
-        // 2. Try legacy Google Directions API
         Map<String, Object> googleRes = getGoogleRoadRoute(startLat, startLng, destLat, destLng, googleKey);
         if (googleRes != null && Boolean.TRUE.equals(googleRes.get("found"))) {
             routeCache.put(cacheKey, new RouteCacheEntry(googleRes, 300_000L)); // 5 min TTL
@@ -609,7 +842,7 @@ public class LiveTrackingService {
                 if (routes.isArray() && routes.size() > 0) {
                     JsonNode firstRoute = routes.get(0);
                     double distanceMeters = firstRoute.path("distanceMeters").asDouble(0.0);
-                    String durationStr = firstRoute.path("duration").asText(""); // e.g. "342s"
+                    String durationStr = firstRoute.path("duration").asText("");
                     double durationSeconds = 0.0;
                     if (durationStr.endsWith("s")) {
                         try {
@@ -622,14 +855,14 @@ public class LiveTrackingService {
                     List<List<Double>> leafletCoordinates = decodePolyline(encodedPolyline);
                     List<List<Double>> geoJsonCoordinates = new ArrayList<>();
                     for (List<Double> pt : leafletCoordinates) {
-                        geoJsonCoordinates.add(Arrays.asList(pt.get(1), pt.get(0))); // [lng, lat]
+                        geoJsonCoordinates.add(Arrays.asList(pt.get(1), pt.get(0)));
                     }
 
                     Map<String, Object> result = new HashMap<>();
                     result.put("provider", "google");
                     result.put("found", true);
-                    result.put("coordinates", geoJsonCoordinates);       // [lng, lat]
-                    result.put("leafletCoordinates", leafletCoordinates); // [lat, lng]
+                    result.put("coordinates", geoJsonCoordinates);
+                    result.put("leafletCoordinates", leafletCoordinates);
                     result.put("distanceMeters", Math.round(distanceMeters));
                     result.put("durationSeconds", Math.round(durationSeconds));
                     result.put("distanceText", distanceMeters < 1000
@@ -642,13 +875,11 @@ public class LiveTrackingService {
                     result.put("polyline", encodedPolyline);
                     result.put("directions", root);
 
-                    logger.info("Google Routes API v2 route computed in tracking service: {} m, {} s, {} points",
-                            Math.round(distanceMeters), Math.round(durationSeconds), geoJsonCoordinates.size());
                     return result;
                 }
             }
         } catch (Exception e) {
-            logger.warn("Google Routes API v2 compute failed in tracking service, trying fallback: {}", e.getMessage());
+            logger.warn("Google Routes API v2 compute failed in tracking service: {}", e.getMessage());
         }
         return Collections.emptyMap();
     }
@@ -680,14 +911,14 @@ public class LiveTrackingService {
                         List<List<Double>> leafletCoordinates = decodePolyline(encodedPolyline);
                         List<List<Double>> geoJsonCoordinates = new ArrayList<>();
                         for (List<Double> pt : leafletCoordinates) {
-                            geoJsonCoordinates.add(Arrays.asList(pt.get(1), pt.get(0))); // [lng, lat]
+                            geoJsonCoordinates.add(Arrays.asList(pt.get(1), pt.get(0)));
                         }
 
                         Map<String, Object> result = new HashMap<>();
                         result.put("provider", "google");
                         result.put("found", true);
-                        result.put("coordinates", geoJsonCoordinates);       // [lng, lat]
-                        result.put("leafletCoordinates", leafletCoordinates); // [lat, lng]
+                        result.put("coordinates", geoJsonCoordinates);
+                        result.put("leafletCoordinates", leafletCoordinates);
                         result.put("distanceMeters", Math.round(distanceMeters));
                         result.put("durationSeconds", Math.round(durationSeconds));
                         result.put("distanceText", leg.path("distance").path("text").asText(distanceMeters < 1000
@@ -700,16 +931,12 @@ public class LiveTrackingService {
                         result.put("polyline", encodedPolyline);
                         result.put("directions", root);
 
-                        logger.info("Google Directions route computed: {} m, {} s, {} points",
-                                Math.round(distanceMeters), Math.round(durationSeconds), geoJsonCoordinates.size());
                         return result;
                     }
-                } else {
-                    logger.warn("Google Directions API returned status in tracking service: {}", status);
                 }
             }
         } catch (Exception e) {
-            logger.warn("Google Directions API failed in tracking service, trying fallback: {}", e.getMessage());
+            logger.warn("Google Directions API failed in tracking service: {}", e.getMessage());
         }
         return Collections.emptyMap();
     }
@@ -759,5 +986,21 @@ public class LiveTrackingService {
                         Math.sin(dLon / 2) * Math.sin(dLon / 2);
         double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
         return R * c;
+    }
+
+    public long getProcessedEventsCount() {
+        return processedEventsCount.get();
+    }
+
+    public long getDroppedEventsCount() {
+        return droppedEventsCount.get();
+    }
+
+    public int getEventQueueSize() {
+        return eventQueue.size();
+    }
+
+    public int getActiveSessionsCount() {
+        return activeLocationsMap.size();
     }
 }

@@ -182,4 +182,52 @@ public class TrackingController {
         double destLng = ((Number) body.getOrDefault("destLng", 0.0)).doubleValue();
         return ResponseEntity.ok(trackingService.getDrivingRoute(startLat, startLng, destLat, destLng));
     }
+
+    /**
+     * DSA 3: Fetch recent GPS breadcrumbs history (bounded to last 20 points).
+     * GET /api/v1/tracking/history/{bookingId}
+     */
+    @GetMapping("/history/{bookingId}")
+    public ResponseEntity<?> getTrackingHistory(@PathVariable("bookingId") String bookingId) {
+        var history = trackingService.getRecentHistory(bookingId);
+        return ResponseEntity.ok(Map.of(
+                "bookingId", bookingId,
+                "count", history.size(),
+                "history", history
+        ));
+    }
+
+    /**
+     * DSA 8: Nearest Available Worker Proximity Search using Redis GEO.
+     * GET /api/v1/tracking/nearby?lat=17.4485&lng=78.3748&radiusKm=5.0&limit=10
+     */
+    @GetMapping("/nearby")
+    public ResponseEntity<?> getNearbyWorkers(
+            @RequestParam("lat") double lat,
+            @RequestParam("lng") double lng,
+            @RequestParam(value = "radiusKm", defaultValue = "5.0") double radiusKm,
+            @RequestParam(value = "limit", defaultValue = "10") int limit) {
+        var workers = trackingService.findNearestWorkers(lat, lng, radiusKm, limit);
+        return ResponseEntity.ok(Map.of(
+                "centerLat", lat,
+                "centerLng", lng,
+                "radiusKm", radiusKm,
+                "count", workers.size(),
+                "workers", workers
+        ));
+    }
+
+    /**
+     * Real-Time Telemetry and Queue Health Stats.
+     * GET /api/v1/tracking/stats
+     */
+    @GetMapping("/stats")
+    public ResponseEntity<?> getTrackingStats() {
+        return ResponseEntity.ok(Map.of(
+                "activeSessions", trackingService.getActiveSessionsCount(),
+                "queueSize", trackingService.getEventQueueSize(),
+                "processedEvents", trackingService.getProcessedEventsCount(),
+                "droppedEvents", trackingService.getDroppedEventsCount()
+        ));
+    }
 }

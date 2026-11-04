@@ -39,6 +39,7 @@ public class LocationPayload {
     private Double accuracy;        // GPS horizontal accuracy in metres
     private Double distanceKm;      // Server-computed distance remaining to customer
     private Integer etaMinutes;     // Server-computed ETA in minutes
+    private String geohash;         // Spatial index cell (~150m street block)
     private Long timestamp;         // Device timestamp (ms epoch), server-clamped
     private Long serverTimestamp;   // Server receipt time (ms epoch)
     /** Monotonic sequence counter assigned by the server, per bookingId. */
