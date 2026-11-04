@@ -167,3 +167,4 @@ echo " ⚠️  IMPORTANT: Set REDIS_PASSWORD as an environment variable in your"
 echo "    Spring Boot application.yml or systemd service file."
 echo "    DO NOT commit the password to source control."
 echo ""
+

@@ -204,3 +204,4 @@ export function wsScenario() {
 
   check(res, { 'WebSocket connected successfully': (r) => r && r.status === 101 });
 }
+

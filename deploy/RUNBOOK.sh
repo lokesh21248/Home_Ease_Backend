@@ -159,3 +159,4 @@ echo '*/5 * * * * homeease bash /opt/homeease/deploy/redis/monitor-redis.sh >> /
  │                 │ by bookingId already implemented in code       │
  └─────────────────┴────────────────────────────────────────────────┘
 "
+
