@@ -85,3 +85,4 @@ export default function () {
   check(response, { 'connected successfully': (r) => r && r.status === 101 });
   sleep(1);
 }
+

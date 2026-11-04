@@ -89,3 +89,4 @@ public class KafkaTrackingPipelineTest {
         verify(trackingService).processLocationUpdateDirect(eq("BK-2002"), any(LocationPayload.class), any());
     }
 }
+
