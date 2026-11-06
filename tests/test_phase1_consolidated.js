@@ -26,8 +26,9 @@ const agent = isHttps ? new https.Agent({ rejectUnauthorized: false }) : new htt
 
 // Map route prefixes to target port if running directly against microservices
 function resolveTargetPort(url, path) {
-    if (url.port) return parseInt(url.port, 10);
+    if (url.port && url.port !== '') return parseInt(url.port, 10);
     if (url.protocol === 'https:') return 443;
+    if (url.protocol === 'http:') return 80;
     // Direct microservice routing fallback
     if (path.startsWith('/api/v1/tracking') || path.startsWith('/ws') || path === '/api/v1/health' || path === '/api/v1/health/detail') {
         return 8082;
