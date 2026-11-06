@@ -1,0 +1,108 @@
+version: '3.8'
+
+# HomeEase Production Multi-Container Orchestration
+# Compliant with Sections 14-22 of System Design & 10 Non-Negotiable Rules
+
+services:
+  # Edge Reverse Proxy & Load Balancer (Section 14 & 18)
+  nginx:
+    image: nginx:alpine
+    container_name: homeease-prod-nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - nginx-logs:/var/log/nginx
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - homeease-net
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Core Stateless API Cluster (Java 21 / Spring Boot 3)
+  # Sole service touching Supabase PostgreSQL & Redis with privileged credentials (Rule #1)
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: homeease-prod-api
+    restart: always
+    environment:
+      - SPRING_PROFILES_ACTIVE=prod
+      # JDBC connection pooler configuration with prepareThreshold=0 (Rule #4)
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://${DB_HOST:-aws-supabase.homeease.in}:5432/${DB_NAME:-postgres}?prepareThreshold=0&sslmode=require
+      - SPRING_DATASOURCE_USERNAME=${DB_USER:-postgres}
+      - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD}
+      - SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE=25
+      - SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE=5
+      - SPRING_DATASOURCE_HIKARI_IDLE_TIMEOUT=300000
+      - SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT=20000
+      # Redis live state, geo-sets & offer locks (Sections 14 & 18)
+      - SPRING_DATA_REDIS_HOST=redis
+      - SPRING_DATA_REDIS_PORT=6379
+      - SPRING_DATA_REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      # JWT & Secrets
+      - JWT_SECRET=${JWT_SECRET}
+      - RAZORPAY_KEY_ID=${RAZORPAY_KEY_ID}
+      - RAZORPAY_KEY_SECRET=${RAZORPAY_KEY_SECRET}
+      # Actuator & Prometheus Observability
+      - MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=health,metrics,prometheus
+      - MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS=when-authorized
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - homeease-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4096M
+        reservations:
+          cpus: '0.5'
+          memory: 1024M
+
+  # Redis In-Memory Cluster: Geo-indices, Advisory Lock Tracking, Availability Caches (Section 14 & 18)
+  redis:
+    image: redis:7-alpine
+    container_name: homeease-prod-redis
+    restart: always
+    command: >
+      redis-server 
+      --maxmemory 2gb 
+      --maxmemory-policy allkeys-lru 
+      --appendonly yes 
+      --tcp-keepalive 60
+    volumes:
+      - redis-data:/data
+    networks:
+      - homeease-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+networks:
+  homeease-net:
+    driver: bridge
+
+volumes:
+  redis-data:
+    driver: local
+  nginx-logs:
+    driver: local

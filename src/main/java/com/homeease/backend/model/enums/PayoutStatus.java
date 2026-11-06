@@ -7,3 +7,4 @@ public enum PayoutStatus {
     FAILED,
     REVERSED
 }
+

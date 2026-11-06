@@ -7,3 +7,4 @@ public enum DisputeStatus {
     RESOLVED_COMPENSATED,
     REJECTED
 }
+

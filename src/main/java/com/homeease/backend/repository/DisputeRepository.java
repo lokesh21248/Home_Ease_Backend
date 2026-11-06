@@ -17,3 +17,4 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
     List<Dispute> findByStatus(DisputeStatus status);
     Page<Dispute> findAllByOrderByCreatedAtDesc(Pageable pageable);
 }
+

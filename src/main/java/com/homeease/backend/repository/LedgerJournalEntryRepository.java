@@ -13,3 +13,4 @@ public interface LedgerJournalEntryRepository extends JpaRepository<LedgerJourna
     Optional<LedgerJournalEntry> findByIdempotencyKey(String idempotencyKey);
     List<LedgerJournalEntry> findByBooking_BookingIdOrderByCreatedAtDesc(UUID bookingId);
 }
+

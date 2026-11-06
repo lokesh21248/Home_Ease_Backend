@@ -8,3 +8,4 @@ public enum LedgerTransactionType {
     DISPUTE_COMPENSATE_WORKER,
     COMPENSATING_REVERSAL
 }
+

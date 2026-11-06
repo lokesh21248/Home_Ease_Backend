@@ -27,8 +27,8 @@ public class AssignmentScorer {
     private final BookingRepository bookingRepository;
 
     public AssignmentScorer(AssignmentWeightConfigRepository weightConfigRepository,
-                            WorkerServiceLinkRepository workerServiceLinkRepository,
-                            BookingRepository bookingRepository) {
+            WorkerServiceLinkRepository workerServiceLinkRepository,
+            BookingRepository bookingRepository) {
         this.weightConfigRepository = weightConfigRepository;
         this.workerServiceLinkRepository = workerServiceLinkRepository;
         this.bookingRepository = bookingRepository;
@@ -57,7 +57,8 @@ public class AssignmentScorer {
     }
 
     public String checkHardFilters(Worker worker, Booking booking, UUID targetSubServiceId, double maxRadiusMeters) {
-        if (worker == null) return "WORKER_NULL";
+        if (worker == null)
+            return "WORKER_NULL";
 
         // 1. Online filter
         if (!Boolean.TRUE.equals(worker.getIsOnline())) {
@@ -79,7 +80,7 @@ public class AssignmentScorer {
             return "LOCATION_MISSING";
         }
         if (Math.abs(worker.getCurrentLat()) > 90.0 || Math.abs(worker.getCurrentLng()) > 180.0 ||
-            (worker.getCurrentLat() == 0.0 && worker.getCurrentLng() == 0.0)) {
+                (worker.getCurrentLat() == 0.0 && worker.getCurrentLng() == 0.0)) {
             return "LOCATION_INVALID";
         }
 
@@ -88,8 +89,10 @@ public class AssignmentScorer {
         if (targetSubServiceId != null || serviceId != null) {
             boolean qualified = false;
             if (targetSubServiceId != null) {
-                qualified = workerServiceLinkRepository.existsById_WorkerIdAndId_SubServiceId(worker.getWorkerId(), targetSubServiceId)
-                        || workerServiceLinkRepository.existsByWorkerIdAndSubServiceOrServiceId(worker.getWorkerId(), targetSubServiceId);
+                qualified = workerServiceLinkRepository.existsById_WorkerIdAndId_SubServiceId(worker.getWorkerId(),
+                        targetSubServiceId)
+                        || workerServiceLinkRepository.existsByWorkerIdAndSubServiceOrServiceId(worker.getWorkerId(),
+                                targetSubServiceId);
             }
             if (!qualified && serviceId != null) {
                 qualified = workerServiceLinkRepository.existsByWorkerIdAndServiceId(worker.getWorkerId(), serviceId);
@@ -99,11 +102,11 @@ public class AssignmentScorer {
             }
         }
 
-        // 6. Active job conflict filter (for instant: any active stage; for slot: overlapping scheduled time)
+        // 6. Active job conflict filter (for instant: any active stage; for slot:
+        // overlapping scheduled time)
         List<BookingStage> activeStages = List.of(
                 BookingStage.ACCEPTED, BookingStage.CONFIRMED,
-                BookingStage.ON_THE_WAY, BookingStage.ARRIVED, BookingStage.IN_PROGRESS
-        );
+                BookingStage.ON_THE_WAY, BookingStage.ARRIVED, BookingStage.IN_PROGRESS);
         List<Booking> activeBookings = bookingRepository.findByWorker_WorkerIdAndStatusInOrderByScheduledAtAsc(
                 worker.getWorkerId(), activeStages);
 
@@ -120,7 +123,8 @@ public class AssignmentScorer {
                 for (Booking ab : activeBookings) {
                     if (ab.getScheduledAt() != null) {
                         Instant bStart = ab.getScheduledAt();
-                        Instant bEnd = ab.getScheduledEndAt() != null ? ab.getScheduledEndAt() : bStart.plusSeconds(3600);
+                        Instant bEnd = ab.getScheduledEndAt() != null ? ab.getScheduledEndAt()
+                                : bStart.plusSeconds(3600);
                         if (slotStart.isBefore(bEnd) && slotEnd.isAfter(bStart)) {
                             return "SLOT_OVERLAP_CONFLICT";
                         }
@@ -132,8 +136,7 @@ public class AssignmentScorer {
         // 7. Distance threshold
         double distance = BookingAssignmentService.calculateHaversineDistance(
                 booking.getUserLat(), booking.getUserLng(),
-                worker.getCurrentLat(), worker.getCurrentLng()
-        );
+                worker.getCurrentLat(), worker.getCurrentLng());
         if (distance > maxRadiusMeters) {
             return "OUT_OF_RADIUS";
         }
@@ -152,12 +155,12 @@ public class AssignmentScorer {
         double wComp = config != null ? config.getCompletionRateWeight() : 0.10;
         double wFair = config != null ? config.getFairnessWeight() : 0.10;
 
-        // 1. Distance Score: linearly decays with distance (1.0 at 0m, 0.0 at maxRadius)
+        // 1. Distance Score: linearly decays with distance (1.0 at 0m, 0.0 at
+        // maxRadius)
         double distanceMeters = BookingAssignmentService.calculateHaversineDistance(
                 booking.getUserLat(), booking.getUserLng(),
                 worker.getCurrentLat() != null ? worker.getCurrentLat() : booking.getUserLat(),
-                worker.getCurrentLng() != null ? worker.getCurrentLng() : booking.getUserLng()
-        );
+                worker.getCurrentLng() != null ? worker.getCurrentLng() : booking.getUserLng());
         double sDist = Math.max(0.0, 1.0 - (distanceMeters / maxRadius));
 
         // 2. Rating Score: normalized from [1.0, 5.0] to [0.0, 1.0], default 4.5 prior
@@ -171,17 +174,18 @@ public class AssignmentScorer {
         double sComp = 0.95;
 
         // 5. Fairness / Idle balancing Score:
-        // Workers with fewer jobs today receive higher priority to prevent idle starvation
+        // Workers with fewer jobs today receive higher priority to prevent idle
+        // starvation
         int jobsToday = countJobsCompletedToday(worker.getWorkerId());
         int targetDailyJobs = 6;
         double sFair = Math.max(0.0, 1.0 - ((double) jobsToday / targetDailyJobs));
 
         // Composite Weighted Score: bounded to [0.0, 1.0]
         double totalScore = (wDist * sDist) +
-                            (wRating * sRating) +
-                            (wAccept * sAccept) +
-                            (wComp * sComp) +
-                            (wFair * sFair);
+                (wRating * sRating) +
+                (wAccept * sAccept) +
+                (wComp * sComp) +
+                (wFair * sFair);
 
         // Normalize score to 4 decimal places
         totalScore = Math.round(totalScore * 10000.0) / 10000.0;
@@ -224,7 +228,8 @@ public class AssignmentScorer {
         // Sort descending by totalScore (ties broken by shortest distance)
         scoredList.sort((a, b) -> {
             int cmp = Double.compare(b.getTotalScore(), a.getTotalScore());
-            if (cmp != 0) return cmp;
+            if (cmp != 0)
+                return cmp;
             return Double.compare(a.getDistanceMeters(), b.getDistanceMeters());
         });
 
@@ -254,4 +259,3 @@ public class AssignmentScorer {
                 .build();
     }
 }
-

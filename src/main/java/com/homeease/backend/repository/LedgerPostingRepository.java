@@ -11,3 +11,4 @@ import java.util.UUID;
 public interface LedgerPostingRepository extends JpaRepository<LedgerPosting, UUID> {
     List<LedgerPosting> findByJournalEntry_EntryId(UUID entryId);
 }
+

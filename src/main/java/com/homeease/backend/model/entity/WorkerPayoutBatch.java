@@ -57,3 +57,4 @@ public class WorkerPayoutBatch {
     @Column(name = "settled_at")
     private Instant settledAt;
 }
+

@@ -17,3 +17,4 @@ public interface WorkerPayoutBatchRepository extends JpaRepository<WorkerPayoutB
     List<WorkerPayoutBatch> findByWorker_WorkerIdOrderByCreatedAtDesc(UUID workerId);
     Page<WorkerPayoutBatch> findByStatusOrderByCreatedAtDesc(PayoutStatus status, Pageable pageable);
 }
+
