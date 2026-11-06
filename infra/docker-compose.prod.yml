@@ -106,3 +106,4 @@ volumes:
     driver: local
   nginx-logs:
     driver: local
+
