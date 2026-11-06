@@ -39,6 +39,7 @@ public class BookingController {
     private final BookingRepository bookingRepository;
     private final BookingServiceItemRepository bookingServiceItemRepository;
     private final WorkerRepository workerRepository;
+    private final com.homeease.backend.repository.ReviewRepository reviewRepository;
     private final JwtService jwtService;
 
     public BookingController(BookingStateMachine bookingStateMachine,
@@ -54,6 +55,7 @@ public class BookingController {
                              BookingRepository bookingRepository,
                              BookingServiceItemRepository bookingServiceItemRepository,
                              WorkerRepository workerRepository,
+                             com.homeease.backend.repository.ReviewRepository reviewRepository,
                              JwtService jwtService) {
         this.bookingStateMachine = bookingStateMachine;
         this.dispatchEngine = dispatchEngine;
@@ -68,6 +70,7 @@ public class BookingController {
         this.bookingRepository = bookingRepository;
         this.bookingServiceItemRepository = bookingServiceItemRepository;
         this.workerRepository = workerRepository;
+        this.reviewRepository = reviewRepository;
         this.jwtService = jwtService;
     }
 
@@ -206,6 +209,8 @@ public class BookingController {
                     .recipientName(request.getRecipientName())
                     .recipientPhone(request.getRecipientPhone())
                     .recipientAddress(request.getRecipientAddress())
+                    .holdId(request.getHoldId())
+                    .lockToken(request.getLockToken())
                     .build();
             return ResponseEntity.ok(scheduledBookingService.createScheduledBooking(userId, schReq, idempotencyKey));
         }
@@ -520,5 +525,43 @@ public class BookingController {
             @Valid @RequestBody AddExtraSubServiceRequest request) {
         UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
         return ResponseEntity.ok(bookingStateMachine.addExtraSubService(bookingId, userId, request));
+    }
+
+    @PostMapping("/bookings/{id}/rating")
+    public ResponseEntity<Map<String, Object>> rateBooking(
+            @PathVariable("id") UUID bookingId,
+            @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestParam(value = "userId", required = false) UUID queryUserId,
+            @Valid @RequestBody RatingRequest request) {
+        UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
+        Booking booking = bookingRepository.findById(bookingId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
+
+        com.homeease.backend.model.entity.User user = booking.getUser();
+        Worker worker = booking.getWorker();
+
+        com.homeease.backend.model.entity.Review review = reviewRepository.findByBooking_BookingId(bookingId)
+                .orElse(com.homeease.backend.model.entity.Review.builder()
+                        .booking(booking)
+                        .user(user)
+                        .worker(worker)
+                        .build());
+
+        review.setRating(request.getRating());
+        if (request.getComment() != null) {
+            review.setComment(request.getComment());
+        }
+        reviewRepository.save(review);
+
+        bookingEventRepository.save(com.homeease.backend.model.entity.BookingEvent.builder().booking(booking).eventType(com.homeease.backend.model.enums.BookingEventType.CUSTOMER_RATED).payload(String.format("{\"rating\":%d}", request.getRating())).deliveryStatus(com.homeease.backend.model.enums.EventDeliveryStatus.PENDING).build());
+
+
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("status", "SUCCESS");
+        resp.put("message", "Rating submitted successfully.");
+        resp.put("bookingId", bookingId.toString());
+        resp.put("rating", request.getRating());
+        return ResponseEntity.ok(resp);
     }
 }

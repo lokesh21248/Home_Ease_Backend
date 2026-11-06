@@ -105,4 +105,17 @@ public class FileUploadController {
         String url = storageService.uploadWorkerAadhaarDoc(workerId, file);
         return ResponseEntity.ok(formatUploadResponse(url, storageService.getWorkerKycBucket()));
     }
+
+    /**
+     * Upload Job Completion / Proof Photo (Before / After / Signoff)
+     * Stored in bucket: homeease-services (folder: job-proofs/{bookingId})
+     */
+    @PostMapping(value = "/job-proof/{bookingId}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<Map<String, Object>> uploadJobProof(
+            @PathVariable("bookingId") UUID bookingId,
+            @RequestParam(value = "type", required = false, defaultValue = "completion") String type,
+            @RequestParam("file") MultipartFile file) {
+        String url = storageService.uploadJobProofPhoto(bookingId, type, file);
+        return ResponseEntity.ok(formatUploadResponse(url, storageService.getServicesBucket()));
+    }
 }

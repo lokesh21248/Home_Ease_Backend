@@ -84,6 +84,11 @@ public class BookingDto {
         @Pattern(regexp = "^(?:$|(?:\\+91|0)?[6-9]\\d{9})$", message = "Recipient phone must be a valid 10-digit Indian mobile number")
         private String recipientPhone;
         private String recipientAddress;
+
+        // Slot Hold (Phase 1 / Phase 4)
+        private UUID holdId;
+        private String lockToken;
+        private String timeSlot;
     }
 
     @Getter
@@ -154,6 +159,23 @@ public class BookingDto {
         private String recipientName;
         private String recipientPhone;
         private String recipientAddress;
+
+        // Slot Hold
+        private UUID holdId;
+        private String lockToken;
+    }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class RatingRequest {
+        @NotNull(message = "Rating must be between 1 and 5")
+        private Integer rating;
+
+        private String comment;
+        private List<String> tags;
     }
 
     @Getter

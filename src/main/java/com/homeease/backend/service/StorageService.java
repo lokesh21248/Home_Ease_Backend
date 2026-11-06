@@ -82,6 +82,11 @@ public class StorageService {
         return uploadFile(workerProfileBucket, "profile/" + workerId, file);
     }
 
+    public String uploadJobProofPhoto(UUID bookingId, String type, MultipartFile file) {
+        String folder = "job-proofs/" + bookingId + "/" + (type != null ? type : "completion");
+        return uploadFile(servicesBucket, folder, file);
+    }
+
     // --- Delete Method ---
 
     public void deleteFile(String bucketName, String filePath) {
