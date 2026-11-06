@@ -38,5 +38,22 @@ public interface BookingSlotRepository extends JpaRepository<BookingSlot, UUID> 
             @Param("workerId") UUID workerId,
             @Param("startTimestamp") Instant startTimestamp,
             @Param("endTimestamp") Instant endTimestamp);
+
+    @Query("SELECT COUNT(bs) FROM BookingSlot bs " +
+           "WHERE bs.windowKey = :windowKey " +
+           "AND bs.status IN ('RESERVED', 'CONFIRMED') " +
+           "AND (bs.lockedUntil IS NULL OR bs.lockedUntil > :now)")
+    long countActiveHoldsInWindow(
+            @Param("windowKey") String windowKey,
+            @Param("now") Instant now);
+
+    Optional<BookingSlot> findByHoldTokenAndStatus(String holdToken, String status);
+
+    Optional<BookingSlot> findByLockToken(String lockToken);
+
+    @Query("SELECT bs FROM BookingSlot bs " +
+           "WHERE bs.status = 'RESERVED' " +
+           "AND bs.lockedUntil < :now")
+    List<BookingSlot> findExpiredHolds(@Param("now") Instant now);
 }
 

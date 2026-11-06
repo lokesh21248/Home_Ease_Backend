@@ -86,3 +86,4 @@ public final class GeohashUtils {
         return encode(lat, lng, 7);
     }
 }
+

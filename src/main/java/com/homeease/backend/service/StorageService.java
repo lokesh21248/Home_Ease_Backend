@@ -62,6 +62,10 @@ public class StorageService {
         return uploadFile(subServicesBucket, "sub-service-images", file);
     }
 
+    public String uploadExploreServiceImage(MultipartFile file) {
+        return uploadFile(servicesBucket, "explore-service-images", file);
+    }
+
     public String uploadBannerImage(MultipartFile file) {
         return uploadFile(bannersBucket, "banner-images", file);
     }

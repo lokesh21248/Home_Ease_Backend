@@ -43,6 +43,12 @@ public class BookingAssignment {
     @Builder.Default
     private Integer attemptNo = 0;
 
+    @Column(name = "score")
+    private Double score;
+
+    @Column(name = "rank_order")
+    private Integer rankOrder;
+
     @Column(name = "requested_at", nullable = false)
     @Builder.Default
     private Instant requestedAt = Instant.now();

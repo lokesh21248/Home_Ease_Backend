@@ -84,6 +84,10 @@ public class Worker {
     @Transient
     private Point location;
 
+    @Transient
+    @Builder.Default
+    private Double rating = 4.8;
+
     @Column(name = "blocked_until")
     private Instant blockedUntil;
 

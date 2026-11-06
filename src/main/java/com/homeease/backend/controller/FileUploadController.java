@@ -51,6 +51,16 @@ public class FileUploadController {
     }
 
     /**
+     * Upload Explore Service Image
+     * Stored in bucket: homeease-services (folder: explore-service-images)
+     */
+    @PostMapping(value = "/explore-service-image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<Map<String, Object>> uploadExploreServiceImage(@RequestParam("file") MultipartFile file) {
+        String url = storageService.uploadExploreServiceImage(file);
+        return ResponseEntity.ok(formatUploadResponse(url, storageService.getServicesBucket()));
+    }
+
+    /**
      * Upload Promotional Banner Image
      * Stored in bucket: homeease-banners
      */

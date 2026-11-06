@@ -60,4 +60,27 @@ public interface BookingRepository extends JpaRepository<Booking, UUID>, JpaSpec
      * with the same client-supplied key, if any.
      */
     Optional<Booking> findByIdempotencyKey(String idempotencyKey);
+
+    /**
+     * Phase 2 Assignment Engine: Counts completed jobs since a given timestamp for fairness scoring.
+     */
+    @Query("SELECT COUNT(b) FROM Booking b " +
+           "WHERE b.worker.workerId = :workerId " +
+           "  AND b.status = com.homeease.backend.model.enums.BookingStage.COMPLETED " +
+           "  AND b.completedAt >= :since")
+    int countCompletedJobsSince(@Param("workerId") UUID workerId, @Param("since") Instant since);
+
+    /**
+     * Phase 2 T-120 Batch Assigner: Finds unassigned scheduled bookings starting in [windowStart, windowEnd].
+     */
+    @Query("SELECT b FROM Booking b " +
+           "WHERE b.bookingType = com.homeease.backend.model.enums.BookingType.SCHEDULED " +
+           "  AND b.worker IS NULL " +
+           "  AND b.status IN (com.homeease.backend.model.enums.BookingStage.CONFIRMED, com.homeease.backend.model.enums.BookingStage.REQUESTED, com.homeease.backend.model.enums.BookingStage.SEARCHING) " +
+           "  AND b.scheduledAt >= :windowStart " +
+           "  AND b.scheduledAt < :windowEnd " +
+           "ORDER BY b.scheduledAt ASC")
+    List<Booking> findUnassignedScheduledBookingsInWindow(
+            @Param("windowStart") Instant windowStart,
+            @Param("windowEnd") Instant windowEnd);
 }

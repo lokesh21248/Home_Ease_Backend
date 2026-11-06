@@ -26,13 +26,19 @@ public class BookingSlot {
     @Column(name = "slot_id", updatable = false, nullable = false)
     private UUID slotId;
 
-    @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "worker_id", nullable = false)
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "worker_id")
     private Worker worker;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "booking_id")
     private Booking booking;
+
+    @Column(name = "window_key", length = 150)
+    private String windowKey;
+
+    @Column(name = "hold_token", length = 100)
+    private String holdToken;
 
     @Column(name = "slot_date", nullable = false)
     private LocalDate slotDate;
