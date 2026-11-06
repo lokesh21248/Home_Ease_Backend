@@ -160,4 +160,9 @@ public class Booking {
 
     @Column(name = "service_pincode", length = 6)
     private String servicePincode;
+
+    @Version
+    @Column(name = "version", nullable = false)
+    @Builder.Default
+    private Integer version = 0;
 }
