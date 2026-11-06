@@ -24,12 +24,12 @@ public class AdminServiceDetailController {
 
     // --- Services ---
 
-    @PostMapping("/services")
+    @PostMapping("/services/detail")
     public ResponseEntity<ServiceEntity> createService(@Valid @RequestBody CreateServiceRequest req) {
         return ResponseEntity.ok(adminService.createService(req));
     }
 
-    @PutMapping("/services/{id}")
+    @PutMapping("/services/{id}/detail")
     public ResponseEntity<ServiceEntity> updateService(
             @PathVariable UUID id,
             @Valid @RequestBody CreateServiceRequest req) {
