@@ -17,7 +17,7 @@ param (
     [string]$SshKey = "",
 
     [Parameter(Mandatory=$false)]
-    [string]$SshUser = "ubuntu"
+    [string]$SshUser = "ec2-user"
 )
 
 $ErrorActionPreference = "Stop"

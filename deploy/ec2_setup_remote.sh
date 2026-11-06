@@ -129,3 +129,4 @@ sudo systemctl restart homeease-core
 sudo systemctl restart homeease-tracking
 
 echo "Setup completed successfully."
+

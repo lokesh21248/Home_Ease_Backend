@@ -14,7 +14,7 @@ set -euo pipefail
 
 EC2_HOST="${1:-}"
 SSH_KEY="${2:-}"
-SSH_USER="${3:-ubuntu}"
+SSH_USER="${3:-ec2-user}"
 
 if [ -z "$EC2_HOST" ]; then
     echo "ERROR: EC2 host or IP is required."
