@@ -65,7 +65,7 @@ spring:
       enable-auto-commit: false
     listener:
       ack-mode: RECORD
-      auto-startup: ${KAFKA_LISTENER_AUTO_STARTUP:true}
+      auto-startup: ${KAFKA_LISTENER_AUTO_STARTUP:false}
 
 # Supabase Storage (S3-compatible) Configuration
 supabase:

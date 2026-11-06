@@ -59,6 +59,7 @@ public class KafkaConfig {
     // --- Topic Declarations ---
 
     @Bean
+    @ConditionalOnProperty(name = "homeease.kafka.admin.auto-create", havingValue = "true", matchIfMissing = false)
     public NewTopic bookingEventsTopic() {
         return TopicBuilder.name(bookingEventsTopic)
                 .partitions(topicPartitions)
@@ -67,6 +68,7 @@ public class KafkaConfig {
     }
 
     @Bean
+    @ConditionalOnProperty(name = "homeease.kafka.admin.auto-create", havingValue = "true", matchIfMissing = false)
     public NewTopic bookingEventsDltTopic() {
         return TopicBuilder.name(bookingEventsDltTopic)
                 .partitions(topicPartitions)
