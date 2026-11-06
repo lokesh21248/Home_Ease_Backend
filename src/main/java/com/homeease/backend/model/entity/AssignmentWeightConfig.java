@@ -63,6 +63,30 @@ public class AssignmentWeightConfig {
     @Builder.Default
     private Integer batchAssignTMinusMinutes = 120;
 
+    @Column(name = "round1_radius_meters", nullable = false)
+    @Builder.Default
+    private Double round1RadiusMeters = 3000.0;
+
+    @Column(name = "round2_radius_meters", nullable = false)
+    @Builder.Default
+    private Double round2RadiusMeters = 5000.0;
+
+    @Column(name = "round3_radius_meters", nullable = false)
+    @Builder.Default
+    private Double round3RadiusMeters = 8000.0;
+
+    @Column(name = "surge_multiplier", nullable = false)
+    @Builder.Default
+    private Double surgeMultiplier = 1.0;
+
+    @Column(name = "max_speed_kmh_threshold", nullable = false)
+    @Builder.Default
+    private Double maxSpeedKmhThreshold = 150.0;
+
+    @Column(name = "is_zone_active", nullable = false)
+    @Builder.Default
+    private Boolean isZoneActive = true;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;

@@ -26,6 +26,8 @@ import java.util.*;
 @CrossOrigin(origins = "*")
 public class BookingController {
 
+    private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(BookingController.class);
+
     private final BookingStateMachine bookingStateMachine;
     private final DispatchEngine dispatchEngine;
     private final InstantBookingService instantBookingService;
@@ -41,6 +43,8 @@ public class BookingController {
     private final WorkerRepository workerRepository;
     private final com.homeease.backend.repository.ReviewRepository reviewRepository;
     private final JwtService jwtService;
+    private final com.homeease.backend.service.LedgerService ledgerService;
+    private final com.homeease.backend.service.FraudDetectionService fraudDetectionService;
 
     public BookingController(BookingStateMachine bookingStateMachine,
                              DispatchEngine dispatchEngine,
@@ -56,7 +60,9 @@ public class BookingController {
                              BookingServiceItemRepository bookingServiceItemRepository,
                              WorkerRepository workerRepository,
                              com.homeease.backend.repository.ReviewRepository reviewRepository,
-                             JwtService jwtService) {
+                             JwtService jwtService,
+                             com.homeease.backend.service.LedgerService ledgerService,
+                             com.homeease.backend.service.FraudDetectionService fraudDetectionService) {
         this.bookingStateMachine = bookingStateMachine;
         this.dispatchEngine = dispatchEngine;
         this.instantBookingService = instantBookingService;
@@ -72,6 +78,8 @@ public class BookingController {
         this.workerRepository = workerRepository;
         this.reviewRepository = reviewRepository;
         this.jwtService = jwtService;
+        this.ledgerService = ledgerService;
+        this.fraudDetectionService = fraudDetectionService;
     }
 
     private UUID resolveUserId(String authHeader, String headerUserIdStr, UUID queryUserId) {
@@ -461,6 +469,21 @@ public class BookingController {
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
 
         var session = sessionService.completeSession(booking, userId);
+
+        // Phase 5: Automated Double-Entry Ledger Settlement (Rule #2)
+        if (booking.getWorker() != null) {
+            java.math.BigDecimal totalPrice = session.getFinalPrice() != null
+                    ? session.getFinalPrice()
+                    : (booking.getTotalAmount() != null ? booking.getTotalAmount() : java.math.BigDecimal.valueOf(499.0));
+            java.math.BigDecimal workerShare = totalPrice.multiply(java.math.BigDecimal.valueOf(0.80)).setScale(2, java.math.RoundingMode.HALF_UP);
+            java.math.BigDecimal platformFee = totalPrice.subtract(workerShare);
+            String settlementKey = "settle-booking-" + booking.getBookingId();
+            try {
+                ledgerService.recordJobSettlement(booking, totalPrice, workerShare, platformFee, settlementKey);
+            } catch (Exception e) {
+                logger.warn("Automated ledger settlement for booking {} handled: {}", bookingId, e.getMessage());
+            }
+        }
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("status", "SUCCESS");

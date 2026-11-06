@@ -24,24 +24,38 @@ public class WorkerStreamService {
     private final RedisTemplate<String, String> redisTemplate;
     private final WorkerRepository workerRepository;
     private final SimpMessagingTemplate messagingTemplate;
+    private final FraudDetectionService fraudDetectionService;
 
     public WorkerStreamService(RedisTemplate<String, String> redisTemplate,
                                WorkerRepository workerRepository,
-                               SimpMessagingTemplate messagingTemplate) {
+                               SimpMessagingTemplate messagingTemplate,
+                               FraudDetectionService fraudDetectionService) {
         this.redisTemplate = redisTemplate;
         this.workerRepository = workerRepository;
         this.messagingTemplate = messagingTemplate;
+        this.fraudDetectionService = fraudDetectionService;
     }
 
     /**
      * Records real-time worker ping from /worker/stream:
-     * 1. Adds to Redis GEO set geo:workers:{zone} (Point: lng, lat).
-     * 2. Sets 30-second TTL heartbeat key in Redis: worker:heartbeat:{workerId}.
-     * 3. Updates Postgres worker location & is_online = true.
+     * 1. Validates telemetry against GPS spoofing and velocity anomalies (Phase 5).
+     * 2. Adds to Redis GEO set geo:workers:{zone} (Point: lng, lat).
+     * 3. Sets 30-second TTL heartbeat key in Redis: worker:heartbeat:{workerId}.
+     * 4. Updates Postgres worker location & is_online = true.
      */
     @Transactional
     public void recordWorkerPing(UUID workerId, double lat, double lng, String zone, Double accuracy) {
         if (workerId == null || Double.isNaN(lat) || Double.isNaN(lng)) {
+            return;
+        }
+
+        // Phase 5 Fraud hardening: Anti-GPS spoofing check
+        double acc = accuracy != null ? accuracy : 10.0;
+        FraudDetectionService.TelemetryValidationResult validation =
+                fraudDetectionService.validateWorkerLocation(workerId, lat, lng, acc, System.currentTimeMillis(), zone);
+
+        if (!validation.isValid()) {
+            logger.warn("Worker {} ping rejected by fraud filter: {}", workerId, validation.getReason());
             return;
         }
 
