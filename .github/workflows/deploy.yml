@@ -21,6 +21,8 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY || secrets.EC2_SSH_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
           script: |
+            set -e
+            echo "📥 Navigating to project directory..."
             if [ -d ~/Home_Ease_Backend ]; then
               cd ~/Home_Ease_Backend
             elif [ -d ~/firstdoor ]; then
@@ -33,16 +35,15 @@ jobs:
             echo "📦 Building Core Backend JAR..."
             mvn clean package -DskipTests
 
-            echo "📦 Building Dispatch Microservice JAR..."
-            cd homeease-dispatch-service && mvn clean package -DskipTests && cd ..
-
             echo "📦 Building Tracking Microservice JAR..."
             cd homeease-tracking-service && mvn clean package -DskipTests && cd ..
 
-            echo "📦 Building Notification Microservice JAR..."
-            cd homeease-notification-service && mvn clean package -DskipTests && cd ..
+            echo "🚀 Installing JARs to /opt/homeease..."
+            sudo cp target/homeease-backend-1.0.0-SNAPSHOT.jar /opt/homeease/core/homeease-backend.jar
+            sudo cp homeease-tracking-service/target/homeease-tracking-service-1.0.0-SNAPSHOT.jar /opt/homeease/tracking/homeease-tracking-service.jar
+            sudo chown -R homeease:homeease /opt/homeease
 
-            echo "🐳 Rebuilding and restarting all Docker containers..."
-            docker compose up -d --build
-            echo "✅ Deployment successful! Running containers:"
-            docker ps
+            echo "🔄 Restarting Systemd Services..."
+            sudo systemctl restart homeease-core homeease-tracking
+            sudo systemctl is-active homeease-core homeease-tracking
+            echo "✅ Deployment successful! All services running."
