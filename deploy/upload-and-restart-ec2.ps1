@@ -44,7 +44,7 @@ Write-Host "1. Uploading fresh JARs to remote /tmp..." -ForegroundColor Yellow
 
 Write-Host "2. Rotating artifacts and restarting services on remote EC2..." -ForegroundColor Yellow
 
-$RemoteCommands = @"
+$RemoteCommands = @'
 sudo mkdir -p /opt/homeease/core/backup /opt/homeease/tracking/backup
 if [ -f /opt/homeease/core/homeease-backend.jar ]; then
     sudo cp /opt/homeease/core/homeease-backend.jar /opt/homeease/core/backup/homeease-backend-$(date +%s).jar
@@ -76,7 +76,7 @@ if curl -s -k http://localhost:8080/actuator/health 2>/dev/null | grep -q 'UP'; 
 else
     echo '  [INFO] Core Backend is starting: check journalctl -u homeease-core -n 20'
 fi
-"@
+'@
 
 & ssh @SshKeyArg -o StrictHostKeyChecking=no "${SshUser}@${Ec2Host}" $RemoteCommands
 
