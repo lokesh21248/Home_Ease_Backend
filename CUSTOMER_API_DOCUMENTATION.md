@@ -1,6 +1,6 @@
 # HomeEase Customer Mobile App — API & Frontend Integration Guide
 
-**Base URL**: `http://3.107.161.126:8080/api/v1` *(or `http://localhost:8080/api/v1` for local development)*  
+**Base URL**: `http://3.108.55.219/api/v1` *(or `https://3.108.55.219/api/v1`)*  
 **Default Headers**:
 * `Content-Type: application/json`
 * `Authorization: Bearer <JWT_TOKEN>`
@@ -9,7 +9,7 @@
 ---
 
 ## ⚠️ Important Android Configuration (Cleartext HTTP)
-Because the development server uses cleartext HTTP (`http://3.107.161.126:8080`), Android 9+ devices will block all requests with `ERR_CLEARTEXT_NOT_PERMITTED` unless explicitly allowed.
+Because the backend server supports cleartext HTTP (`http://3.108.55.219`) and HTTPS (`https://3.108.55.219`), Android 9+ devices should either use HTTPS or allow cleartext traffic in `AndroidManifest.xml`.
 
 * **In `app.json` (React Native / Expo)**:
   ```json

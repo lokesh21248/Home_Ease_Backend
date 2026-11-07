@@ -6,7 +6,7 @@
 // Usage:
 //   node tests/test_phase1_consolidated.js [BASE_URL]
 // Examples:
-//   node tests/test_phase1_consolidated.js https://3.107.161.126
+//   node tests/test_phase1_consolidated.js http://3.108.55.219
 //   node tests/test_phase1_consolidated.js http://localhost
 // ==============================================================================
 

@@ -497,7 +497,7 @@ public class BookingController {
         return ResponseEntity.ok(response);
     }
 
-    @PostMapping({"/bookings/{id}/retry-dispatch"})
+    @PostMapping({"/bookings/{id}/retry-dispatch", "/bookings/{id}/retry-matching"})
     public ResponseEntity<Map<String, String>> retryDispatch(
             @PathVariable("id") UUID bookingId,
             @RequestHeader(value = "X-User-Id", required = false) String headerUserId,

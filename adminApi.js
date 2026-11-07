@@ -1,12 +1,14 @@
 import axios from 'axios';
 
 // ==========================================
-// Base URLs for Production AWS EC2 (3.107.161.126)
+// Base URLs for Production AWS EC2 (3.108.55.219)
 // ==========================================
-export const MONOLITH_BASE_URL = 'http://3.107.161.126:8080/api/v1';
-export const DISPATCH_BASE_URL = 'http://3.107.161.126:8081/api/v1';
-export const TRACKING_BASE_URL = 'http://3.107.161.126:8082/api/v1';
-export const NOTIFY_BASE_URL   = 'http://3.107.161.126:8083/api/v1';
+export const GATEWAY_BASE_URL = 'http://3.108.55.219';
+export const MONOLITH_BASE_URL = `${GATEWAY_BASE_URL}/api/v1`;
+export const DISPATCH_BASE_URL = `${GATEWAY_BASE_URL}/api/v1`;
+export const TRACKING_BASE_URL = `${GATEWAY_BASE_URL}/api/v1/tracking`;
+export const NOTIFY_BASE_URL   = `${GATEWAY_BASE_URL}/api/v1`;
+export const WS_BASE_URL       = 'ws://3.108.55.219/ws';
 
 // Monolith Admin API Axios Client
 export const adminClient = axios.create({

@@ -186,6 +186,11 @@ public class WorkerService {
 
     @Transactional
     public WorkerProfileResponse toggleOnlineStatus(UUID userId, Boolean isOnline) {
+        return toggleOnlineStatus(userId, isOnline, null, null);
+    }
+
+    @Transactional
+    public WorkerProfileResponse toggleOnlineStatus(UUID userId, Boolean isOnline, Double lat, Double lng) {
         Worker worker = workerRepository.findByUser_UserId(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Worker profile not found. Please complete KYC registration."));
 
@@ -202,27 +207,33 @@ public class WorkerService {
         }
 
         worker.setIsOnline(isOnline);
-        if (Boolean.TRUE.equals(isOnline) && worker.getCurrentLat() != null) {
+        if (lat != null && lng != null) {
+            worker.setCurrentLat(lat);
+            worker.setCurrentLng(lng);
+            worker.setLastLocationUpdatedAt(Instant.now());
+        } else if (Boolean.TRUE.equals(isOnline) && worker.getCurrentLat() != null) {
             worker.setLastLocationUpdatedAt(Instant.now());
         }
         worker = workerRepository.save(worker);
 
-        if (!isOnline && worker.getWorkerId() != null) {
-            // Going OFFLINE: remove from Redis GEO dispatch pool
+        if (!Boolean.TRUE.equals(isOnline) && worker.getWorkerId() != null) {
+            // Going OFFLINE: remove from Redis GEO dispatch pool & heartbeat
             try {
                 redisTemplate.opsForGeo().remove("active_workers_geo", worker.getWorkerId().toString());
-                logger.info("[WorkerService] Removed worker {} from active_workers_geo (OFFLINE)", worker.getWorkerId());
+                redisTemplate.opsForGeo().remove("geo:workers:global", worker.getWorkerId().toString());
+                redisTemplate.delete("worker:heartbeat:" + worker.getWorkerId());
+                logger.info("[WorkerService] Removed worker {} from active_workers_geo and geo:workers:global (OFFLINE)", worker.getWorkerId());
             } catch (Exception ignored) {}
-        } else if (isOnline && worker.getWorkerId() != null && Boolean.TRUE.equals(worker.getIsVerified())) {
+        } else if (Boolean.TRUE.equals(isOnline) && worker.getWorkerId() != null && Boolean.TRUE.equals(worker.getIsVerified())) {
             // Going ONLINE: add to Redis GEO if we have coordinates
             if (worker.getCurrentLat() != null && worker.getCurrentLng() != null) {
                 try {
-                    redisTemplate.opsForGeo().add(
-                        "active_workers_geo",
-                        new org.springframework.data.geo.Point(worker.getCurrentLng(), worker.getCurrentLat()),
-                        worker.getWorkerId().toString()
-                    );
-                    logger.info("[WorkerService] Added worker {} to active_workers_geo at ({},{}) (ONLINE)",
+                    org.springframework.data.geo.Point point = new org.springframework.data.geo.Point(worker.getCurrentLng(), worker.getCurrentLat());
+                    redisTemplate.opsForGeo().add("active_workers_geo", point, worker.getWorkerId().toString());
+                    redisTemplate.opsForGeo().add("geo:workers:global", point, worker.getWorkerId().toString());
+                    redisTemplate.opsForValue().set("worker:heartbeat:" + worker.getWorkerId(), "ALIVE", java.time.Duration.ofMinutes(5));
+                    redisTemplate.opsForValue().set("worker:last_location_time:" + worker.getWorkerId(), String.valueOf(Instant.now().toEpochMilli()));
+                    logger.info("[WorkerService] Added worker {} to active_workers_geo and geo:workers:global at ({},{}) (ONLINE)",
                             worker.getWorkerId(), worker.getCurrentLat(), worker.getCurrentLng());
                 } catch (Exception e) {
                     logger.warn("[WorkerService] Failed to add worker {} to GEO on ONLINE toggle: {}", worker.getWorkerId(), e.getMessage());
@@ -233,6 +244,49 @@ public class WorkerService {
             }
         }
 
+        return mapToProfileResponse(worker);
+    }
+
+    @Transactional
+    public WorkerProfileResponse updateWorkerServices(UUID userId, List<String> serviceOrSubServiceIds) {
+        Worker worker = workerRepository.findByUser_UserId(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Worker profile not found for user ID: " + userId));
+
+        workerServiceLinkRepository.deleteByWorkerId(worker.getWorkerId());
+        if (serviceOrSubServiceIds != null && !serviceOrSubServiceIds.isEmpty()) {
+            Set<UUID> subServiceIdsToLink = new LinkedHashSet<>();
+            for (String idStr : serviceOrSubServiceIds) {
+                if (idStr == null || idStr.isBlank()) continue;
+                try {
+                    UUID id = UUID.fromString(idStr.trim());
+                    if (subServiceRepository.existsById(id)) {
+                        subServiceIdsToLink.add(id);
+                    } else {
+                        List<SubService> subServices = subServiceRepository.findByService_ServiceIdAndIsActiveTrue(id);
+                        for (SubService ss : subServices) {
+                            subServiceIdsToLink.add(ss.getSubServiceId());
+                        }
+                    }
+                } catch (Exception ex) {
+                    logger.warn("Could not parse service/sub-service ID during skill link: {}", idStr);
+                }
+            }
+            for (UUID ssId : subServiceIdsToLink) {
+                SubService ss = subServiceRepository.findById(ssId).orElse(null);
+                if (ss != null) {
+                    WorkerServiceId linkId = WorkerServiceId.builder()
+                            .workerId(worker.getWorkerId())
+                            .subServiceId(ssId)
+                            .build();
+                    WorkerServiceLink link = WorkerServiceLink.builder()
+                            .id(linkId)
+                            .worker(worker)
+                            .subService(ss)
+                            .build();
+                    workerServiceLinkRepository.save(link);
+                }
+            }
+        }
         return mapToProfileResponse(worker);
     }
 
@@ -249,11 +303,14 @@ public class WorkerService {
 
         try {
             redisTemplate.opsForValue().set("worker:last_location_time:" + worker.getWorkerId(), String.valueOf(Instant.now().toEpochMilli()));
+            redisTemplate.opsForValue().set("worker:heartbeat:" + worker.getWorkerId(), "ALIVE", java.time.Duration.ofMinutes(5));
         } catch (Exception ignored) {}
 
         if (Boolean.TRUE.equals(worker.getIsOnline()) && Boolean.TRUE.equals(worker.getIsVerified())) {
             try {
-                redisTemplate.opsForGeo().add("active_workers_geo", new org.springframework.data.geo.Point(lng, lat), worker.getWorkerId().toString());
+                org.springframework.data.geo.Point point = new org.springframework.data.geo.Point(lng, lat);
+                redisTemplate.opsForGeo().add("active_workers_geo", point, worker.getWorkerId().toString());
+                redisTemplate.opsForGeo().add("geo:workers:global", point, worker.getWorkerId().toString());
             } catch (Exception ignored) {}
         }
     }

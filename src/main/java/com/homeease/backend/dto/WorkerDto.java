@@ -56,6 +56,10 @@ public class WorkerDto {
     public static class StatusToggleRequest {
         @NotNull(message = "Online status is required")
         private Boolean isOnline;
+        private Double lat;
+        private Double lng;
+        private String zone;
+        private UUID userId;
     }
 
     @Getter
@@ -234,6 +238,7 @@ public class WorkerDto {
     @AllArgsConstructor
     @Builder
     public static class UpdateWorkerServicesRequest {
+        private UUID userId;
         private List<String> subServiceIds;
         private List<String> serviceIds;
     }

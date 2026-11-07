@@ -49,45 +49,55 @@ public class WorkerStreamService {
             return;
         }
 
+        // Resolve canonical worker whether workerId is worker_id (PK) or user_id (FK)
+        Worker worker = workerRepository.findById(workerId)
+                .or(() -> workerRepository.findByUser_UserId(workerId))
+                .orElse(null);
+
+        UUID canonicalWorkerId = worker != null ? worker.getWorkerId() : workerId;
+
         // Phase 5 Fraud hardening: Anti-GPS spoofing check
         double acc = accuracy != null ? accuracy : 10.0;
         FraudDetectionService.TelemetryValidationResult validation =
-                fraudDetectionService.validateWorkerLocation(workerId, lat, lng, acc, System.currentTimeMillis(), zone);
+                fraudDetectionService.validateWorkerLocation(canonicalWorkerId, lat, lng, acc, System.currentTimeMillis(), zone);
 
         if (!validation.isValid()) {
-            logger.warn("Worker {} ping rejected by fraud filter: {}", workerId, validation.getReason());
+            logger.warn("Worker {} ping rejected by fraud filter: {}", canonicalWorkerId, validation.getReason());
             return;
         }
 
         String targetZone = (zone != null && !zone.isBlank()) ? zone.trim() : "500072";
         String geoKey = "geo:workers:" + targetZone;
-        String heartbeatKey = "worker:heartbeat:" + workerId;
+        String heartbeatKey = "worker:heartbeat:" + canonicalWorkerId;
+        String wIdStr = canonicalWorkerId.toString();
 
-        // 1. Redis GEO Set: geo:workers:{zone}
+        // 1. Redis GEO Sets: geo:workers:{zone}, geo:workers:global, AND active_workers_geo
         try {
-            redisTemplate.opsForGeo().add(geoKey, new Point(lng, lat), workerId.toString());
-            // Also add to global fallback set
-            redisTemplate.opsForGeo().add("geo:workers:global", new Point(lng, lat), workerId.toString());
+            Point pt = new Point(lng, lat);
+            redisTemplate.opsForGeo().add(geoKey, pt, wIdStr);
+            redisTemplate.opsForGeo().add("geo:workers:global", pt, wIdStr);
+            redisTemplate.opsForGeo().add("active_workers_geo", pt, wIdStr);
         } catch (Exception e) {
-            logger.warn("Redis GEOADD error for worker {}: {}", workerId, e.getMessage());
+            logger.warn("Redis GEOADD error for worker {}: {}", canonicalWorkerId, e.getMessage());
         }
 
-        // 2. Redis 30-second TTL heartbeat
+        // 2. Redis 30-second TTL heartbeat and location timestamp
         try {
             redisTemplate.opsForValue().set(heartbeatKey, targetZone, HEARTBEAT_TTL);
+            redisTemplate.opsForValue().set("worker:last_location_time:" + canonicalWorkerId, String.valueOf(System.currentTimeMillis()), HEARTBEAT_TTL);
         } catch (Exception e) {
-            logger.warn("Redis heartbeat set error for worker {}: {}", workerId, e.getMessage());
+            logger.warn("Redis heartbeat set error for worker {}: {}", canonicalWorkerId, e.getMessage());
         }
 
         // 3. Update Worker Postgres record
         try {
-            workerRepository.findById(workerId).ifPresent(w -> {
-                w.setCurrentLat(lat);
-                w.setCurrentLng(lng);
-                w.setIsOnline(true);
-                w.setLastLocationUpdatedAt(Instant.now());
-                workerRepository.save(w);
-            });
+            if (worker != null) {
+                worker.setCurrentLat(lat);
+                worker.setCurrentLng(lng);
+                worker.setIsOnline(true);
+                worker.setLastLocationUpdatedAt(Instant.now());
+                workerRepository.save(worker);
+            }
         } catch (Exception e) {
             logger.debug("Worker DB location update skipped: {}", e.getMessage());
         }

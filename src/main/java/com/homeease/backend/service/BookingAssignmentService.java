@@ -481,21 +481,31 @@ public class BookingAssignmentService {
             return Collections.emptyList();
         }
 
-        // 1. Redis GEO radius query — use KILOMETERS metric (convert meters→km)
+        // 1. Redis GEO radius query — query active_workers_geo, fallback to geo:workers:global
         try {
             double radiusKm = effectiveRadius / 1000.0;
             Circle searchArea = new Circle(new Point(userLng, userLat), new Distance(radiusKm, Metrics.KILOMETERS));
             GeoResults<RedisGeoCommands.GeoLocation<String>> results =
                     redisTemplate.opsForGeo().radius("active_workers_geo", searchArea);
+            if (results == null || results.getContent().isEmpty()) {
+                results = redisTemplate.opsForGeo().radius("geo:workers:global", searchArea);
+            }
             if (results != null && !results.getContent().isEmpty()) {
                 for (var res : results.getContent()) {
                     try {
-                        UUID workerId = UUID.fromString(res.getContent().getName());
-                        workerRepository.findById(workerId).ifPresent(w -> {
-                            if (isCandidateEligible(w, serviceId, subServiceId, rejectionReasons) && workerIds.add(w.getWorkerId())) {
-                                candidates.add(w);
+                        UUID candidateId = UUID.fromString(res.getContent().getName());
+                        Worker worker = workerRepository.findById(candidateId)
+                                .or(() -> workerRepository.findByUser_UserId(candidateId))
+                                .orElse(null);
+                        if (worker != null) {
+                            if (isCandidateEligible(worker, serviceId, subServiceId, rejectionReasons) && workerIds.add(worker.getWorkerId())) {
+                                candidates.add(worker);
                             }
-                        });
+                        } else {
+                            if (rejectionReasons != null) {
+                                rejectionReasons.put(candidateId.toString(), "WORKER_NOT_AVAILABLE");
+                            }
+                        }
                     } catch (Exception ignored) {}
                 }
             }
@@ -521,11 +531,17 @@ public class BookingAssignmentService {
         // 3. Fallback: query active verified online workers
         if (candidates.isEmpty()) {
             List<Worker> onlineWorkers = workerRepository.findAll().stream()
-                    .filter(w -> isCandidateEligible(w, serviceId, subServiceId, rejectionReasons))
                     .filter(w -> {
-                        if (w.getCurrentLat() == null || w.getCurrentLng() == null) return false;
+                        if (w.getCurrentLat() == null || w.getCurrentLng() == null) {
+                            if (rejectionReasons != null) rejectionReasons.put(w.getWorkerId() != null ? w.getWorkerId().toString() : "unknown", "LOCATION_MISSING");
+                            return false;
+                        }
                         double dist = calculateHaversineDistance(userLat, userLng, w.getCurrentLat(), w.getCurrentLng());
-                        return dist <= effectiveRadius;
+                        if (dist > effectiveRadius) {
+                            if (rejectionReasons != null) rejectionReasons.put(w.getWorkerId() != null ? w.getWorkerId().toString() : "unknown", "OUTSIDE_RADIUS");
+                            return false;
+                        }
+                        return isCandidateEligible(w, serviceId, subServiceId, rejectionReasons);
                     })
                     .toList();
             for (Worker w : onlineWorkers) {
@@ -552,25 +568,25 @@ public class BookingAssignmentService {
         if (worker == null) return false;
         String wId = worker.getWorkerId() != null ? worker.getWorkerId().toString() : "unknown";
 
-        // 1. Online check (Task 2)
+        // 1. Online check
         if (!Boolean.TRUE.equals(worker.getIsOnline())) {
             if (rejectionReasons != null) rejectionReasons.put(wId, "WORKER_OFFLINE");
             return false;
         }
 
-        // 2. Verification check (Task 2)
+        // 2. Verification check
         if (!Boolean.TRUE.equals(worker.getIsVerified())) {
-            if (rejectionReasons != null) rejectionReasons.put(wId, "WORKER_UNVERIFIED");
+            if (rejectionReasons != null) rejectionReasons.put(wId, "WORKER_NOT_APPROVED");
             return false;
         }
 
-        // 3. Blocked / Penalty penalty check (Task 2)
+        // 3. Blocked / Penalty penalty check
         if (worker.getBlockedUntil() != null && worker.getBlockedUntil().isAfter(Instant.now())) {
-            if (rejectionReasons != null) rejectionReasons.put(wId, "WORKER_TEMPORARILY_BLOCKED");
+            if (rejectionReasons != null) rejectionReasons.put(wId, "WORKER_NOT_AVAILABLE");
             return false;
         }
 
-        // 4. Active job check (Task 2 & Task 9 Test 4)
+        // 4. Active job check
         List<BookingStage> activeStages = List.of(
                 BookingStage.ACCEPTED,
                 BookingStage.CONFIRMED,
@@ -581,25 +597,25 @@ public class BookingAssignmentService {
         List<Booking> activeBookings = bookingRepository.findByWorker_WorkerIdAndStatusInOrderByScheduledAtAsc(
                 worker.getWorkerId(), activeStages);
         if (!activeBookings.isEmpty()) {
-            if (rejectionReasons != null) rejectionReasons.put(wId, "ALREADY_ASSIGNED_TO_ACTIVE_JOB");
+            if (rejectionReasons != null) rejectionReasons.put(wId, "WORKER_BUSY");
             return false;
         }
 
         List<BookingAssignment> activeAssignments = assignmentRepository.findByWorker_WorkerIdAndStatus(
                 worker.getWorkerId(), AssignmentStatus.ACCEPTED);
         if (!activeAssignments.isEmpty()) {
-            if (rejectionReasons != null) rejectionReasons.put(wId, "ACTIVE_ASSIGNMENT_IN_PROGRESS");
+            if (rejectionReasons != null) rejectionReasons.put(wId, "WORKER_BUSY");
             return false;
         }
 
-        // 5. Location validity & freshness check (Task 2 & Task 9 Test 5)
+        // 5. Location validity & freshness check
         if (worker.getCurrentLat() == null || worker.getCurrentLng() == null) {
-            if (rejectionReasons != null) rejectionReasons.put(wId, "LOCATION_NOT_UPDATED");
+            if (rejectionReasons != null) rejectionReasons.put(wId, "LOCATION_MISSING");
             return false;
         }
         if (Math.abs(worker.getCurrentLat()) > 90.0 || Math.abs(worker.getCurrentLng()) > 180.0 ||
             (worker.getCurrentLat() == 0.0 && worker.getCurrentLng() == 0.0)) {
-            if (rejectionReasons != null) rejectionReasons.put(wId, "INVALID_COORDINATES");
+            if (rejectionReasons != null) rejectionReasons.put(wId, "LOCATION_MISSING");
             return false;
         }
         if (worker.getLastLocationUpdatedAt() != null) {
@@ -609,7 +625,7 @@ public class BookingAssignmentService {
             }
         }
 
-        // 6. Category / Sub-service trade skill qualification check (Task 3 & Task 9 Test 3)
+        // 6. Category / Sub-service trade skill qualification check
         if (targetSubServiceId != null || serviceId != null) {
             boolean qualified = false;
 
@@ -623,7 +639,7 @@ public class BookingAssignmentService {
             }
 
             if (!qualified) {
-                if (rejectionReasons != null) rejectionReasons.put(wId, "WRONG_SERVICE_CATEGORY");
+                if (rejectionReasons != null) rejectionReasons.put(wId, "SERVICE_NOT_SUPPORTED");
                 return false;
             }
         }
@@ -886,7 +902,45 @@ public class BookingAssignmentService {
                                         int eligibleCount, Map<String, String> rejectionReasons,
                                         UUID selectedWorkerId, String kafkaStatus,
                                         String wsStatus, String fcmStatus, String assignmentStatus) {
-        if (auditLogRepository == null || booking == null) return;
+        if (booking == null) return;
+
+        // Structured Section 6 Diagnostics Logging (17 standard fields)
+        try {
+            String bookingIdStr = booking.getBookingId() != null ? booking.getBookingId().toString() : "N/A";
+            String customerIdStr = booking.getUser() != null && booking.getUser().getUserId() != null ? booking.getUser().getUserId().toString() : "N/A";
+            String serviceIdStr = serviceId != null ? serviceId.toString() : (booking.getService() != null && booking.getService().getServiceId() != null ? booking.getService().getServiceId().toString() : "N/A");
+            String subServiceIdStr = "N/A";
+            String bookingTypeStr = booking.getBookingType() != null ? booking.getBookingType().name() : "INSTANT";
+            Double customerLat = booking.getUserLat();
+            Double customerLng = booking.getUserLng();
+            String customerPincode = booking.getServicePincode() != null ? booking.getServicePincode() : "N/A";
+            String redisGeoKey = "active_workers_geo";
+            int rejectedCount = rejectionReasons != null ? rejectionReasons.size() : 0;
+            int redisCandidateCount = eligibleCount + rejectedCount;
+            int eligibleWorkerCount = eligibleCount;
+            int rejectedWorkerCount = rejectedCount;
+            String workerIdStr = selectedWorkerId != null ? selectedWorkerId.toString() : "NONE";
+            String primaryRejectionReason = (rejectionReasons != null && !rejectionReasons.isEmpty()) ? rejectionReasons.values().iterator().next() : "NONE";
+            String dispatchStatus = eligibleCount > 0 ? "SUCCESS" : "NO_ELIGIBLE_WORKERS";
+            String kafkaEventStatus = kafkaStatus != null ? kafkaStatus : "SENT";
+
+            logger.info("[DISPATCH_DIAGNOSTICS] bookingId={} customerId={} serviceId={} subServiceId={} bookingType={} customerLatitude={} customerLongitude={} customerPincode={} redisGeoKey={} redisCandidateCount={} eligibleWorkerCount={} rejectedWorkerCount={} workerId={} rejectionReason={} dispatchStatus={} kafkaEventStatus={} assignmentStatus={}",
+                    bookingIdStr, customerIdStr, serviceIdStr, subServiceIdStr, bookingTypeStr,
+                    customerLat, customerLng, customerPincode,
+                    redisGeoKey, redisCandidateCount, eligibleWorkerCount, rejectedWorkerCount,
+                    workerIdStr, primaryRejectionReason, dispatchStatus, kafkaEventStatus, assignmentStatus);
+
+            if (rejectionReasons != null) {
+                for (Map.Entry<String, String> entry : rejectionReasons.entrySet()) {
+                    logger.info("[DISPATCH_WORKER_REJECTED] bookingId={} workerId={} rejectionReason={}",
+                            bookingIdStr, entry.getKey(), entry.getValue());
+                }
+            }
+        } catch (Exception ex) {
+            logger.debug("Diagnostics log error: {}", ex.getMessage());
+        }
+
+        if (auditLogRepository == null) return;
         try {
             String reasonsJson = rejectionReasons != null && !rejectionReasons.isEmpty()
                     ? objectMapper.writeValueAsString(rejectionReasons)

@@ -1,10 +1,10 @@
 // Comprehensive API Test Suite for HomeEase Platform
 // Tests Core Monolith (:8080) and Microservices (:8081, :8082, :8083)
 
-const MONOLITH = 'http://3.107.161.126:8080/api/v1';
-const DISPATCH = 'http://3.107.161.126:8081/api/v1';
-const TRACKING = 'http://3.107.161.126:8082/api/v1';
-const NOTIFY   = 'http://3.107.161.126:8083/api/v1';
+const MONOLITH = 'http://3.108.55.219/api/v1';
+const DISPATCH = 'http://3.108.55.219/api/v1';
+const TRACKING = 'http://3.108.55.219/api/v1/tracking';
+const NOTIFY   = 'http://3.108.55.219/api/v1';
 
 const results = [];
 
@@ -51,7 +51,7 @@ async function request(name, url, options = {}) {
 async function runAllTests() {
   console.log('================================================================');
   console.log('🚀 Starting Comprehensive HomeEase API Test Suite');
-  console.log(`Target: AWS Sydney Monolith + Microservices (3.107.161.126)`);
+  console.log(`Target: AWS Mumbai Monolith + Microservices (3.108.55.219)`);
   console.log('================================================================\n');
 
   // ==========================================

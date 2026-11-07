@@ -84,10 +84,32 @@ public class WorkerController {
             @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
             @RequestHeader(value = "Authorization", required = false) String authHeader,
             @Valid @RequestBody StatusToggleRequest request) {
-        UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
-        WorkerProfileResponse profile = workerService.toggleOnlineStatus(userId, request.getIsOnline());
+        UUID directId = request.getUserId() != null ? request.getUserId() : queryUserId;
+        UUID userId = resolveUserId(authHeader, headerUserId, directId);
+        WorkerProfileResponse profile = workerService.toggleOnlineStatus(userId, request.getIsOnline(), request.getLat(), request.getLng());
         return ResponseEntity.ok(ApiResponse.<WorkerProfileResponse>builder()
                 .status("SUCCESS")
+                .data(profile)
+                .build());
+    }
+
+    @PostMapping({"/services", "/profile/services"})
+    public ResponseEntity<ApiResponse<WorkerProfileResponse>> updateWorkerServices(
+            @RequestParam(value = "userId", required = false) UUID queryUserId,
+            @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestBody UpdateWorkerServicesRequest request) {
+        UUID directId = request != null && request.getUserId() != null ? request.getUserId() : queryUserId;
+        UUID userId = resolveUserId(authHeader, headerUserId, directId);
+        java.util.List<String> serviceIds = new java.util.ArrayList<>();
+        if (request != null) {
+            if (request.getServiceIds() != null) serviceIds.addAll(request.getServiceIds());
+            if (request.getSubServiceIds() != null) serviceIds.addAll(request.getSubServiceIds());
+        }
+        WorkerProfileResponse profile = workerService.updateWorkerServices(userId, serviceIds);
+        return ResponseEntity.ok(ApiResponse.<WorkerProfileResponse>builder()
+                .status("SUCCESS")
+                .message("Worker services updated successfully.")
                 .data(profile)
                 .build());
     }
@@ -98,7 +120,8 @@ public class WorkerController {
             @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
             @RequestHeader(value = "Authorization", required = false) String authHeader,
             @Valid @RequestBody LocationUpdateRequest request) {
-        UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
+        UUID directId = queryUserId;
+        UUID userId = resolveUserId(authHeader, headerUserId, directId);
         workerService.updateLiveLocation(userId, request.getLat(), request.getLng());
         return ResponseEntity.ok(ApiResponse.<String>builder()
                 .status("SUCCESS")

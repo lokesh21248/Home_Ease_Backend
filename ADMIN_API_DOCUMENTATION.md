@@ -1,10 +1,9 @@
 # HomeEase Admin Portal — API & Frontend Integration Guide
 
 **Base URLs**:
-* **Monolith Backend (Primary)**: `http://3.107.161.126:8080/api/v1` *(or `http://localhost:8080/api/v1`)*
-* **Dispatch Service**: `http://3.107.161.126:8081/api/v1`
-* **Live Tracking Service**: `http://3.107.161.126:8082/api/v1`
-* **Notification Service**: `http://3.107.161.126:8083/api/v1`
+* **API Gateway (Primary)**: `http://3.108.55.219/api/v1` *(or `https://3.108.55.219/api/v1`)*
+* **Live Tracking Service**: `http://3.108.55.219/api/v1/tracking`
+* **Live WebSocket**: `ws://3.108.55.219/ws` *(or `wss://3.108.55.219/ws`)*
 
 **Default Headers for Admin Endpoints**:
 * `Content-Type: application/json`
@@ -17,7 +16,7 @@
 ```javascript
 import axios from 'axios';
 
-export const MONOLITH_BASE_URL = 'http://3.107.161.126:8080/api/v1';
+export const MONOLITH_BASE_URL = 'http://3.108.55.219/api/v1';
 
 export const adminClient = axios.create({
   baseURL: MONOLITH_BASE_URL,
@@ -43,7 +42,7 @@ adminClient.interceptors.request.use((config) => {
 ### 1.1 Admin Login
 Authenticate admin credentials and retrieve a JWT bearer token.
 * **Method**: `POST`
-* **Path**: `/admin/auth/login` (Full URL: `http://3.107.161.126:8080/api/v1/admin/auth/login`)
+* **Path**: `/admin/auth/login` (Full URL: `http://3.108.55.219/api/v1/admin/auth/login`)
 * **Headers**: `Content-Type: application/json`
 * **Request Body**:
   ```json
