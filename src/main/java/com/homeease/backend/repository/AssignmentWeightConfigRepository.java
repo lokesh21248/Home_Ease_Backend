@@ -12,16 +12,16 @@ import java.util.UUID;
 @Repository
 public interface AssignmentWeightConfigRepository extends JpaRepository<AssignmentWeightConfig, UUID> {
 
-    @Query("SELECT c FROM AssignmentWeightConfig c " +
-           "WHERE (:serviceId IS NULL OR c.service.serviceId = :serviceId OR c.service IS NULL) " +
-           "  AND (:zonePincode IS NULL OR c.zonePincode = :zonePincode OR c.zonePincode IS NULL) " +
+    @Query(value = "SELECT * FROM assignment_weight_config c " +
+           "WHERE (CAST(:serviceId AS uuid) IS NULL OR c.service_id = CAST(:serviceId AS uuid) OR c.service_id IS NULL) " +
+           "  AND (CAST(:zonePincode AS varchar) IS NULL OR c.zone_pincode = CAST(:zonePincode AS varchar) OR c.zone_pincode IS NULL) " +
            "ORDER BY " +
-           "  CASE WHEN c.service.serviceId = :serviceId AND c.zonePincode = :zonePincode THEN 1 " +
-           "       WHEN c.service.serviceId = :serviceId THEN 2 " +
-           "       WHEN c.zonePincode = :zonePincode THEN 3 " +
+           "  CASE WHEN c.service_id = CAST(:serviceId AS uuid) AND c.zone_pincode = CAST(:zonePincode AS varchar) THEN 1 " +
+           "       WHEN c.service_id = CAST(:serviceId AS uuid) THEN 2 " +
+           "       WHEN c.zone_pincode = CAST(:zonePincode AS varchar) THEN 3 " +
            "       ELSE 4 END ASC, " +
-           "  c.updatedAt DESC " +
-           "LIMIT 1")
+           "  c.updated_at DESC " +
+           "LIMIT 1", nativeQuery = true)
     Optional<AssignmentWeightConfig> findBestMatchingConfig(
             @Param("serviceId") UUID serviceId,
             @Param("zonePincode") String zonePincode
