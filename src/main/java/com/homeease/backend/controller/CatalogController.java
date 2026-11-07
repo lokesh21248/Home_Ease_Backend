@@ -26,7 +26,7 @@ public class CatalogController {
         return ResponseEntity.ok(catalogService.getAllActiveServices());
     }
 
-    @GetMapping({"/services/{id}", "/catalog/services/{id}", "/categories/{id}", "/catalog/categories/{id}"})
+    @GetMapping({"/catalog/services/{id}", "/categories/{id}", "/catalog/categories/{id}"})
     public ResponseEntity<ServiceResponse> getServiceById(@PathVariable("id") UUID id) {
         return ResponseEntity.ok(catalogService.getServiceById(id));
     }

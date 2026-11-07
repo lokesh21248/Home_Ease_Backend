@@ -60,7 +60,7 @@ async function runAllTests() {
   console.log('\n--- 0. Microservices Health Checks ---');
   await request('Core Monolith Health (:8080)', `${MONOLITH}/health`);
   await request('Dispatch Service Health (:8081)', `${DISPATCH}/health`);
-  await request('Tracking Service Health (:8082)', `${TRACKING}/health`);
+  await request('Tracking Service Health (:8082)', `http://3.108.55.219/api/v1/health`);
   await request('Notification Service Health (:8083)', `${NOTIFY}/health`);
 
   // ==========================================
@@ -677,16 +677,19 @@ async function runAllTests() {
   // Section 14: Microservice - Live Tracking (:8082)
   // ==========================================
   console.log('\n--- 14. Live Tracking Microservice (:8082) ---');
-  await request('Tracking Update Live GPS Coordinates', `${TRACKING}/tracking/update-location`, {
+  await request('Tracking Update Live GPS Coordinates', `${TRACKING}/partner/location`, {
     method: 'POST',
     body: JSON.stringify({
-      bookingId: activeBookingId || 'test-booking-id',
+      bookingId: activeBookingId || '00000000-0000-0000-0000-000000000000',
       lat: 12.9716,
-      lng: 77.5946
+      lng: 77.5946,
+      bearing: 90,
+      accuracy: 10,
+      speed: 15
     })
   });
 
-  await request('Tracking Fetch Latest Location', `${TRACKING}/tracking/latest/${activeBookingId || 'test-booking-id'}`);
+  await request('Tracking Fetch Latest Location', `${TRACKING}/latest/${activeBookingId || '00000000-0000-0000-0000-000000000000'}`);
 
   // ==========================================
   // Section 15: Microservice - Notification (:8083)
