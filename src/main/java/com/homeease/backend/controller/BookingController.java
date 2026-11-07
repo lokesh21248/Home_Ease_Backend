@@ -250,7 +250,7 @@ public class BookingController {
         return ResponseEntity.ok(bookingStateMachine.getUserBookings(userId));
     }
 
-    @GetMapping({"/bookings/time-slots", "/slots", "/booking/slots"})
+    @GetMapping({"/bookings/time-slots", "/booking/slots"})
     public ResponseEntity<List<Map<String, Object>>> getLegacyAvailableTimeSlots(
             @RequestParam(value = "date", required = false) String dateStr) {
         LocalDate date = (dateStr != null && !dateStr.isBlank())
