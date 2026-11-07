@@ -371,6 +371,33 @@ public class BookingAssignmentService {
         // Broadcast arrival status to customer & worker
         broadcastBookingUpdate(booking, "WORKER_ARRIVED");
 
+        // F1 Fix: Update tracking:assignment Redis key to ARRIVED status
+        // Previously missing — ACCEPTED, IN_PROGRESS, COMPLETED all updated Redis; ARRIVED did not.
+        try {
+            String assignmentKey = "tracking:assignment:" + bookingId;
+            String existingJson = redisTemplate.opsForValue().get(assignmentKey);
+            java.util.Map<String, Object> map = new java.util.HashMap<>();
+            if (existingJson != null && !existingJson.isBlank()) {
+                map = objectMapper.readValue(existingJson,
+                        new com.fasterxml.jackson.core.type.TypeReference<java.util.Map<String, Object>>() {});
+            }
+            map.put("status", "ARRIVED");
+            map.put("arrivedAt", arrivedAt.toString());
+            map.put("trackingActive", true);
+            redisTemplate.opsForValue().set(assignmentKey, objectMapper.writeValueAsString(map), Duration.ofHours(24));
+
+            // Broadcast ARRIVED tracking event so customer app reacts instantly via WebSocket
+            java.util.Map<String, Object> event = new java.util.HashMap<>();
+            event.put("bookingId", bookingId.toString());
+            event.put("status", "ARRIVED");
+            event.put("trackingActive", true);
+            event.put("message", "Partner has arrived at your location.");
+            messagingTemplate.convertAndSend("/topic/track/" + bookingId, event);
+            messagingTemplate.convertAndSend("/topic/tracking/" + bookingId, event);
+        } catch (Exception e) {
+            logger.warn("Redis tracking assignment ARRIVED update failed for booking {}: {}", bookingId, e.getMessage());
+        }
+
         logger.info("Worker {} arrived at customer location for booking {}", workerUserId, bookingId);
         return booking;
     }
