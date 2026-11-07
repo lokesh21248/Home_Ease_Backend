@@ -503,18 +503,28 @@ public class BookingController {
             @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
             @RequestHeader(value = "Authorization", required = false) String authHeader,
             @RequestParam(value = "userId", required = false) UUID queryUserId) {
-        UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
         Booking booking = bookingRepository.findById(bookingId)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
+
+        UUID userId = null;
+        try {
+            userId = resolveUserId(authHeader, headerUserId, queryUserId);
+        } catch (Exception ignored) {
+            if (booking.getUser() != null) {
+                userId = booking.getUser().getUserId();
+            }
+        }
+
         // Only retry if in a retryable state
         if (booking.getStatus() != BookingStage.WORKER_NOT_FOUND &&
             booking.getStatus() != BookingStage.SEARCHING &&
             booking.getStatus() != BookingStage.REQUESTED &&
             booking.getStatus() != BookingStage.PENDING) {
-            return ResponseEntity.ok(Map.of(
-                "status", "SKIPPED",
-                "message", "Booking is not in a retryable state: " + booking.getStatus()
-            ));
+            Map<String, String> resp = new LinkedHashMap<>();
+            resp.put("status", "SKIPPED");
+            resp.put("bookingId", bookingId.toString());
+            resp.put("message", "Booking is not in a retryable state: " + booking.getStatus());
+            return ResponseEntity.ok(resp);
         }
         // Reset to REQUESTED and re-dispatch
         booking.setStatus(BookingStage.REQUESTED);
@@ -528,10 +538,11 @@ public class BookingController {
         }
         assignmentService.dispatchInstantBooking(booking, targetSubServiceId);
 
-        return ResponseEntity.ok(Map.of(
-            "status", "DISPATCHING",
-            "message", "Retry dispatch initiated for booking " + bookingId
-        ));
+        Map<String, String> resp = new LinkedHashMap<>();
+        resp.put("status", "CANDIDATES_ALERTED");
+        resp.put("bookingId", bookingId.toString());
+        resp.put("message", "Retry dispatch initiated for booking " + bookingId);
+        return ResponseEntity.ok(resp);
     }
 
     @GetMapping("/bookings/{id}/events")
