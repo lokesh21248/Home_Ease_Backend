@@ -56,7 +56,12 @@ public class SlotHoldService {
         LocalTime startTime = parseStartTime(request.getSlotTime());
         LocalTime endTime = startTime.plusHours(1);
         int dayOfWeek = request.getDate().getDayOfWeek().getValue();
-        String pincode = request.getPincode() != null ? request.getPincode().trim() : "500072";
+        String pincode = (request.getPincode() != null && !request.getPincode().isBlank())
+                ? request.getPincode().trim().replaceAll("\\D", "")
+                : null;
+        if (pincode == null || !pincode.matches("^[0-9]{6}$")) {
+            throw new IllegalArgumentException("A valid 6-digit Indian pincode is required to hold a slot");
+        }
 
         String windowKey = String.format("%s:%s:%s:%s",
                 request.getServiceId(), pincode, request.getDate(), startTime);
@@ -153,7 +158,7 @@ public class SlotHoldService {
      * Get available slots for date with 30-60s Redis caching.
      */
     public List<SlotWindow> getSlots(UUID serviceId, String pincode, LocalDate date) {
-        String cleanPincode = (pincode != null && !pincode.isBlank()) ? pincode.trim() : "500072";
+        String cleanPincode = (pincode != null && !pincode.isBlank()) ? pincode.trim().replaceAll("\\D", "") : "GLOBAL";
         String cacheKey = String.format("cache:slots:%s:%s:%s", serviceId, cleanPincode, date);
 
         // Check Redis cache first

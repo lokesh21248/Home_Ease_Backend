@@ -30,7 +30,7 @@ public class SlotHoldController {
     @GetMapping("/slots")
     public ResponseEntity<List<SlotWindow>> getSlots(
             @RequestParam("serviceId") UUID serviceId,
-            @RequestParam(value = "pincode", required = false, defaultValue = "500072") String pincode,
+            @RequestParam(value = "pincode", required = false) String pincode,
             @RequestParam(value = "date", required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
         LocalDate queryDate = (date != null) ? date : LocalDate.now();

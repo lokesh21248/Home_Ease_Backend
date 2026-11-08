@@ -66,15 +66,16 @@ public class WorkerStreamService {
             return;
         }
 
-        String targetZone = (zone != null && !zone.isBlank()) ? zone.trim() : "500072";
-        String geoKey = "geo:workers:" + targetZone;
+        String targetZone = (zone != null && !zone.isBlank()) ? zone.trim() : null;
         String heartbeatKey = "worker:heartbeat:" + canonicalWorkerId;
         String wIdStr = canonicalWorkerId.toString();
 
-        // 1. Redis GEO Sets: geo:workers:{zone}, geo:workers:global, AND active_workers_geo
+        // 1. Redis GEO Sets: geo:workers:{zone} (if zone provided), geo:workers:global, AND active_workers_geo
         try {
             Point pt = new Point(lng, lat);
-            redisTemplate.opsForGeo().add(geoKey, pt, wIdStr);
+            if (targetZone != null) {
+                redisTemplate.opsForGeo().add("geo:workers:" + targetZone, pt, wIdStr);
+            }
             redisTemplate.opsForGeo().add("geo:workers:global", pt, wIdStr);
             redisTemplate.opsForGeo().add("active_workers_geo", pt, wIdStr);
         } catch (Exception e) {
@@ -83,7 +84,7 @@ public class WorkerStreamService {
 
         // 2. Redis 30-second TTL heartbeat and location timestamp
         try {
-            redisTemplate.opsForValue().set(heartbeatKey, targetZone, HEARTBEAT_TTL);
+            redisTemplate.opsForValue().set(heartbeatKey, targetZone != null ? targetZone : "ONLINE", HEARTBEAT_TTL);
             redisTemplate.opsForValue().set("worker:last_location_time:" + canonicalWorkerId, String.valueOf(System.currentTimeMillis()), HEARTBEAT_TTL);
         } catch (Exception e) {
             logger.warn("Redis heartbeat set error for worker {}: {}", canonicalWorkerId, e.getMessage());
@@ -108,31 +109,37 @@ public class WorkerStreamService {
      * filtering strictly by valid 30-second heartbeats.
      */
     public List<UUID> findActiveWorkersInZone(String zone, double lat, double lng, double radiusMeters) {
-        String targetZone = (zone != null && !zone.isBlank()) ? zone.trim() : "500072";
-        String geoKey = "geo:workers:" + targetZone;
         double radiusKm = radiusMeters / 1000.0;
-
         List<UUID> activeWorkers = new ArrayList<>();
+        Set<String> processedWorkerIds = new HashSet<>();
 
         try {
             Circle searchArea = new Circle(new Point(lng, lat), new Distance(radiusKm, Metrics.KILOMETERS));
-            GeoResults<RedisGeoCommands.GeoLocation<String>> results = redisTemplate.opsForGeo().radius(geoKey, searchArea);
+            GeoResults<RedisGeoCommands.GeoLocation<String>> results = null;
+            if (zone != null && !zone.isBlank()) {
+                results = redisTemplate.opsForGeo().radius("geo:workers:" + zone.trim(), searchArea);
+            }
+            if (results == null || results.getContent().isEmpty()) {
+                results = redisTemplate.opsForGeo().radius("active_workers_geo", searchArea);
+            }
+            if (results == null || results.getContent().isEmpty()) {
+                results = redisTemplate.opsForGeo().radius("geo:workers:global", searchArea);
+            }
 
             if (results != null && !results.getContent().isEmpty()) {
                 for (var res : results.getContent()) {
                     String workerIdStr = res.getContent().getName();
+                    if (!processedWorkerIds.add(workerIdStr)) continue;
+
                     // Check if 30-second heartbeat is still active
                     Boolean hasHeartbeat = redisTemplate.hasKey("worker:heartbeat:" + workerIdStr);
                     if (Boolean.TRUE.equals(hasHeartbeat)) {
                         activeWorkers.add(UUID.fromString(workerIdStr));
-                    } else {
-                        // Heartbeat expired: prune from GEO set
-                        redisTemplate.opsForGeo().remove(geoKey, workerIdStr);
                     }
                 }
             }
         } catch (Exception e) {
-            logger.warn("Redis GEO search failed for zone {}: {}", targetZone, e.getMessage());
+            logger.warn("Redis GEO search failed for zone {}: {}", zone, e.getMessage());
         }
 
         return activeWorkers;

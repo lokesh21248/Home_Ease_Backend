@@ -302,5 +302,8 @@ public class BookingDto {
         private String  recipientPhone;
         private String  recipientAddress;
         private String  servicePincode;
+        private String  pincode;
+        private String  customerAddress;
+        private String  addressId;
     }
 }

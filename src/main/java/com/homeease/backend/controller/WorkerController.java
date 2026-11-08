@@ -102,11 +102,13 @@ public class WorkerController {
         UUID directId = request != null && request.getUserId() != null ? request.getUserId() : queryUserId;
         UUID userId = resolveUserId(authHeader, headerUserId, directId);
         java.util.List<String> serviceIds = new java.util.ArrayList<>();
+        String workingPincodes = null;
         if (request != null) {
             if (request.getServiceIds() != null) serviceIds.addAll(request.getServiceIds());
             if (request.getSubServiceIds() != null) serviceIds.addAll(request.getSubServiceIds());
+            workingPincodes = request.getWorkingPincodes();
         }
-        WorkerProfileResponse profile = workerService.updateWorkerServices(userId, serviceIds);
+        WorkerProfileResponse profile = workerService.updateWorkerServices(userId, serviceIds, workingPincodes);
         return ResponseEntity.ok(ApiResponse.<WorkerProfileResponse>builder()
                 .status("SUCCESS")
                 .message("Worker services updated successfully.")

@@ -208,7 +208,7 @@ public class AssignmentScorer {
      */
     public List<CandidateScore> rankCandidates(List<Worker> candidatePool, Booking booking, UUID targetSubServiceId) {
         UUID serviceId = booking.getService() != null ? booking.getService().getServiceId() : null;
-        String pincode = booking.getServicePincode() != null ? booking.getServicePincode() : "500072";
+        String pincode = booking.getServicePincode();
 
         AssignmentWeightConfig config = weightConfigRepository.findBestMatchingConfig(serviceId, pincode)
                 .orElse(getDefaultConfig());

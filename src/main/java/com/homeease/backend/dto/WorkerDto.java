@@ -121,6 +121,7 @@ public class WorkerDto {
         private Double currentLng;
         private Double rating;
         private Integer jobsCompleted;
+        private String workingPincodes;
     }
 
     @Getter
@@ -137,6 +138,8 @@ public class WorkerDto {
         private String customerName;
         private String customerPhone;
         private String customerAddress;
+        private String pincode;
+        private String servicePincode;
         private Double userLat;
         private Double userLng;
         private BigDecimal totalAmount;
@@ -241,6 +244,7 @@ public class WorkerDto {
         private UUID userId;
         private List<String> subServiceIds;
         private List<String> serviceIds;
+        private String workingPincodes;
     }
 
     @Getter

@@ -46,6 +46,7 @@ public class ScheduledBookingService {
     private final BookingNotificationService notificationService;
     private final BookingDomainEventService domainEventService;
     private final RedisTemplate<String, String> redisTemplate;
+    private final UserAddressService userAddressService;
     private final GeometryFactory geometryFactory = new GeometryFactory();
 
     public ScheduledBookingService(BookingRepository bookingRepository,
@@ -63,7 +64,8 @@ public class ScheduledBookingService {
                                   WorkerAvailabilityService availabilityService,
                                   BookingNotificationService notificationService,
                                   BookingDomainEventService domainEventService,
-                                  RedisTemplate<String, String> redisTemplate) {
+                                  RedisTemplate<String, String> redisTemplate,
+                                  UserAddressService userAddressService) {
         this.bookingRepository = bookingRepository;
         this.userRepository = userRepository;
         this.serviceRepository = serviceRepository;
@@ -80,6 +82,7 @@ public class ScheduledBookingService {
         this.notificationService = notificationService;
         this.domainEventService = domainEventService;
         this.redisTemplate = redisTemplate;
+        this.userAddressService = userAddressService;
     }
 
     @Transactional
@@ -95,10 +98,43 @@ public class ScheduledBookingService {
             }
         }
 
-        // 2. Validate Serviceability
-        serviceAreaService.assertServiceable(request.getPincode());
+        // 2. Resolve Address & Authoritative Pincode
+        String resolvedPincode = request.getPincode();
+        Double resolvedLat = request.getUserLat();
+        Double resolvedLng = request.getUserLng();
+        String resolvedAddress = request.getRecipientAddress();
 
-        // 3. Parse Time Slot
+        if (request.getAddressId() != null && !request.getAddressId().isBlank()) {
+            var addrOpt = userAddressService.findUserAddress(userId, request.getAddressId().trim());
+            if (addrOpt.isEmpty()) {
+                throw new IllegalArgumentException("Invalid addressId: Selected address not found or unauthorized for customer " + userId);
+            }
+            var addr = addrOpt.get();
+            if (addr.get("pincode") != null && !addr.get("pincode").toString().isBlank()) {
+                resolvedPincode = addr.get("pincode").toString().replaceAll("\\D", "");
+            }
+            if (addr.get("lat") != null) {
+                try { resolvedLat = Double.valueOf(addr.get("lat").toString()); } catch (Exception ignored) {}
+            }
+            if (addr.get("lng") != null) {
+                try { resolvedLng = Double.valueOf(addr.get("lng").toString()); } catch (Exception ignored) {}
+            }
+            if (addr.get("addressLine") != null) {
+                resolvedAddress = addr.get("addressLine").toString();
+                if (addr.get("city") != null) {
+                    resolvedAddress += ", " + addr.get("city").toString();
+                }
+            }
+        }
+
+        if (resolvedPincode == null || !resolvedPincode.matches("^[0-9]{6}$")) {
+            throw new IllegalArgumentException("A valid 6-digit Indian pincode is required for booking");
+        }
+
+        // 3. Validate Serviceability
+        serviceAreaService.assertServiceable(resolvedPincode);
+
+        // 4. Parse Time Slot
         LocalTime slotStartTime = parseSlotStartTime(request.getTimeSlot());
         LocalDate scheduledDate = request.getScheduledDate();
 
@@ -190,7 +226,7 @@ public class ScheduledBookingService {
                     firstSubServiceId, scheduledDate, scheduledStartInstant, scheduledEndInstant);
 
             String pinCode = String.format("%04d", new SecureRandom().nextInt(10000));
-            Point userLocation = geometryFactory.createPoint(new Coordinate(request.getUserLng(), request.getUserLat()));
+            Point userLocation = geometryFactory.createPoint(new Coordinate(resolvedLng, resolvedLat));
 
             Booking booking = Booking.builder()
                     .user(user)
@@ -203,8 +239,8 @@ public class ScheduledBookingService {
                     .scheduledAt(scheduledStartInstant)
                     .scheduledEndAt(scheduledEndInstant)
                     .workerAssignedAt(assignedWorker != null ? Instant.now() : null)
-                    .userLat(request.getUserLat())
-                    .userLng(request.getUserLng())
+                    .userLat(resolvedLat)
+                    .userLng(resolvedLng)
                     .userLocation(userLocation)
                     .baseAmount(baseAmount)
                     .extraAmount(BigDecimal.ZERO)
@@ -216,11 +252,16 @@ public class ScheduledBookingService {
                     .isForFriend(Boolean.TRUE.equals(request.getIsForFriend()))
                     .recipientName(request.getRecipientName())
                     .recipientPhone(request.getRecipientPhone())
-                    .recipientAddress(request.getRecipientAddress())
-                    .servicePincode(request.getPincode())
+                    .recipientAddress(resolvedAddress)
+                    .servicePincode(resolvedPincode)
                     .build();
 
             booking = bookingRepository.save(booking);
+
+            logger.info("BOOKING_CREATED: bookingId={}, customerId={}, addressId={}, selectedPincode={}",
+                    booking.getBookingId(), userId, request.getAddressId(), resolvedPincode);
+            logger.info("SERVICEABILITY_CHECK: bookingId={}, pincode={}, serviceId={}, result=SERVICEABLE",
+                    booking.getBookingId(), resolvedPincode, request.getServiceId());
 
             // 8. Create BookingSlot reservation in DB
             if (assignedWorker != null) {
@@ -378,6 +419,8 @@ public class ScheduledBookingService {
                 .recipientPhone(b.getRecipientPhone())
                 .recipientAddress(b.getRecipientAddress())
                 .servicePincode(b.getServicePincode())
+                .pincode(b.getServicePincode())
+                .customerAddress(b.getRecipientAddress())
                 .build();
     }
 }

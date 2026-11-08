@@ -45,6 +45,7 @@ public class DualBookingSystemTest {
     @Mock private BookingCancellationService cancellationService;
     @Mock private RedisTemplate<String, String> redisTemplate;
     @Mock private ValueOperations<String, String> valueOperations;
+    @Mock private UserAddressService userAddressService;
 
     private WorkerAvailabilityService availabilityService;
     private ScheduledBookingService scheduledBookingService;
@@ -124,7 +125,8 @@ public class DualBookingSystemTest {
                 availabilityService,
                 notificationService,
                 domainEventService,
-                redisTemplate
+                redisTemplate,
+                userAddressService
         );
 
         instantBookingService = new InstantBookingService(
@@ -138,7 +140,8 @@ public class DualBookingSystemTest {
                 couponRepository,
                 serviceAreaService,
                 assignmentService,
-                domainEventService
+                domainEventService,
+                userAddressService
         );
     }
 

@@ -95,6 +95,9 @@ public class Worker {
     @Builder.Default
     private Boolean isVerified = false;
 
+    @Column(name = "working_pincodes", columnDefinition = "TEXT")
+    private String workingPincodes;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;

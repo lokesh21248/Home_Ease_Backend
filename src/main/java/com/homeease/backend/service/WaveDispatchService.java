@@ -71,7 +71,7 @@ public class WaveDispatchService {
         }
 
         double radiusMeters = DISPATCH_ROUNDS_METERS[roundNumber - 1];
-        String zone = booking.getServicePincode() != null ? booking.getServicePincode() : "500072";
+        String zone = booking.getServicePincode();
 
         logger.info("Executing Wave Dispatch Round {} (radius={} m) for Booking {} in Zone {}",
                 roundNumber, radiusMeters, booking.getBookingId(), zone);

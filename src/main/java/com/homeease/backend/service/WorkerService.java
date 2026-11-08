@@ -249,8 +249,18 @@ public class WorkerService {
 
     @Transactional
     public WorkerProfileResponse updateWorkerServices(UUID userId, List<String> serviceOrSubServiceIds) {
+        return updateWorkerServices(userId, serviceOrSubServiceIds, null);
+    }
+
+    @Transactional
+    public WorkerProfileResponse updateWorkerServices(UUID userId, List<String> serviceOrSubServiceIds, String workingPincodes) {
         Worker worker = workerRepository.findByUser_UserId(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Worker profile not found for user ID: " + userId));
+
+        if (workingPincodes != null) {
+            worker.setWorkingPincodes(workingPincodes);
+            workerRepository.save(worker);
+        }
 
         workerServiceLinkRepository.deleteByWorkerId(worker.getWorkerId());
         if (serviceOrSubServiceIds != null && !serviceOrSubServiceIds.isEmpty()) {
@@ -409,6 +419,7 @@ public class WorkerService {
                 .subServiceIds(subServiceIds)
                 .currentLat(worker.getCurrentLat())
                 .currentLng(worker.getCurrentLng())
+                .workingPincodes(worker.getWorkingPincodes())
                 .rating(Math.round(rating * 10.0) / 10.0)
                 .jobsCompleted((int) jobsCompleted)
                 .build();

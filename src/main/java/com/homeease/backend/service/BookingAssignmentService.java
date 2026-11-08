@@ -128,6 +128,7 @@ public class BookingAssignmentService {
                     booking.getUserLat(),
                     booking.getUserLng(),
                     tier,
+                    booking.getServicePincode(),
                     rejectionReasons
             );
             usedRadius = tier;
@@ -137,6 +138,9 @@ public class BookingAssignmentService {
             }
             logger.info("No workers found within {} m for booking {}, expanding radius...", tier, booking.getBookingId());
         }
+
+        logger.info("PARTNER_MATCHING: bookingId={}, pincode={}, eligiblePartnerCount={}",
+                booking.getBookingId(), booking.getServicePincode(), eligibleCandidates.size());
 
         // Record Dispatch Audit Log (Task 8)
         recordDispatchAuditLog(
@@ -241,6 +245,8 @@ public class BookingAssignmentService {
         booking.setWorkerAssignedAt(Instant.now());
         booking.setPinCode(pinCode);
         booking = bookingRepository.save(booking);
+
+        logger.info("BOOKING_ASSIGNED: bookingId={}, partnerId={}", bookingId, worker.getWorkerId());
 
         // Update winning assignment to ACCEPTED
         assignmentRepository.findByBooking_BookingIdAndWorker_WorkerId(bookingId, worker.getWorkerId())
@@ -493,12 +499,20 @@ public class BookingAssignmentService {
     public List<Worker> findEligibleCandidateWorkers(UUID serviceId, UUID subServiceId,
                                                     double userLat, double userLng,
                                                     double effectiveRadius) {
-        return findEligibleCandidateWorkers(serviceId, subServiceId, userLat, userLng, effectiveRadius, new LinkedHashMap<>());
+        return findEligibleCandidateWorkers(serviceId, subServiceId, userLat, userLng, effectiveRadius, null, new LinkedHashMap<>());
     }
 
     public List<Worker> findEligibleCandidateWorkers(UUID serviceId, UUID subServiceId,
                                                     double userLat, double userLng,
                                                     double effectiveRadius,
+                                                    Map<String, String> rejectionReasons) {
+        return findEligibleCandidateWorkers(serviceId, subServiceId, userLat, userLng, effectiveRadius, null, rejectionReasons);
+    }
+
+    public List<Worker> findEligibleCandidateWorkers(UUID serviceId, UUID subServiceId,
+                                                    double userLat, double userLng,
+                                                    double effectiveRadius,
+                                                    String servicePincode,
                                                     Map<String, String> rejectionReasons) {
         List<Worker> candidates = new ArrayList<>();
         Set<UUID> workerIds = new HashSet<>();
@@ -525,7 +539,7 @@ public class BookingAssignmentService {
                                 .or(() -> workerRepository.findByUser_UserId(candidateId))
                                 .orElse(null);
                         if (worker != null) {
-                            if (isCandidateEligible(worker, serviceId, subServiceId, rejectionReasons) && workerIds.add(worker.getWorkerId())) {
+                            if (isCandidateEligible(worker, serviceId, subServiceId, servicePincode, rejectionReasons) && workerIds.add(worker.getWorkerId())) {
                                 candidates.add(worker);
                             }
                         } else {
@@ -546,7 +560,7 @@ public class BookingAssignmentService {
                 List<Worker> dbNearby = workerRepository.findCandidateWorkersNearby(
                         subServiceId.toString(), userLat, userLng, effectiveRadius);
                 for (Worker w : dbNearby) {
-                    if (isCandidateEligible(w, serviceId, subServiceId, rejectionReasons) && workerIds.add(w.getWorkerId())) {
+                    if (isCandidateEligible(w, serviceId, subServiceId, servicePincode, rejectionReasons) && workerIds.add(w.getWorkerId())) {
                         candidates.add(w);
                     }
                 }
@@ -568,7 +582,7 @@ public class BookingAssignmentService {
                             if (rejectionReasons != null) rejectionReasons.put(w.getWorkerId() != null ? w.getWorkerId().toString() : "unknown", "OUTSIDE_RADIUS");
                             return false;
                         }
-                        return isCandidateEligible(w, serviceId, subServiceId, rejectionReasons);
+                        return isCandidateEligible(w, serviceId, subServiceId, servicePincode, rejectionReasons);
                     })
                     .toList();
             for (Worker w : onlineWorkers) {
@@ -588,10 +602,14 @@ public class BookingAssignmentService {
     }
 
     public boolean isCandidateEligible(Worker worker, UUID targetSubServiceId) {
-        return isCandidateEligible(worker, null, targetSubServiceId, new LinkedHashMap<>());
+        return isCandidateEligible(worker, null, targetSubServiceId, null, new LinkedHashMap<>());
     }
 
     public boolean isCandidateEligible(Worker worker, UUID serviceId, UUID targetSubServiceId, Map<String, String> rejectionReasons) {
+        return isCandidateEligible(worker, serviceId, targetSubServiceId, null, rejectionReasons);
+    }
+
+    public boolean isCandidateEligible(Worker worker, UUID serviceId, UUID targetSubServiceId, String servicePincode, Map<String, String> rejectionReasons) {
         if (worker == null) return false;
         String wId = worker.getWorkerId() != null ? worker.getWorkerId().toString() : "unknown";
 
@@ -671,6 +689,19 @@ public class BookingAssignmentService {
             }
         }
 
+        // 7. Working pincodes check (if partner configured preferred/working pincodes)
+        if (servicePincode != null && !servicePincode.isBlank() &&
+            worker.getWorkingPincodes() != null && !worker.getWorkingPincodes().isBlank()) {
+            List<String> allowedPins = Arrays.stream(worker.getWorkingPincodes().split("[,;|\\s]+"))
+                    .map(String::trim)
+                    .filter(s -> !s.isBlank())
+                    .toList();
+            if (!allowedPins.isEmpty() && !allowedPins.contains(servicePincode.trim())) {
+                if (rejectionReasons != null) rejectionReasons.put(wId, "PINCODE_NOT_SERVICED");
+                return false;
+            }
+        }
+
         return true;
     }
 
@@ -744,6 +775,8 @@ public class BookingAssignmentService {
                         .customerName(customerName)
                         .customerPhone(customerPhone)
                         .customerAddress(customerAddress)
+                        .pincode(booking.getServicePincode())
+                        .servicePincode(booking.getServicePincode())
                         .userLat(booking.getUserLat())
                         .userLng(booking.getUserLng())
                         .totalAmount(booking.getTotalAmount())
@@ -779,12 +812,16 @@ public class BookingAssignmentService {
         payload.put("customerName", customerName);
         payload.put("customerPhone", customerPhone);
         payload.put("customerAddress", customerAddress);
+        payload.put("pincode", booking.getServicePincode());
+        payload.put("servicePincode", booking.getServicePincode());
         payload.put("customerLat", booking.getUserLat());
         payload.put("customerLng", booking.getUserLng());
         payload.put("userLat", booking.getUserLat());
         payload.put("userLng", booking.getUserLng());
         payload.put("status", booking.getStatus() != null ? booking.getStatus().name() : "SEARCHING");
         payload.put("createdAt", booking.getCreatedAt() != null ? booking.getCreatedAt().toString() : Instant.now().toString());
+
+        logger.info("PARTNER_OFFERED: bookingId={}, partnerId={}", booking.getBookingId(), worker.getWorkerId());
 
         // 1. WebSocket topic dispatch
         try {

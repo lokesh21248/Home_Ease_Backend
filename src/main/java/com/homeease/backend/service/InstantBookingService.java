@@ -35,6 +35,7 @@ public class InstantBookingService {
     private final ServiceAreaService serviceAreaService;
     private final BookingAssignmentService assignmentService;
     private final BookingDomainEventService domainEventService;
+    private final UserAddressService userAddressService;
     private final GeometryFactory geometryFactory = new GeometryFactory();
 
     public InstantBookingService(BookingRepository bookingRepository,
@@ -47,7 +48,8 @@ public class InstantBookingService {
                                  CouponRepository couponRepository,
                                  ServiceAreaService serviceAreaService,
                                  BookingAssignmentService assignmentService,
-                                 BookingDomainEventService domainEventService) {
+                                 BookingDomainEventService domainEventService,
+                                 UserAddressService userAddressService) {
         this.bookingRepository = bookingRepository;
         this.userRepository = userRepository;
         this.serviceRepository = serviceRepository;
@@ -59,6 +61,7 @@ public class InstantBookingService {
         this.serviceAreaService = serviceAreaService;
         this.assignmentService = assignmentService;
         this.domainEventService = domainEventService;
+        this.userAddressService = userAddressService;
     }
 
     @Transactional
@@ -74,20 +77,53 @@ public class InstantBookingService {
             }
         }
 
-        // 2. Validate Serviceability
-        serviceAreaService.assertServiceable(request.getPincode());
+        // 2. Resolve Address & Authoritative Pincode
+        String resolvedPincode = request.getPincode();
+        Double resolvedLat = request.getUserLat();
+        Double resolvedLng = request.getUserLng();
+        String resolvedAddress = request.getRecipientAddress();
 
-        // 3. Validate User
+        if (request.getAddressId() != null && !request.getAddressId().isBlank()) {
+            var addrOpt = userAddressService.findUserAddress(userId, request.getAddressId().trim());
+            if (addrOpt.isEmpty()) {
+                throw new IllegalArgumentException("Invalid addressId: Selected address not found or unauthorized for customer " + userId);
+            }
+            var addr = addrOpt.get();
+            if (addr.get("pincode") != null && !addr.get("pincode").toString().isBlank()) {
+                resolvedPincode = addr.get("pincode").toString().replaceAll("\\D", "");
+            }
+            if (addr.get("lat") != null) {
+                try { resolvedLat = Double.valueOf(addr.get("lat").toString()); } catch (Exception ignored) {}
+            }
+            if (addr.get("lng") != null) {
+                try { resolvedLng = Double.valueOf(addr.get("lng").toString()); } catch (Exception ignored) {}
+            }
+            if (addr.get("addressLine") != null) {
+                resolvedAddress = addr.get("addressLine").toString();
+                if (addr.get("city") != null) {
+                    resolvedAddress += ", " + addr.get("city").toString();
+                }
+            }
+        }
+
+        if (resolvedPincode == null || !resolvedPincode.matches("^[0-9]{6}$")) {
+            throw new IllegalArgumentException("A valid 6-digit Indian pincode is required for booking");
+        }
+
+        // 3. Validate Serviceability
+        serviceAreaService.assertServiceable(resolvedPincode);
+
+        // 4. Validate User
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Customer not found: " + userId));
 
-        // 4. Validate Service Vertical
+        // 5. Validate Service Vertical
         ServiceEntity service = serviceRepository.findById(request.getServiceId())
                 .orElseThrow(() -> new ResourceNotFoundException("Service vertical not found: " + request.getServiceId()));
 
-        Point userLocation = geometryFactory.createPoint(new Coordinate(request.getUserLng(), request.getUserLat()));
+        Point userLocation = geometryFactory.createPoint(new Coordinate(resolvedLng, resolvedLat));
 
-        // 5. Calculate Price and Estimated Service Duration
+        // 6. Calculate Price and Estimated Service Duration
         BigDecimal baseAmount = BigDecimal.ZERO;
         int totalEstimatedMins = 0;
         UUID firstSubServiceId = null;
@@ -149,8 +185,8 @@ public class InstantBookingService {
                 .pinCode(pinCode)
                 .scheduledAt(now)
                 .scheduledEndAt(scheduledEnd)
-                .userLat(request.getUserLat())
-                .userLng(request.getUserLng())
+                .userLat(resolvedLat)
+                .userLng(resolvedLng)
                 .userLocation(userLocation)
                 .baseAmount(baseAmount)
                 .extraAmount(BigDecimal.ZERO)
@@ -162,11 +198,16 @@ public class InstantBookingService {
                 .isForFriend(Boolean.TRUE.equals(request.getIsForFriend()))
                 .recipientName(request.getRecipientName())
                 .recipientPhone(request.getRecipientPhone())
-                .recipientAddress(request.getRecipientAddress())
-                .servicePincode(request.getPincode())
+                .recipientAddress(resolvedAddress)
+                .servicePincode(resolvedPincode)
                 .build();
 
         booking = bookingRepository.save(booking);
+
+        logger.info("BOOKING_CREATED: bookingId={}, customerId={}, addressId={}, selectedPincode={}",
+                booking.getBookingId(), userId, request.getAddressId(), resolvedPincode);
+        logger.info("SERVICEABILITY_CHECK: bookingId={}, pincode={}, serviceId={}, result=SERVICEABLE",
+                booking.getBookingId(), resolvedPincode, request.getServiceId());
 
         // Save Line Items
         for (SubServiceRequestItem item : request.getSubServices()) {
@@ -254,6 +295,8 @@ public class InstantBookingService {
                 .recipientPhone(b.getRecipientPhone())
                 .recipientAddress(b.getRecipientAddress())
                 .servicePincode(b.getServicePincode())
+                .pincode(b.getServicePincode())
+                .customerAddress(b.getRecipientAddress())
                 .build();
     }
 }

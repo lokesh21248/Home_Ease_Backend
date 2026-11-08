@@ -29,20 +29,20 @@ public class AuthController {
     private final RedisTemplate<String, String> redisTemplate;
     private final ObjectMapper objectMapper;
     private final com.homeease.backend.security.JwtService jwtService;
-
-    // In-memory fallback if Redis is not yet configured
-    private final Map<UUID, List<Map<String, Object>>> addressFallbackStore = new ConcurrentHashMap<>();
+    private final com.homeease.backend.service.UserAddressService userAddressService;
 
     public AuthController(AuthService authService,
                           UserRepository userRepository,
                           RedisTemplate<String, String> redisTemplate,
                           ObjectMapper objectMapper,
-                          com.homeease.backend.security.JwtService jwtService) {
+                          com.homeease.backend.security.JwtService jwtService,
+                          com.homeease.backend.service.UserAddressService userAddressService) {
         this.authService = authService;
         this.userRepository = userRepository;
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
         this.jwtService = jwtService;
+        this.userAddressService = userAddressService;
     }
 
     private UUID resolveUserId(String authHeader, UUID headerUserId, UUID queryUserId) {
@@ -172,23 +172,7 @@ public class AuthController {
         if (userId == null) {
             userId = UUID.fromString("00000000-0000-0000-0000-000000000001");
         }
-        List<Map<String, Object>> addresses = loadAddresses(userId);
-
-        if (addresses.isEmpty()) {
-            // Default seed address if user has not yet saved any custom address
-            Map<String, Object> defaultAddr = new LinkedHashMap<>();
-            defaultAddr.put("id", UUID.randomUUID().toString());
-            defaultAddr.put("userId", userId.toString());
-            defaultAddr.put("title", "Home");
-            defaultAddr.put("addressLine", "Flat 402, Green Valley Apartments, Hitech City");
-            defaultAddr.put("city", "Hyderabad");
-            defaultAddr.put("lat", 17.448293);
-            defaultAddr.put("lng", 78.374182);
-            defaultAddr.put("isDefault", true);
-
-            addresses = List.of(defaultAddr);
-        }
-
+        List<Map<String, Object>> addresses = userAddressService.getUserAddresses(userId);
         return ResponseEntity.ok(addresses);
     }
 
@@ -208,17 +192,8 @@ public class AuthController {
             userId = UUID.fromString("00000000-0000-0000-0000-000000000001");
         }
 
-        Map<String, Object> newAddress = new LinkedHashMap<>(payload != null ? payload : Map.of());
-        if (!newAddress.containsKey("id") || newAddress.get("id") == null) {
-            newAddress.put("id", UUID.randomUUID().toString());
-        }
-        newAddress.put("userId", userId.toString());
-
-        List<Map<String, Object>> currentList = new ArrayList<>(loadAddresses(userId));
-        currentList.add(newAddress);
-        persistAddresses(userId, currentList);
-
-        return ResponseEntity.ok(newAddress);
+        Map<String, Object> saved = userAddressService.saveUserAddress(userId, payload);
+        return ResponseEntity.ok(saved);
     }
 
     @PutMapping({"/user/addresses/{addressId}", "/users/addresses/{addressId}", "/users/me/addresses/{addressId}", "/user/me/addresses/{addressId}"})
@@ -233,25 +208,8 @@ public class AuthController {
             userId = UUID.fromString("00000000-0000-0000-0000-000000000001");
         }
 
-        List<Map<String, Object>> currentList = new ArrayList<>(loadAddresses(userId));
-        boolean found = false;
-        Map<String, Object> updatedAddress = new LinkedHashMap<>(payload != null ? payload : Map.of());
-        updatedAddress.put("id", addressId);
-        updatedAddress.put("userId", userId.toString());
-
-        for (int i = 0; i < currentList.size(); i++) {
-            if (Objects.equals(currentList.get(i).get("id"), addressId)) {
-                currentList.set(i, updatedAddress);
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            currentList.add(updatedAddress);
-        }
-        persistAddresses(userId, currentList);
-
-        return ResponseEntity.ok(updatedAddress);
+        Map<String, Object> updated = userAddressService.updateUserAddress(userId, addressId, payload);
+        return ResponseEntity.ok(updated);
     }
 
     @DeleteMapping({"/user/addresses/{addressId}", "/users/addresses/{addressId}", "/users/me/addresses/{addressId}", "/user/me/addresses/{addressId}"})
@@ -264,30 +222,7 @@ public class AuthController {
         if (userId == null) {
             userId = UUID.fromString("00000000-0000-0000-0000-000000000001");
         }
-        List<Map<String, Object>> currentList = new ArrayList<>(loadAddresses(userId));
-        currentList.removeIf(a -> Objects.equals(a.get("id"), addressId));
-        persistAddresses(userId, currentList);
-
+        userAddressService.deleteUserAddress(userId, addressId);
         return ResponseEntity.ok(Map.of("message", "Address deleted successfully."));
-    }
-
-    private List<Map<String, Object>> loadAddresses(UUID userId) {
-        if (userId == null) return Collections.emptyList();
-        try {
-            String json = redisTemplate.opsForValue().get("user_addresses:" + userId);
-            if (json != null && !json.isBlank()) {
-                return objectMapper.readValue(json, new TypeReference<List<Map<String, Object>>>() {});
-            }
-        } catch (Exception ignored) {}
-        return addressFallbackStore.getOrDefault(userId, Collections.emptyList());
-    }
-
-    private void persistAddresses(UUID userId, List<Map<String, Object>> addresses) {
-        if (userId == null) return;
-        addressFallbackStore.put(userId, addresses);
-        try {
-            String json = objectMapper.writeValueAsString(addresses);
-            redisTemplate.opsForValue().set("user_addresses:" + userId, json);
-        } catch (Exception ignored) {}
     }
 }

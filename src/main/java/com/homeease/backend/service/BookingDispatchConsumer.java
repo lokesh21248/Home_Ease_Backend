@@ -76,9 +76,14 @@ public class BookingDispatchConsumer {
 
             // Only trigger spatial dispatch on BOOKING_CREATED
             if ("BOOKING_CREATED".equalsIgnoreCase(eventTypeStr)) {
+                String servicePincode = root.has("servicePincode") && !root.get("servicePincode").isNull() ? root.get("servicePincode").asText() : null;
+                Booking booking = bookingRepository.findById(bookingId).orElse(null);
+                if (booking != null && (servicePincode == null || servicePincode.isBlank())) {
+                    servicePincode = booking.getServicePincode();
+                }
+                logger.info("DISPATCH_RECEIVED: bookingId={}, pincode={}", bookingId, servicePincode);
                 logger.info("Consumed BOOKING_CREATED Kafka event for booking {}", bookingId);
 
-                Booking booking = bookingRepository.findById(bookingId).orElse(null);
                 if (booking != null && (booking.getStatus() == BookingStage.REQUESTED || booking.getStatus() == BookingStage.PENDING)) {
                     // Find first sub-service ID if present
                     UUID targetSubServiceId = null;

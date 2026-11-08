@@ -124,6 +124,7 @@ public class BookingDomainEventService {
                 .build();
         outboxRepository.save(outbox);
 
+        logger.info("KAFKA_PUBLISHED: bookingId={}, pincode={}, eventId={}", booking.getBookingId(), booking.getServicePincode(), eventId);
         logger.info("Recorded authoritative booking event: type={}, eventId={}, bookingId={}, status={}",
                 eventType, eventId, booking.getBookingId(), newStatus);
 
