@@ -106,6 +106,17 @@ public class InstantBookingService {
             }
         }
 
+        // Clean resolved pincode
+        if (resolvedPincode != null) {
+            resolvedPincode = resolvedPincode.replaceAll("\\D", "");
+        }
+
+        // Sanity check: If 500010 (Alwal/Bolarum) has stale KPHB coordinates (17.4947), correct to Alwal centroid
+        if ("500010".equals(resolvedPincode) && (resolvedLat == null || Math.abs(resolvedLat - 17.4947) < 0.005)) {
+            resolvedLat = 17.5028;
+            resolvedLng = 78.5078;
+        }
+
         if (resolvedPincode == null || !resolvedPincode.matches("^[0-9]{6}$")) {
             throw new IllegalArgumentException("A valid 6-digit Indian pincode is required for booking");
         }
@@ -204,8 +215,9 @@ public class InstantBookingService {
 
         booking = bookingRepository.save(booking);
 
-        logger.info("BOOKING_CREATED: bookingId={}, customerId={}, addressId={}, selectedPincode={}",
-                booking.getBookingId(), userId, request.getAddressId(), resolvedPincode);
+        logger.info("[BOOKING_CREATED] bookingId={}, customerId={}, addressId={}", booking.getBookingId(), userId, request.getAddressId());
+        logger.info("[BOOKING_LOCATION] bookingId={}, lat={}, lng={}, address={}", booking.getBookingId(), resolvedLat, resolvedLng, resolvedAddress);
+        logger.info("[BOOKING_PINCODE] bookingId={}, pincode={}", booking.getBookingId(), resolvedPincode);
         logger.info("SERVICEABILITY_CHECK: bookingId={}, pincode={}, serviceId={}, result=SERVICEABLE",
                 booking.getBookingId(), resolvedPincode, request.getServiceId());
 

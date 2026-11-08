@@ -113,43 +113,92 @@ public class BookingAssignmentService {
     public void dispatchInstantBooking(Booking booking, UUID targetSubServiceId) {
         if (booking == null) return;
         UUID serviceId = booking.getService() != null ? booking.getService().getServiceId() : null;
-        logger.info("Initiating candidate matching & batch dispatch for booking {} (serviceId={}, subServiceId={})",
-                booking.getBookingId(), serviceId, targetSubServiceId);
+        String servicePincode = booking.getServicePincode();
+
+        logger.info("[WORKER_SEARCH_STARTED] bookingId={}, pincode={}, serviceId={}, subServiceId={}",
+                booking.getBookingId(), servicePincode, serviceId, targetSubServiceId);
 
         List<Worker> eligibleCandidates = new ArrayList<>();
         double usedRadius = radiusMeters;
         Map<String, String> rejectionReasons = new LinkedHashMap<>();
 
-        for (double tier : RADIUS_EXPANSION_TIERS) {
-            rejectionReasons.clear();
-            eligibleCandidates = findEligibleCandidateWorkers(
-                    serviceId,
-                    targetSubServiceId,
-                    booking.getUserLat(),
-                    booking.getUserLng(),
-                    tier,
-                    booking.getServicePincode(),
-                    rejectionReasons
-            );
-            usedRadius = tier;
-            if (!eligibleCandidates.isEmpty()) {
-                logger.info("Found {} eligible workers within {} m for booking {}", eligibleCandidates.size(), tier, booking.getBookingId());
-                break;
+        // -------------------------------------------------------------
+        // STRATEGY 1: PINCODE-FIRST MATCHING
+        // -------------------------------------------------------------
+        if (servicePincode != null && !servicePincode.isBlank()) {
+            List<Worker> samePincodeWorkers = workerRepository.findAll().stream()
+                    .filter(w -> matchesWorkingPincode(w, servicePincode))
+                    .filter(w -> {
+                        boolean eligible = isCandidateEligible(w, serviceId, targetSubServiceId, servicePincode, rejectionReasons);
+                        double dist = calculateHaversineDistance(booking.getUserLat(), booking.getUserLng(),
+                                w.getCurrentLat() != null ? w.getCurrentLat() : booking.getUserLat(),
+                                w.getCurrentLng() != null ? w.getCurrentLng() : booking.getUserLng());
+
+                        logger.info("[WORKER_PINCODE_MATCH] bookingId={}, workerId={}, workingPincodes={}",
+                                booking.getBookingId(), w.getWorkerId(), w.getWorkingPincodes());
+                        logger.info("[WORKER_SERVICE_MATCH] bookingId={}, workerId={}, subServiceId={}",
+                                booking.getBookingId(), w.getWorkerId(), targetSubServiceId);
+                        logger.info("[WORKER_ONLINE_CHECK] bookingId={}, workerId={}, isOnline={}",
+                                booking.getBookingId(), w.getWorkerId(), w.getIsOnline());
+                        logger.info("[WORKER_GEO_DISTANCE] bookingId={}, workerId={}, distanceMeters={}",
+                                booking.getBookingId(), w.getWorkerId(), Math.round(dist));
+                        logger.info("[WORKER_ELIGIBILITY] bookingId={}, workerId={}, eligible={}, reason={}",
+                                booking.getBookingId(), w.getWorkerId(), eligible, eligible ? "OK" : rejectionReasons.getOrDefault(w.getWorkerId().toString(), "UNKNOWN"));
+                        return eligible;
+                    })
+                    .sorted(Comparator.comparingDouble(w ->
+                            calculateHaversineDistance(booking.getUserLat(), booking.getUserLng(),
+                                    w.getCurrentLat() != null ? w.getCurrentLat() : booking.getUserLat(),
+                                    w.getCurrentLng() != null ? w.getCurrentLng() : booking.getUserLng())))
+                    .toList();
+
+            if (!samePincodeWorkers.isEmpty()) {
+                eligibleCandidates = new ArrayList<>(samePincodeWorkers);
+                usedRadius = 5000.0;
+                logger.info("Found {} eligible workers matching pincode {} for booking {}",
+                        eligibleCandidates.size(), servicePincode, booking.getBookingId());
             }
-            logger.info("No workers found within {} m for booking {}, expanding radius...", tier, booking.getBookingId());
+        }
+
+        // -------------------------------------------------------------
+        // STRATEGY 2: RADIUS EXPANSION TIERS (If no candidates in same pincode)
+        // -------------------------------------------------------------
+        if (eligibleCandidates.isEmpty()) {
+            for (double tier : RADIUS_EXPANSION_TIERS) {
+                rejectionReasons.clear();
+                eligibleCandidates = findEligibleCandidateWorkers(
+                        serviceId,
+                        targetSubServiceId,
+                        booking.getUserLat(),
+                        booking.getUserLng(),
+                        tier,
+                        servicePincode,
+                        rejectionReasons
+                );
+                usedRadius = tier;
+                if (!eligibleCandidates.isEmpty()) {
+                    logger.info("Found {} eligible workers within {} m for booking {}", eligibleCandidates.size(), tier, booking.getBookingId());
+                    break;
+                }
+                logger.info("No workers found within {} m for booking {}, expanding radius...", tier, booking.getBookingId());
+            }
         }
 
         logger.info("PARTNER_MATCHING: bookingId={}, pincode={}, eligiblePartnerCount={}",
-                booking.getBookingId(), booking.getServicePincode(), eligibleCandidates.size());
+                booking.getBookingId(), servicePincode, eligibleCandidates.size());
 
-        // Record Dispatch Audit Log (Task 8)
+        for (Worker worker : eligibleCandidates) {
+            logger.info("[WORKER_SELECTED] bookingId={}, workerId={}", booking.getBookingId(), worker.getWorkerId());
+        }
+
+        // Record Dispatch Audit Log
         recordDispatchAuditLog(
                 booking,
                 serviceId,
                 usedRadius,
                 eligibleCandidates.size(),
                 rejectionReasons,
-                null,
+                eligibleCandidates.isEmpty() ? null : eligibleCandidates.get(0).getWorkerId(),
                 "CONSUMED",
                 eligibleCandidates.isEmpty() ? "SKIPPED" : "SENT",
                 eligibleCandidates.isEmpty() ? "SKIPPED" : "SENT",
@@ -157,7 +206,17 @@ public class BookingAssignmentService {
         );
 
         if (eligibleCandidates.isEmpty()) {
-            logger.warn("No eligible workers found in any radius tier for booking {}", booking.getBookingId());
+            String primaryReason = "NO_WORKER_IN_PINCODE";
+            if (rejectionReasons.containsValue("WORKER_BUSY")) primaryReason = "WORKER_ALREADY_BUSY";
+            else if (rejectionReasons.containsValue("WORKER_OFFLINE")) primaryReason = "WORKER_OFFLINE";
+            else if (rejectionReasons.containsValue("LOCATION_STALE")) primaryReason = "LOCATION_STALE";
+            else if (rejectionReasons.containsValue("SERVICE_NOT_SUPPORTED")) primaryReason = "SERVICE_NOT_SUPPORTED";
+            else if (rejectionReasons.containsValue("OUTSIDE_RADIUS")) primaryReason = "OUTSIDE_ALLOWED_DISTANCE";
+
+            logger.warn("[WORKER_ELIGIBILITY] bookingId={}, eligible=false, reason={}",
+                    booking.getBookingId(), primaryReason);
+            logger.warn("No eligible workers found in any radius tier for booking {} (reason: {})",
+                    booking.getBookingId(), primaryReason);
             booking.setStatus(BookingStage.WORKER_NOT_FOUND);
             bookingRepository.save(booking);
 
@@ -246,6 +305,7 @@ public class BookingAssignmentService {
         booking.setPinCode(pinCode);
         booking = bookingRepository.save(booking);
 
+        logger.info("[WORKER_ACCEPTED] bookingId={}, workerId={}", bookingId, worker.getWorkerId());
         logger.info("BOOKING_ASSIGNED: bookingId={}, partnerId={}", bookingId, worker.getWorkerId());
 
         // Update winning assignment to ACCEPTED
@@ -664,7 +724,9 @@ public class BookingAssignmentService {
             return false;
         }
         if (worker.getLastLocationUpdatedAt() != null) {
-            if (worker.getLastLocationUpdatedAt().isBefore(Instant.now().minus(30, ChronoUnit.MINUTES))) {
+            boolean samePincode = matchesWorkingPincode(worker, servicePincode);
+            long thresholdMinutes = samePincode ? 1440 : 30; // 24 hours if online partner in same pincode
+            if (worker.getLastLocationUpdatedAt().isBefore(Instant.now().minus(thresholdMinutes, ChronoUnit.MINUTES))) {
                 if (rejectionReasons != null) rejectionReasons.put(wId, "LOCATION_STALE");
                 return false;
             }
@@ -692,17 +754,40 @@ public class BookingAssignmentService {
         // 7. Working pincodes check (if partner configured preferred/working pincodes)
         if (servicePincode != null && !servicePincode.isBlank() &&
             worker.getWorkingPincodes() != null && !worker.getWorkingPincodes().isBlank()) {
-            List<String> allowedPins = Arrays.stream(worker.getWorkingPincodes().split("[,;|\\s]+"))
-                    .map(String::trim)
-                    .filter(s -> !s.isBlank())
-                    .toList();
-            if (!allowedPins.isEmpty() && !allowedPins.contains(servicePincode.trim())) {
+            if (!matchesWorkingPincode(worker, servicePincode)) {
                 if (rejectionReasons != null) rejectionReasons.put(wId, "PINCODE_NOT_SERVICED");
                 return false;
             }
         }
 
         return true;
+    }
+
+    public boolean matchesWorkingPincode(Worker worker, String servicePincode) {
+        if (worker == null || servicePincode == null || servicePincode.isBlank()) return false;
+        String cleanPin = servicePincode.replaceAll("\\D", "");
+        if (cleanPin.length() != 6) return false;
+
+        if (worker.getWorkingPincodes() != null && !worker.getWorkingPincodes().isBlank()) {
+            List<String> allowedPins = Arrays.stream(worker.getWorkingPincodes().split("[,;|\\s]+"))
+                    .map(s -> s.replaceAll("\\D", ""))
+                    .filter(s -> !s.isBlank())
+                    .toList();
+            if (allowedPins.contains(cleanPin)) {
+                return true;
+            }
+        }
+        // Fallback: If worker is physically situated near that pincode centroid (<6.5km)
+        if (worker.getCurrentLat() != null && worker.getCurrentLng() != null) {
+            if ("500010".equals(cleanPin)) {
+                double dist = calculateHaversineDistance(17.5028, 78.5078, worker.getCurrentLat(), worker.getCurrentLng());
+                if (dist <= 6500.0) return true;
+            } else if ("500072".equals(cleanPin)) {
+                double dist = calculateHaversineDistance(17.4947, 78.3996, worker.getCurrentLat(), worker.getCurrentLng());
+                if (dist <= 6500.0) return true;
+            }
+        }
+        return false;
     }
 
     public List<NearbyWorkerDto> findNearbyAvailableWorkers(UUID serviceId, UUID subServiceId,
@@ -787,6 +872,7 @@ public class BookingAssignmentService {
                         .build());
             }
         }
+        logger.info("[WORKER_RECEIVED] workerUserId={}, pendingCount={}", userId, requests.size());
         return requests;
     }
 
@@ -821,6 +907,7 @@ public class BookingAssignmentService {
         payload.put("status", booking.getStatus() != null ? booking.getStatus().name() : "SEARCHING");
         payload.put("createdAt", booking.getCreatedAt() != null ? booking.getCreatedAt().toString() : Instant.now().toString());
 
+        logger.info("[WORKER_NOTIFICATION_SENT] bookingId={}, workerId={}, channel=WS_AND_FCM", booking.getBookingId(), worker.getWorkerId());
         logger.info("PARTNER_OFFERED: bookingId={}, partnerId={}", booking.getBookingId(), worker.getWorkerId());
 
         // 1. WebSocket topic dispatch

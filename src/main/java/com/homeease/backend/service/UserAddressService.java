@@ -9,12 +9,15 @@ import org.springframework.stereotype.Service;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Service
 public class UserAddressService {
 
     private static final Logger logger = LoggerFactory.getLogger(UserAddressService.class);
     private static final String ADDRESS_KEY_PREFIX = "user_addresses:";
+    private static final Pattern PINCODE_PATTERN = Pattern.compile("\\b(\\d{6})\\b");
 
     private final RedisTemplate<String, String> redisTemplate;
     private final ObjectMapper objectMapper;
@@ -27,15 +30,40 @@ public class UserAddressService {
 
     public List<Map<String, Object>> getUserAddresses(UUID userId) {
         if (userId == null) return Collections.emptyList();
+        List<Map<String, Object>> addresses = null;
         try {
             String json = redisTemplate.opsForValue().get(ADDRESS_KEY_PREFIX + userId);
             if (json != null && !json.isBlank()) {
-                return objectMapper.readValue(json, new TypeReference<List<Map<String, Object>>>() {});
+                addresses = objectMapper.readValue(json, new TypeReference<List<Map<String, Object>>>() {});
             }
         } catch (Exception e) {
             logger.debug("Redis address read notice: {}", e.getMessage());
         }
-        return addressFallbackStore.getOrDefault(userId, Collections.emptyList());
+
+        if (addresses == null) {
+            addresses = addressFallbackStore.getOrDefault(userId, Collections.emptyList());
+        }
+
+        if (addresses.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        // Sort so that isDefault = true is always first (index 0)
+        List<Map<String, Object>> sorted = new ArrayList<>(addresses);
+        sorted.sort((a, b) -> {
+            boolean aDef = Boolean.TRUE.equals(a.get("isDefault"));
+            boolean bDef = Boolean.TRUE.equals(b.get("isDefault"));
+            return Boolean.compare(bDef, aDef);
+        });
+
+        // Ensure at least one address is marked default if list is not empty
+        boolean hasDefault = sorted.stream().anyMatch(a -> Boolean.TRUE.equals(a.get("isDefault")));
+        if (!hasDefault && !sorted.isEmpty()) {
+            sorted.get(0).put("isDefault", true);
+            persistAddresses(userId, sorted);
+        }
+
+        return sorted;
     }
 
     public void persistAddresses(UUID userId, List<Map<String, Object>> addresses) {
@@ -56,14 +84,26 @@ public class UserAddressService {
         }
         newAddress.put("userId", userId.toString());
 
-        // Ensure 6-digit clean pincode if present
-        if (newAddress.containsKey("pincode") && newAddress.get("pincode") != null) {
-            String cleanPin = newAddress.get("pincode").toString().replaceAll("\\D", "");
-            newAddress.put("pincode", cleanPin);
+        // Extract clean 6-digit pincode
+        String pincode = extractPincode(newAddress);
+        if (pincode != null) {
+            newAddress.put("pincode", pincode);
         }
 
         List<Map<String, Object>> currentList = new ArrayList<>(getUserAddresses(userId));
-        currentList.add(newAddress);
+        boolean makeDefault = Boolean.TRUE.equals(newAddress.get("isDefault")) || currentList.isEmpty();
+
+        if (makeDefault) {
+            for (Map<String, Object> addr : currentList) {
+                addr.put("isDefault", false);
+            }
+            newAddress.put("isDefault", true);
+            currentList.add(0, newAddress);
+        } else {
+            newAddress.put("isDefault", false);
+            currentList.add(newAddress);
+        }
+
         persistAddresses(userId, currentList);
         return newAddress;
     }
@@ -74,9 +114,17 @@ public class UserAddressService {
         updatedAddress.put("id", addressId);
         updatedAddress.put("userId", userId.toString());
 
-        if (updatedAddress.containsKey("pincode") && updatedAddress.get("pincode") != null) {
-            String cleanPin = updatedAddress.get("pincode").toString().replaceAll("\\D", "");
-            updatedAddress.put("pincode", cleanPin);
+        String pincode = extractPincode(updatedAddress);
+        if (pincode != null) {
+            updatedAddress.put("pincode", pincode);
+        }
+
+        boolean makeDefault = Boolean.TRUE.equals(updatedAddress.get("isDefault"));
+        if (makeDefault) {
+            for (Map<String, Object> addr : currentList) {
+                addr.put("isDefault", false);
+            }
+            updatedAddress.put("isDefault", true);
         }
 
         boolean found = false;
@@ -88,8 +136,13 @@ public class UserAddressService {
             }
         }
         if (!found) {
-            currentList.add(updatedAddress);
+            if (makeDefault) {
+                currentList.add(0, updatedAddress);
+            } else {
+                currentList.add(updatedAddress);
+            }
         }
+
         persistAddresses(userId, currentList);
         return updatedAddress;
     }
@@ -97,6 +150,9 @@ public class UserAddressService {
     public void deleteUserAddress(UUID userId, String addressId) {
         List<Map<String, Object>> currentList = new ArrayList<>(getUserAddresses(userId));
         currentList.removeIf(a -> Objects.equals(a.get("id"), addressId));
+        if (!currentList.isEmpty() && currentList.stream().noneMatch(a -> Boolean.TRUE.equals(a.get("isDefault")))) {
+            currentList.get(0).put("isDefault", true);
+        }
         persistAddresses(userId, currentList);
     }
 
@@ -111,5 +167,18 @@ public class UserAddressService {
                 .filter(a -> Objects.equals(a.get("id"), addressId))
                 .findFirst();
     }
-}
 
+    private String extractPincode(Map<String, Object> addr) {
+        if (addr.containsKey("pincode") && addr.get("pincode") != null) {
+            String clean = addr.get("pincode").toString().replaceAll("\\D", "");
+            if (clean.length() == 6) return clean;
+        }
+        // Fallback: check city or addressLine for a 6-digit sequence
+        String combined = (addr.getOrDefault("city", "") + " " + addr.getOrDefault("addressLine", "")).trim();
+        Matcher matcher = PINCODE_PATTERN.matcher(combined);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+        return null;
+    }
+}
