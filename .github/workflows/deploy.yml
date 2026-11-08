@@ -29,8 +29,10 @@ jobs:
               cd ~/firstdoor
             fi
             git remote set-url origin https://github.com/lokesh21248/Home_Ease_Backend.git 2>/dev/null || true
-            echo "📥 Pulling latest changes from GitHub (Home_Ease_Backend)..."
-            git pull origin main
+            echo "📥 Syncing latest changes from GitHub (Home_Ease_Backend)..."
+            git fetch origin main
+            git reset --hard origin/main
+            git clean -fd
 
             echo "📦 Building Core Backend JAR..."
             mvn clean package -DskipTests
