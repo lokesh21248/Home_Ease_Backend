@@ -232,6 +232,8 @@ public class ServiceSessionService {
             payload.put("finalPrice", session.getFinalPrice());
 
             messagingTemplate.convertAndSend("/topic/booking/" + booking.getBookingId(), payload);
+            messagingTemplate.convertAndSend("/topic/track/" + booking.getBookingId(), payload);
+            messagingTemplate.convertAndSend("/topic/tracking/" + booking.getBookingId(), payload);
             if (booking.getUser() != null) {
                 messagingTemplate.convertAndSend("/topic/customer/" + booking.getUser().getUserId() + "/booking", payload);
             }

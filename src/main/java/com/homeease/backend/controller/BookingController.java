@@ -158,7 +158,11 @@ public class BookingController {
     }
 
     @GetMapping("/bookings/{id}/status")
-    public ResponseEntity<Map<String, Object>> getBookingStatus(@PathVariable("id") UUID bookingId) {
+    public ResponseEntity<Map<String, Object>> getBookingStatus(
+            @PathVariable("id") UUID bookingId,
+            @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestParam(value = "userId", required = false) UUID queryUserId) {
         BookingResponse resp = bookingStateMachine.getBookingById(bookingId);
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("bookingId", resp.getBookingId());
@@ -169,7 +173,23 @@ public class BookingController {
         map.put("workerName", resp.getWorkerName());
         map.put("workerPhone", resp.getWorkerPhone());
         map.put("workerAvatarUrl", resp.getWorkerAvatarUrl());
-        map.put("pinCode", resp.getPinCode());
+
+        // PIN is strictly confidential: never exposed to worker or third-parties.
+        // Only the authenticated customer receives it when status is ARRIVED.
+        String pinForCustomer = null;
+        try {
+            UUID callerId = resolveUserId(authHeader, headerUserId, queryUserId);
+            Booking booking = bookingRepository.findById(bookingId).orElse(null);
+            if (booking != null && booking.getUser() != null &&
+                    booking.getUser().getUserId().equals(callerId) &&
+                    booking.getStatus() == BookingStage.ARRIVED) {
+                pinForCustomer = bookingOtpService.getCustomerPin(booking);
+            }
+        } catch (Exception ignored) {
+            // Unauthenticated or worker -> pin remains null
+        }
+
+        map.put("pinCode", pinForCustomer);
         map.put("scheduledAt", resp.getScheduledAt());
         map.put("estimatedArrivalMinutes", resp.getEstimatedArrivalMinutes());
         map.put("trackingActive", resp.getStatus() != null &&
@@ -178,6 +198,51 @@ public class BookingController {
                  resp.getStatus().name().equals("ARRIVED") ||
                  resp.getStatus().name().equals("IN_PROGRESS")));
         return ResponseEntity.ok(map);
+    }
+
+    /**
+     * Dedicated customer-authorized endpoint to retrieve the 4-digit Service Start PIN.
+     * Accessible ONLY by the authenticated customer who placed the booking.
+     * Available ONLY after the service partner marks ARRIVED.
+     */
+    @GetMapping({"/bookings/{id}/service-pin", "/bookings/{id}/pin"})
+    public ResponseEntity<Map<String, Object>> getServiceStartPin(
+            @PathVariable("id") UUID bookingId,
+            @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestParam(value = "userId", required = false) UUID queryUserId) {
+        UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
+
+        Booking booking = bookingRepository.findById(bookingId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
+
+        // 1. Verify that the authenticated customer owns the booking
+        if (booking.getUser() == null || !booking.getUser().getUserId().equals(userId)) {
+            throw new SecurityException("Unauthorized: Only the customer who placed this booking can access the Service Start PIN.");
+        }
+
+        // 2. Before ARRIVED, do not reveal the PIN
+        if (booking.getStatus() != BookingStage.ARRIVED) {
+            Map<String, Object> resp = new LinkedHashMap<>();
+            resp.put("bookingId", bookingId.toString());
+            resp.put("pinCode", null);
+            resp.put("status", booking.getStatus().name());
+            resp.put("message", "Service Start PIN is only revealed once your service partner marks ARRIVED at your location.");
+            return ResponseEntity.status(400).body(resp);
+        }
+
+        String pin = bookingOtpService.getCustomerPin(booking);
+        if (pin == null || pin.isBlank()) {
+            bookingOtpService.issueOtp(booking);
+            pin = bookingOtpService.getCustomerPin(booking);
+        }
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("bookingId", bookingId.toString());
+        response.put("pinCode", pin);
+        response.put("status", booking.getStatus().name());
+        response.put("message", "Share this PIN with your service partner to start the service.");
+        return ResponseEntity.ok(response);
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -400,7 +465,9 @@ public class BookingController {
             @RequestParam(value = "userId", required = false) UUID queryUserId) {
         UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
         var booking = assignmentService.handleWorkerAcceptance(bookingId, userId);
-        return ResponseEntity.ok(bookingStateMachine.mapToBookingResponse(booking));
+        BookingResponse resp = bookingStateMachine.mapToBookingResponse(booking);
+        resp.setPinCode(null); // Never expose customer PIN to worker
+        return ResponseEntity.ok(resp);
     }
 
     @PostMapping({"/bookings/{id}/decline", "/bookings/{id}/reject", "/workers/bookings/{id}/reject"})
@@ -426,7 +493,9 @@ public class BookingController {
             @RequestParam(value = "userId", required = false) UUID queryUserId) {
         UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
         var booking = assignmentService.handleWorkerStartTravel(bookingId, userId);
-        return ResponseEntity.ok(bookingStateMachine.mapToBookingResponse(booking));
+        BookingResponse resp = bookingStateMachine.mapToBookingResponse(booking);
+        resp.setPinCode(null); // Never expose customer PIN to worker
+        return ResponseEntity.ok(resp);
     }
 
     @PostMapping({"/bookings/{id}/arrive", "/workers/bookings/{id}/arrive"})
@@ -437,7 +506,9 @@ public class BookingController {
             @RequestParam(value = "userId", required = false) UUID queryUserId) {
         UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
         var booking = assignmentService.handleWorkerArrival(bookingId, userId);
-        return ResponseEntity.ok(bookingStateMachine.mapToBookingResponse(booking));
+        BookingResponse resp = bookingStateMachine.mapToBookingResponse(booking);
+        resp.setPinCode(null); // Never expose customer PIN to worker
+        return ResponseEntity.ok(resp);
     }
 
     @PostMapping({"/bookings/{id}/verify-otp", "/bookings/{id}/verify-pin", "/workers/bookings/{id}/verify-pin"})

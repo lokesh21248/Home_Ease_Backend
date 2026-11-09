@@ -2,11 +2,14 @@ package com.homeease.backend.service;
 
 import com.homeease.backend.model.entity.Booking;
 import com.homeease.backend.model.entity.BookingOtp;
+import com.homeease.backend.model.enums.BookingStage;
 import com.homeease.backend.model.enums.OtpStatus;
 import com.homeease.backend.repository.BookingOtpRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -15,6 +18,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 
@@ -23,10 +27,12 @@ public class BookingOtpService {
 
     private static final Logger logger = LoggerFactory.getLogger(BookingOtpService.class);
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+    private static final String REDIS_CUSTOMER_PIN_PREFIX = "booking:customer_pin:";
 
     private final BookingOtpRepository otpRepository;
     private final FcmNotificationService fcmNotificationService;
     private final SimpMessagingTemplate messagingTemplate;
+    private final RedisTemplate<String, String> redisTemplate;
 
     @Value("${homeease.booking.otp.ttl-seconds:900}") // 15 mins
     private int otpTtlSeconds = 900;
@@ -37,17 +43,28 @@ public class BookingOtpService {
     @Value("${homeease.booking.otp.resend-cooldown-seconds:60}")
     private int resendCooldownSeconds = 60;
 
+    @Autowired
     public BookingOtpService(BookingOtpRepository otpRepository,
                              FcmNotificationService fcmNotificationService,
-                             SimpMessagingTemplate messagingTemplate) {
+                             SimpMessagingTemplate messagingTemplate,
+                             @Autowired(required = false) RedisTemplate<String, String> redisTemplate) {
         this.otpRepository = otpRepository;
         this.fcmNotificationService = fcmNotificationService;
         this.messagingTemplate = messagingTemplate;
+        this.redisTemplate = redisTemplate;
+    }
+
+    public BookingOtpService(BookingOtpRepository otpRepository,
+                             FcmNotificationService fcmNotificationService,
+                             SimpMessagingTemplate messagingTemplate) {
+        this(otpRepository, fcmNotificationService, messagingTemplate, null);
     }
 
     /**
-     * Issues a new 4-digit OTP for the booking upon worker arrival.
-     * Plaintext is dispatched ONLY to the customer via FCM & WebSocket and NEVER returned to the worker.
+     * Issues a new cryptographically secure 4-digit PIN for the booking upon worker arrival.
+     * Only the SHA-256 hash is persisted in the database (never plaintext).
+     * Plaintext is stored in Redis cache with TTL solely for authenticated customer retrieval.
+     * It is NEVER returned in worker responses, public WebSocket topics, or general logs.
      */
     @Transactional
     public BookingOtp issueOtp(Booking booking) {
@@ -55,11 +72,12 @@ public class BookingOtpService {
             throw new IllegalArgumentException("Booking cannot be null");
         }
 
+        Instant now = Instant.now();
+
         // Check if active OTP already exists and cooldown has not elapsed
         Optional<BookingOtp> existing = otpRepository.findFirstByBooking_BookingIdAndStatus(
                 booking.getBookingId(), OtpStatus.ACTIVE);
 
-        Instant now = Instant.now();
         if (existing.isPresent()) {
             BookingOtp active = existing.get();
             if (active.getResendCooldownUntil() != null && active.getResendCooldownUntil().isAfter(now)) {
@@ -72,13 +90,10 @@ public class BookingOtpService {
             otpRepository.save(active);
         }
 
-        String rawOtp = (booking.getPinCode() != null && !booking.getPinCode().isBlank())
-                ? booking.getPinCode().trim()
-                : String.format("%04d", SECURE_RANDOM.nextInt(10000));
-        if (booking.getPinCode() == null || booking.getPinCode().isBlank()) {
-            booking.setPinCode(rawOtp);
-        }
+        // Generate cryptographically secure 4-digit PIN (0000 - 9999)
+        String rawOtp = String.format("%04d", SECURE_RANDOM.nextInt(10000));
         String hashedOtp = hashOtp(rawOtp, booking.getBookingId());
+
         String customerPhone = booking.getRecipientPhone() != null && !booking.getRecipientPhone().isBlank()
                 ? booking.getRecipientPhone()
                 : (booking.getUser() != null ? booking.getUser().getPhoneNumber() : "UNKNOWN");
@@ -97,109 +112,143 @@ public class BookingOtpService {
 
         otpEntity = otpRepository.save(otpEntity);
 
-        // Deliver plaintext OTP to CUSTOMER only
-        sendOtpToCustomer(booking, rawOtp);
-        logger.info("Successfully issued 4-digit OTP for booking {}", booking.getBookingId());
+        // Store plaintext in Redis exclusively for authenticated customer retrieval
+        if (redisTemplate != null) {
+            try {
+                redisTemplate.opsForValue().set(
+                        REDIS_CUSTOMER_PIN_PREFIX + booking.getBookingId(),
+                        rawOtp,
+                        Duration.ofSeconds(otpTtlSeconds)
+                );
+            } catch (Exception e) {
+                logger.warn("Failed to cache customer PIN in Redis for booking {}: {}", booking.getBookingId(), e.getMessage());
+            }
+        }
+
+        // Mask PIN on booking entity so database column never holds unhashed PIN
+        booking.setPinCode("****");
+
+        // Notify customer privately (FCM & user-authenticated topic)
+        notifyCustomerOfArrival(booking, rawOtp);
+        logger.info("Successfully issued secure 4-digit Service Start PIN for booking {}", booking.getBookingId());
         return otpEntity;
     }
 
     /**
-     * Assigned worker submits the customer-provided 4-digit PIN/OTP.
-     * Verifies against secure hash, enforces attempt limits and expiration.
+     * Retrieve the plaintext PIN for the authenticated customer.
+     * Returns null if expired, missing, or already verified.
+     */
+    public String getCustomerPin(Booking booking) {
+        if (booking == null || redisTemplate == null) return null;
+        try {
+            return redisTemplate.opsForValue().get(REDIS_CUSTOMER_PIN_PREFIX + booking.getBookingId());
+        } catch (Exception e) {
+            logger.warn("Failed to get customer PIN from Redis for booking {}: {}", booking.getBookingId(), e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Assigned worker submits the customer-provided 4-digit PIN.
+     * Enforces ARRIVED booking status, assigned worker ownership, attempt limits, and hash verification.
      */
     @Transactional
     public boolean verifyOtp(Booking booking, UUID workerUserId, String submittedOtp) {
         if (booking == null || submittedOtp == null || !isValidOtpFormat(submittedOtp)) {
-            throw new IllegalArgumentException("Invalid OTP format. Must be 4 numeric digits.");
+            throw new IllegalArgumentException("Invalid PIN format. Must be exactly 4 numeric digits.");
         }
 
-        // Worker ownership check: only the assigned worker can verify OTP
+        // 1. Status check: Booking MUST be in ARRIVED status
+        if (booking.getStatus() != BookingStage.ARRIVED) {
+            if (booking.getStatus() == BookingStage.IN_PROGRESS) {
+                throw new IllegalStateException("Service has already started for this booking.");
+            }
+            if (booking.getStatus() == BookingStage.COMPLETED) {
+                throw new IllegalStateException("Service is already completed for this booking.");
+            }
+            throw new IllegalStateException("Cannot start service when booking is in status: " + booking.getStatus() + ". Partner must mark ARRIVED first.");
+        }
+
+        // 2. Worker ownership check: only the assigned worker can verify PIN
         if (booking.getWorker() == null || booking.getWorker().getUser() == null ||
                 !booking.getWorker().getUser().getUserId().equals(workerUserId)) {
-            throw new SecurityException("Unauthorized: Only the assigned worker may verify OTP for this booking.");
+            throw new SecurityException("Unauthorized: Only the assigned worker may verify PIN for this booking.");
         }
 
         Instant now = Instant.now();
         String trimmedOtp = submittedOtp.trim();
 
-        // 1. Direct canonical fallback match against booking.pinCode
-        boolean matchesPinCode = booking.getPinCode() != null &&
-                booking.getPinCode().trim().equals(trimmedOtp);
-
         Optional<BookingOtp> otpOpt = otpRepository.findFirstByBooking_BookingIdAndStatus(
                 booking.getBookingId(), OtpStatus.ACTIVE);
 
         if (otpOpt.isEmpty()) {
-            if (matchesPinCode) {
-                // Synthesize USED record to log successful verification
-                String customerPhone = booking.getRecipientPhone() != null && !booking.getRecipientPhone().isBlank()
-                        ? booking.getRecipientPhone()
-                        : (booking.getUser() != null ? booking.getUser().getPhoneNumber() : "UNKNOWN");
-                BookingOtp syn = BookingOtp.builder()
-                        .booking(booking)
-                        .hashedOtp(hashOtp(trimmedOtp, booking.getBookingId()))
-                        .phoneHash(hashValue(customerPhone))
-                        .expiresAt(now.plusSeconds(otpTtlSeconds))
-                        .maxAttempts(maxAttempts)
-                        .attempts(1)
-                        .resendCooldownUntil(now)
-                        .status(OtpStatus.USED)
-                        .build();
-                otpRepository.save(syn);
-                logger.info("Canonical PIN verified successfully for booking {} by worker {}", booking.getBookingId(), workerUserId);
-                return true;
-            }
-            throw new IllegalStateException("No active OTP found for this booking.");
+            throw new IllegalStateException("No active Service Start PIN found for this booking. Please ask customer to refresh.");
         }
 
         BookingOtp otp = otpOpt.get();
 
-        // Check expiration
+        // 3. Check expiration
         if (otp.getExpiresAt().isBefore(now)) {
             otp.setStatus(OtpStatus.EXPIRED);
             otp.setUpdatedAt(now);
             otpRepository.save(otp);
-            throw new IllegalStateException("OTP has expired. Please ask customer to request a new OTP.");
+            evictCustomerPin(booking.getBookingId());
+            throw new IllegalStateException("Service Start PIN has expired. Please ask customer to refresh their screen.");
         }
 
-        // Check brute-force attempts
+        // 4. Check brute-force attempts
         if (otp.getAttempts() >= otp.getMaxAttempts()) {
             otp.setStatus(OtpStatus.REVOKED);
             otp.setUpdatedAt(now);
             otpRepository.save(otp);
-            throw new IllegalStateException("Maximum verification attempts exceeded. OTP is locked.");
+            evictCustomerPin(booking.getBookingId());
+            throw new IllegalStateException("Maximum verification attempts exceeded. PIN verification is locked.");
         }
 
+        // 5. Compare constant-time hash
         String computedHash = hashOtp(trimmedOtp, booking.getBookingId());
         boolean matchesHash = MessageDigest.isEqual(
                 computedHash.getBytes(StandardCharsets.UTF_8),
                 otp.getHashedOtp().getBytes(StandardCharsets.UTF_8)
         );
 
-        if (!matchesHash && !matchesPinCode) {
+        if (!matchesHash) {
             otp.setAttempts(otp.getAttempts() + 1);
             otp.setUpdatedAt(now);
             if (otp.getAttempts() >= otp.getMaxAttempts()) {
                 otp.setStatus(OtpStatus.REVOKED);
+                evictCustomerPin(booking.getBookingId());
             }
             otpRepository.save(otp);
             int remaining = Math.max(0, otp.getMaxAttempts() - otp.getAttempts());
-            throw new IllegalArgumentException("Incorrect OTP. Attempts remaining: " + remaining);
+            throw new IllegalArgumentException("Incorrect PIN. Attempts remaining: " + remaining);
         }
 
-        // Verified successfully: mark OTP as USED
+        // 6. Verified successfully: mark OTP as USED and evict cached plaintext PIN
         otp.setStatus(OtpStatus.USED);
         otp.setUpdatedAt(now);
         otpRepository.save(otp);
-        logger.info("OTP verified successfully for booking {} by worker {}", booking.getBookingId(), workerUserId);
+        evictCustomerPin(booking.getBookingId());
+
+        logger.info("Service Start PIN verified successfully for booking {} by worker {}", booking.getBookingId(), workerUserId);
         return true;
+    }
+
+    public void evictCustomerPin(UUID bookingId) {
+        if (redisTemplate != null && bookingId != null) {
+            try {
+                redisTemplate.delete(REDIS_CUSTOMER_PIN_PREFIX + bookingId);
+            } catch (Exception e) {
+                logger.warn("Failed to evict customer PIN from Redis for booking {}: {}", bookingId, e.getMessage());
+            }
+        }
     }
 
     public Optional<BookingOtp> findActiveForBooking(UUID bookingId) {
         return otpRepository.findFirstByBooking_BookingIdAndStatus(bookingId, OtpStatus.ACTIVE);
     }
 
-    private void sendOtpToCustomer(Booking booking, String rawOtp) {
+    private void notifyCustomerOfArrival(Booking booking, String rawOtp) {
         if (booking.getUser() == null) return;
         UUID customerId = booking.getUser().getUserId();
 
@@ -208,23 +257,22 @@ public class BookingOtpService {
             fcmNotificationService.sendPushNotification(
                     customerId,
                     "Service Start OTP: " + rawOtp,
-                    "Your partner has arrived. Share OTP " + rawOtp + " to start the service."
+                    "Your partner has arrived. Share PIN " + rawOtp + " to start the service."
             );
         } catch (Exception e) {
-            logger.warn("Failed to dispatch customer FCM for arrival OTP: {}", e.getMessage());
+            logger.warn("Failed to dispatch customer FCM for arrival: {}", e.getMessage());
         }
 
-        // 2. Real-time WebSocket to Customer authenticated topic
+        // 2. Real-time WebSocket to Customer's authenticated private channel
         try {
             Map<String, Object> payload = new HashMap<>();
-            payload.put("type", "START_OTP_GENERATED");
+            payload.put("type", "START_PIN_GENERATED");
             payload.put("bookingId", booking.getBookingId().toString());
-            payload.put("otp", rawOtp);
+            payload.put("pinCode", rawOtp);
             payload.put("status", "ARRIVED");
-            messagingTemplate.convertAndSend("/topic/booking/" + booking.getBookingId(), payload);
             messagingTemplate.convertAndSend("/topic/customer/" + customerId + "/booking", payload);
         } catch (Exception e) {
-            logger.debug("WebSocket broadcast skipped in OTP dispatch: {}", e.getMessage());
+            logger.debug("WebSocket broadcast skipped in private channel dispatch: {}", e.getMessage());
         }
     }
 
