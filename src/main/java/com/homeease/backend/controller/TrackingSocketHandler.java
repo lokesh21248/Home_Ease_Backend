@@ -1,62 +1,83 @@
 package com.homeease.backend.controller;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.homeease.backend.dto.TrackingDto.LocationUpdateResult;
 import com.homeease.backend.dto.WorkerDto.LocationUpdateRequest;
+import com.homeease.backend.service.TrackingService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
 import org.springframework.messaging.handler.annotation.MessageMapping;
-import org.springframework.messaging.handler.annotation.SendTo;
+import org.springframework.messaging.handler.annotation.Payload;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Controller;
 
-import java.time.Duration;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.UUID;
 
 @Controller
 public class TrackingSocketHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(TrackingSocketHandler.class);
-    private static final Duration TRACKING_TTL = Duration.ofHours(2);
 
-    private final RedisTemplate<String, String> redisTemplate;
-    private final ObjectMapper objectMapper;
+    private final TrackingService trackingService;
+    private final SimpMessagingTemplate messagingTemplate;
 
-    public TrackingSocketHandler(RedisTemplate<String, String> redisTemplate, ObjectMapper objectMapper) {
-        this.redisTemplate = redisTemplate;
-        this.objectMapper = objectMapper;
+    @Autowired
+    public TrackingSocketHandler(TrackingService trackingService, SimpMessagingTemplate messagingTemplate) {
+        this.trackingService = trackingService;
+        this.messagingTemplate = messagingTemplate;
     }
 
+    /**
+     * STOMP Destination: /app/track/{bookingId}
+     * Broadcasts to: /topic/track/{bookingId}
+     */
     @MessageMapping("/track/{bookingId}")
-    @SendTo("/topic/track/{bookingId}")
-    public LocationUpdateRequest processLocationStream(
-            @DestinationVariable("bookingId") String bookingId,
-            LocationUpdateRequest locationPayload) {
+    public void processLocationStream(
+            @DestinationVariable("bookingId") String bookingIdStr,
+            @Payload LocationUpdateRequest locationPayload) {
 
-        logger.debug("Received STOMP live location stream for booking {}: lat={}, lng={}",
-                bookingId, locationPayload.getLat(), locationPayload.getLng());
-
-        // Cache live tracking coordinates in Redis as JSON compatible with tracking-service
+        UUID bookingId;
         try {
-            Map<String, Object> map = new LinkedHashMap<>();
-            map.put("bookingId", bookingId);
-            map.put("lat", locationPayload.getLat());
-            map.put("lng", locationPayload.getLng());
-            if (locationPayload.getBearing() != null) map.put("bearing", locationPayload.getBearing());
-            if (locationPayload.getSpeed() != null) map.put("speed", locationPayload.getSpeed());
-            if (locationPayload.getAccuracy() != null) map.put("accuracy", locationPayload.getAccuracy());
-            map.put("timestamp", System.currentTimeMillis());
-            map.put("trackingActive", true);
-            map.put("status", "TRACKING");
-
-            String json = objectMapper.writeValueAsString(map);
-            redisTemplate.opsForValue().set("tracking:booking:" + bookingId, json, TRACKING_TTL);
+            bookingId = UUID.fromString(bookingIdStr.trim());
         } catch (Exception e) {
-            logger.warn("Redis live tracking coordinate cache update failed: {}", e.getMessage());
+            logger.warn("Invalid bookingId in STOMP track: {}", bookingIdStr);
+            return;
         }
 
-        // Broadcast to /topic/track/{bookingId} subscribers (Customer Mobile App)
-        return locationPayload;
+        UUID workerUserId = null;
+        if (locationPayload.getWorkerId() != null) {
+            try { workerUserId = UUID.fromString(locationPayload.getWorkerId().trim()); } catch (Exception ignored) {}
+        }
+
+        LocationUpdateResult result = trackingService.updateWorkerLocation(bookingId, workerUserId, locationPayload);
+        if (!result.isSuccess()) {
+            logger.debug("STOMP location stream ignored for booking {}: {}", bookingId, result.getMessage());
+        }
+    }
+
+    /**
+     * STOMP Destination: /app/tracking/update
+     * Handles coordinate payloads with embedded bookingId.
+     */
+    @MessageMapping("/tracking/update")
+    public void processGeneralTrackingStream(@Payload LocationUpdateRequest locationPayload) {
+        if (locationPayload.getBookingId() == null || locationPayload.getBookingId().isBlank()) {
+            return;
+        }
+
+        UUID bookingId;
+        try {
+            bookingId = UUID.fromString(locationPayload.getBookingId().trim());
+        } catch (Exception e) {
+            return;
+        }
+
+        UUID workerUserId = null;
+        if (locationPayload.getWorkerId() != null) {
+            try { workerUserId = UUID.fromString(locationPayload.getWorkerId().trim()); } catch (Exception ignored) {}
+        }
+
+        trackingService.updateWorkerLocation(bookingId, workerUserId, locationPayload);
     }
 }

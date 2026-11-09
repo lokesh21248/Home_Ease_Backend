@@ -12,6 +12,7 @@ import lombok.Builder;
 import lombok.Getter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
@@ -36,6 +37,7 @@ public class InstantAcceptService {
     private final FcmNotificationService fcmNotificationService;
     private final RedisTemplate<String, String> redisTemplate;
     private final ObjectMapper objectMapper;
+    private final TrackingService trackingService;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -47,7 +49,8 @@ public class InstantAcceptService {
                                 SimpMessagingTemplate messagingTemplate,
                                 FcmNotificationService fcmNotificationService,
                                 RedisTemplate<String, String> redisTemplate,
-                                ObjectMapper objectMapper) {
+                                ObjectMapper objectMapper,
+                                @Autowired(required = false) TrackingService trackingService) {
         this.bookingRepository = bookingRepository;
         this.workerRepository = workerRepository;
         this.assignmentRepository = assignmentRepository;
@@ -56,6 +59,19 @@ public class InstantAcceptService {
         this.fcmNotificationService = fcmNotificationService;
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
+        this.trackingService = trackingService;
+    }
+
+    public InstantAcceptService(BookingRepository bookingRepository,
+                                WorkerRepository workerRepository,
+                                BookingAssignmentRepository assignmentRepository,
+                                BookingDomainEventService domainEventService,
+                                SimpMessagingTemplate messagingTemplate,
+                                FcmNotificationService fcmNotificationService,
+                                RedisTemplate<String, String> redisTemplate,
+                                ObjectMapper objectMapper) {
+        this(bookingRepository, workerRepository, assignmentRepository, domainEventService,
+             messagingTemplate, fcmNotificationService, redisTemplate, objectMapper, null);
     }
 
     @Getter
@@ -145,6 +161,15 @@ public class InstantAcceptService {
 
         // 9. Cache active tracking in Redis
         cacheTrackingAssignment(booking, worker, pinCode);
+
+        // 9b. Initialize authoritative tracking session
+        if (trackingService != null) {
+            try {
+                trackingService.createTrackingSession(booking);
+            } catch (Exception e) {
+                logger.warn("Tracking session creation skipped in InstantAccept: {}", e.getMessage());
+            }
+        }
 
         // 10. Notify customer & broadcast update
         notifyCustomerAndBroadcast(booking, worker, pinCode);

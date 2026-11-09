@@ -47,6 +47,7 @@ public class BookingAssignmentService {
     private final BookingOtpService bookingOtpService;
     private final ObjectMapper objectMapper;
     private final DispatchAuditLogRepository auditLogRepository;
+    private final TrackingService trackingService;
 
     @Value("${homeease.dispatch.radius-meters:5000}")
     private double radiusMeters = 5000.0;
@@ -73,7 +74,8 @@ public class BookingAssignmentService {
                                   SimpMessagingTemplate messagingTemplate,
                                   BookingOtpService bookingOtpService,
                                   ObjectMapper objectMapper,
-                                  @Autowired(required = false) DispatchAuditLogRepository auditLogRepository) {
+                                  @Autowired(required = false) DispatchAuditLogRepository auditLogRepository,
+                                  @Autowired(required = false) TrackingService trackingService) {
         this.workerRepository = workerRepository;
         this.workerServiceLinkRepository = workerServiceLinkRepository;
         this.bookingRepository = bookingRepository;
@@ -87,6 +89,25 @@ public class BookingAssignmentService {
         this.bookingOtpService = bookingOtpService;
         this.objectMapper = objectMapper;
         this.auditLogRepository = auditLogRepository;
+        this.trackingService = trackingService;
+    }
+
+    public BookingAssignmentService(WorkerRepository workerRepository,
+                                  WorkerServiceLinkRepository workerServiceLinkRepository,
+                                  BookingRepository bookingRepository,
+                                  BookingAssignmentRepository assignmentRepository,
+                                  ReviewRepository reviewRepository,
+                                  NotificationDeliveryRepository deliveryRepository,
+                                  RedisTemplate<String, String> redisTemplate,
+                                  FcmNotificationService fcmNotificationService,
+                                  BookingDomainEventService domainEventService,
+                                  SimpMessagingTemplate messagingTemplate,
+                                  BookingOtpService bookingOtpService,
+                                  ObjectMapper objectMapper,
+                                  DispatchAuditLogRepository auditLogRepository) {
+        this(workerRepository, workerServiceLinkRepository, bookingRepository, assignmentRepository,
+             reviewRepository, deliveryRepository, redisTemplate, fcmNotificationService,
+             domainEventService, messagingTemplate, bookingOtpService, objectMapper, auditLogRepository, null);
     }
 
     public BookingAssignmentService(WorkerRepository workerRepository,
@@ -103,7 +124,7 @@ public class BookingAssignmentService {
                                   ObjectMapper objectMapper) {
         this(workerRepository, workerServiceLinkRepository, bookingRepository, assignmentRepository,
              reviewRepository, deliveryRepository, redisTemplate, fcmNotificationService,
-             domainEventService, messagingTemplate, bookingOtpService, objectMapper, null);
+             domainEventService, messagingTemplate, bookingOtpService, objectMapper, null, null);
     }
 
     /**
@@ -340,6 +361,15 @@ public class BookingAssignmentService {
         // Cache tracking assignment in Redis
         cacheTrackingAssignment(booking, worker, pinCode);
 
+        // Initialize authoritative tracking session
+        if (trackingService != null) {
+            try {
+                trackingService.createTrackingSession(booking);
+            } catch (Exception e) {
+                logger.warn("Tracking session creation skipped for booking {}: {}", bookingId, e.getMessage());
+            }
+        }
+
         // Record acceptance in dispatch audit log
         recordDispatchAuditLog(
                 booking,
@@ -402,6 +432,15 @@ public class BookingAssignmentService {
             booking.setStatus(BookingStage.ON_THE_WAY);
             booking = bookingRepository.save(booking);
             broadcastBookingUpdate(booking, "WORKER_ON_THE_WAY");
+
+            if (trackingService != null) {
+                try {
+                    trackingService.startTravelling(bookingId, workerUserId);
+                } catch (Exception e) {
+                    logger.warn("Tracking startTravelling skipped for booking {}: {}", bookingId, e.getMessage());
+                }
+            }
+
             logger.info("Worker {} started travelling for booking {}", workerUserId, bookingId);
         }
         return booking;
@@ -438,7 +477,7 @@ public class BookingAssignmentService {
         broadcastBookingUpdate(booking, "WORKER_ARRIVED");
 
         // F1 Fix: Update tracking:assignment Redis key to ARRIVED status
-        // Previously missing — ACCEPTED, IN_PROGRESS, COMPLETED all updated Redis; ARRIVED did not.
+        // trackingActive is explicitly false so customer tracking stops immediately
         try {
             String assignmentKey = "tracking:assignment:" + bookingId;
             String existingJson = redisTemplate.opsForValue().get(assignmentKey);
@@ -449,19 +488,28 @@ public class BookingAssignmentService {
             }
             map.put("status", "ARRIVED");
             map.put("arrivedAt", arrivedAt.toString());
-            map.put("trackingActive", true);
+            map.put("trackingActive", false);
             redisTemplate.opsForValue().set(assignmentKey, objectMapper.writeValueAsString(map), Duration.ofHours(24));
 
             // Broadcast ARRIVED tracking event so customer app reacts instantly via WebSocket
             java.util.Map<String, Object> event = new java.util.HashMap<>();
             event.put("bookingId", bookingId.toString());
             event.put("status", "ARRIVED");
-            event.put("trackingActive", true);
+            event.put("trackingActive", false);
             event.put("message", "Partner has arrived at your location.");
             messagingTemplate.convertAndSend("/topic/track/" + bookingId, event);
             messagingTemplate.convertAndSend("/topic/tracking/" + bookingId, event);
         } catch (Exception e) {
             logger.warn("Redis tracking assignment ARRIVED update failed for booking {}: {}", bookingId, e.getMessage());
+        }
+
+        // Authoritative tracking auto-stop & session transition to ARRIVED
+        if (trackingService != null) {
+            try {
+                trackingService.handleArrival(bookingId, workerUserId);
+            } catch (Exception e) {
+                logger.warn("TrackingService handleArrival failed for booking {}: {}", bookingId, e.getMessage());
+            }
         }
 
         logger.info("Worker {} arrived at customer location for booking {}", workerUserId, bookingId);

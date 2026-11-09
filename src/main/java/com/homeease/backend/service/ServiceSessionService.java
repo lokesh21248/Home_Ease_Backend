@@ -7,6 +7,7 @@ import com.homeease.backend.repository.PaymentRepository;
 import com.homeease.backend.repository.ServiceSessionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,6 +29,23 @@ public class ServiceSessionService {
     private final BookingDomainEventService domainEventService;
     private final FcmNotificationService fcmNotificationService;
     private final SimpMessagingTemplate messagingTemplate;
+    private final TrackingService trackingService;
+
+    public ServiceSessionService(ServiceSessionRepository sessionRepository,
+                                 BookingRepository bookingRepository,
+                                 PaymentRepository paymentRepository,
+                                 BookingDomainEventService domainEventService,
+                                 FcmNotificationService fcmNotificationService,
+                                 SimpMessagingTemplate messagingTemplate,
+                                 @Autowired(required = false) TrackingService trackingService) {
+        this.sessionRepository = sessionRepository;
+        this.bookingRepository = bookingRepository;
+        this.paymentRepository = paymentRepository;
+        this.domainEventService = domainEventService;
+        this.fcmNotificationService = fcmNotificationService;
+        this.messagingTemplate = messagingTemplate;
+        this.trackingService = trackingService;
+    }
 
     public ServiceSessionService(ServiceSessionRepository sessionRepository,
                                  BookingRepository bookingRepository,
@@ -35,12 +53,8 @@ public class ServiceSessionService {
                                  BookingDomainEventService domainEventService,
                                  FcmNotificationService fcmNotificationService,
                                  SimpMessagingTemplate messagingTemplate) {
-        this.sessionRepository = sessionRepository;
-        this.bookingRepository = bookingRepository;
-        this.paymentRepository = paymentRepository;
-        this.domainEventService = domainEventService;
-        this.fcmNotificationService = fcmNotificationService;
-        this.messagingTemplate = messagingTemplate;
+        this(sessionRepository, bookingRepository, paymentRepository, domainEventService,
+             fcmNotificationService, messagingTemplate, null);
     }
 
     /**
@@ -173,6 +187,14 @@ public class ServiceSessionService {
         }
 
         broadcastSessionEvent("SERVICE_COMPLETED", booking, session, completedAt);
+
+        if (trackingService != null) {
+            try {
+                trackingService.stopTracking(booking.getBookingId(), "COMPLETED");
+            } catch (Exception e) {
+                logger.warn("Tracking stop on completion skipped for booking {}: {}", booking.getBookingId(), e.getMessage());
+            }
+        }
 
         if (booking.getUser() != null) {
             try {

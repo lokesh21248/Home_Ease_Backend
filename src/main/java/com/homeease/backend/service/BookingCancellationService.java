@@ -14,6 +14,7 @@ import com.homeease.backend.repository.BookingSlotRepository;
 import com.homeease.backend.repository.UserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,6 +33,23 @@ public class BookingCancellationService {
     private final BookingNotificationService notificationService;
     private final BookingDomainEventService domainEventService;
     private final RedisTemplate<String, String> redisTemplate;
+    private final TrackingService trackingService;
+
+    public BookingCancellationService(BookingRepository bookingRepository,
+                                      BookingSlotRepository slotRepository,
+                                      UserRepository userRepository,
+                                      BookingNotificationService notificationService,
+                                      BookingDomainEventService domainEventService,
+                                      RedisTemplate<String, String> redisTemplate,
+                                      @Autowired(required = false) TrackingService trackingService) {
+        this.bookingRepository = bookingRepository;
+        this.slotRepository = slotRepository;
+        this.userRepository = userRepository;
+        this.notificationService = notificationService;
+        this.domainEventService = domainEventService;
+        this.redisTemplate = redisTemplate;
+        this.trackingService = trackingService;
+    }
 
     public BookingCancellationService(BookingRepository bookingRepository,
                                       BookingSlotRepository slotRepository,
@@ -39,12 +57,7 @@ public class BookingCancellationService {
                                       BookingNotificationService notificationService,
                                       BookingDomainEventService domainEventService,
                                       RedisTemplate<String, String> redisTemplate) {
-        this.bookingRepository = bookingRepository;
-        this.slotRepository = slotRepository;
-        this.userRepository = userRepository;
-        this.notificationService = notificationService;
-        this.domainEventService = domainEventService;
-        this.redisTemplate = redisTemplate;
+        this(bookingRepository, slotRepository, userRepository, notificationService, domainEventService, redisTemplate, null);
     }
 
     @Transactional
@@ -90,11 +103,19 @@ public class BookingCancellationService {
             });
         }
 
-        // Clean tracking caches in Redis
+        // Clean tracking caches in Redis and stop tracking session
         try {
             redisTemplate.delete("tracking:assignment:" + bookingId);
             redisTemplate.delete("tracking:booking:" + bookingId);
         } catch (Exception ignored) {}
+
+        if (trackingService != null) {
+            try {
+                trackingService.stopTracking(bookingId, "CANCELLED");
+            } catch (Exception e) {
+                logger.warn("Tracking stop on cancel skipped for booking {}: {}", bookingId, e.getMessage());
+            }
+        }
 
         // Record domain event
         domainEventService.recordEvent(

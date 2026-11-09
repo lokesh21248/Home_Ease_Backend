@@ -68,6 +68,7 @@ public class WorkerDto {
     @AllArgsConstructor
     @Builder
     public static class LocationUpdateRequest {
+        private String bookingId;
         @NotNull(message = "Latitude is required")
         private Double lat;
         @NotNull(message = "Longitude is required")
@@ -75,6 +76,9 @@ public class WorkerDto {
         private Double bearing;   // Heading in degrees (0-360) for marker rotation
         private Double speed;     // Speed in km/h
         private Double accuracy;  // GPS accuracy in metres
+        private Long timestamp;
+        private String workerId;
+        private String partnerId;
     }
 
     @Getter

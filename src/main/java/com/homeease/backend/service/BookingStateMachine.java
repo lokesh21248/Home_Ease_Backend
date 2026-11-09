@@ -14,6 +14,7 @@ import org.locationtech.jts.geom.Point;
 import org.locationtech.jts.geom.PrecisionModel;
 import com.homeease.backend.exception.InvalidPinException;
 import com.homeease.backend.exception.ResourceNotFoundException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -46,6 +47,7 @@ public class BookingStateMachine {
     private final ServiceAreaService serviceAreaService;
     private final BookingDomainEventService domainEventService;
     private final BookingEventHistoryRepository historyRepository;
+    private final TrackingService trackingService;
 
     private final GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
 
@@ -67,7 +69,8 @@ public class BookingStateMachine {
                                com.fasterxml.jackson.databind.ObjectMapper objectMapper,
                                ServiceAreaService serviceAreaService,
                                BookingDomainEventService domainEventService,
-                               BookingEventHistoryRepository historyRepository) {
+                               BookingEventHistoryRepository historyRepository,
+                               @Autowired(required = false) TrackingService trackingService) {
         this.bookingRepository = bookingRepository;
         this.userRepository = userRepository;
         this.serviceRepository = serviceRepository;
@@ -87,6 +90,33 @@ public class BookingStateMachine {
         this.serviceAreaService = serviceAreaService;
         this.domainEventService = domainEventService;
         this.historyRepository = historyRepository;
+        this.trackingService = trackingService;
+    }
+
+    public BookingStateMachine(BookingRepository bookingRepository,
+                               UserRepository userRepository,
+                               ServiceRepository serviceRepository,
+                               SubServiceRepository subServiceRepository,
+                               ServiceAddonRepository addonRepository,
+                               BookingServiceItemRepository bookingServiceItemRepository,
+                               BookingAddonItemRepository bookingAddonItemRepository,
+                               CouponRepository couponRepository,
+                               ReviewRepository reviewRepository,
+                               DispatchEngine dispatchEngine,
+                               BillingEngine billingEngine,
+                               CatalogService catalogService,
+                               FcmNotificationService fcmNotificationService,
+                               org.springframework.data.redis.core.RedisTemplate<String, String> redisTemplate,
+                               org.springframework.messaging.simp.SimpMessagingTemplate messagingTemplate,
+                               com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+                               ServiceAreaService serviceAreaService,
+                               BookingDomainEventService domainEventService,
+                               BookingEventHistoryRepository historyRepository) {
+        this(bookingRepository, userRepository, serviceRepository, subServiceRepository,
+             addonRepository, bookingServiceItemRepository, bookingAddonItemRepository,
+             couponRepository, reviewRepository, dispatchEngine, billingEngine,
+             catalogService, fcmNotificationService, redisTemplate, messagingTemplate,
+             objectMapper, serviceAreaService, domainEventService, historyRepository, null);
     }
 
     @Transactional
@@ -313,17 +343,24 @@ public class BookingStateMachine {
             }
             map.put("bookingId", bookingId.toString());
             map.put("status", "IN_PROGRESS");
+            map.put("trackingActive", false);
             map.put("startedAt", Instant.now().toString());
             redisTemplate.opsForValue().set(assignmentKey, objectMapper.writeValueAsString(map), java.time.Duration.ofHours(24));
 
             java.util.Map<String, Object> event = new java.util.HashMap<>();
             event.put("bookingId", bookingId.toString());
             event.put("status", "IN_PROGRESS");
-            event.put("trackingActive", true);
+            event.put("trackingActive", false);
             event.put("message", "Worker verified PIN and started service.");
             messagingTemplate.convertAndSend("/topic/track/" + bookingId, event);
             messagingTemplate.convertAndSend("/topic/tracking/" + bookingId, event);
         } catch (Exception ignored) {}
+
+        if (trackingService != null) {
+            try {
+                trackingService.stopTracking(bookingId, "IN_PROGRESS");
+            } catch (Exception ignored) {}
+        }
 
         return mapToBookingResponse(booking);
     }
@@ -443,6 +480,12 @@ public class BookingStateMachine {
             messagingTemplate.convertAndSend("/topic/tracking/" + bookingId, event);
         } catch (Exception ignored) {}
 
+        if (trackingService != null) {
+            try {
+                trackingService.stopTracking(bookingId, "COMPLETED");
+            } catch (Exception ignored) {}
+        }
+
         return mapToBookingResponse(booking);
     }
 
@@ -500,6 +543,12 @@ public class BookingStateMachine {
             messagingTemplate.convertAndSend("/topic/track/" + bookingId, event);
             messagingTemplate.convertAndSend("/topic/tracking/" + bookingId, event);
         } catch (Exception ignored) {}
+
+        if (trackingService != null) {
+            try {
+                trackingService.stopTracking(bookingId, "CANCELLED");
+            } catch (Exception ignored) {}
+        }
 
         return mapToBookingResponse(booking);
     }
