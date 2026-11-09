@@ -89,6 +89,7 @@ public class BookingDto {
         private UUID holdId;
         private String lockToken;
         private String timeSlot;
+        private LocalDate scheduledDate;
     }
 
     @Getter

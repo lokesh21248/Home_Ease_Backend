@@ -22,17 +22,20 @@ public class CatalogService {
     private final ServiceRepository serviceRepository;
     private final SubServiceRepository subServiceRepository;
     private final ServiceAddonRepository addonRepository;
+    private final WorkerServiceLinkRepository workerServiceLinkRepository;
     private final CouponRepository couponRepository;
     private final BannerRepository bannerRepository;
 
     public CatalogService(ServiceRepository serviceRepository,
                           SubServiceRepository subServiceRepository,
                           ServiceAddonRepository addonRepository,
+                          WorkerServiceLinkRepository workerServiceLinkRepository,
                           CouponRepository couponRepository,
                           BannerRepository bannerRepository) {
         this.serviceRepository = serviceRepository;
         this.subServiceRepository = subServiceRepository;
         this.addonRepository = addonRepository;
+        this.workerServiceLinkRepository = workerServiceLinkRepository;
         this.couponRepository = couponRepository;
         this.bannerRepository = bannerRepository;
     }
@@ -200,10 +203,31 @@ public class CatalogService {
 
     @Transactional
     public void deleteSubService(UUID subServiceId) {
+        deleteSubService(subServiceId, false);
+    }
+
+    @Transactional
+    public void deleteSubService(UUID subServiceId, boolean hard) {
         SubService subService = subServiceRepository.findById(subServiceId)
-                .orElseThrow(() -> new RuntimeException("Sub-service not found"));
-        subService.setIsActive(false); // Soft delete
-        subServiceRepository.save(subService);
+                .orElseThrow(() -> new RuntimeException("Sub-service not found with ID: " + subServiceId));
+        if (hard) {
+            try {
+                // Delete associated addons first
+                addonRepository.deleteBySubServiceId(subServiceId);
+                // Delete associated worker service qualifications
+                workerServiceLinkRepository.deleteBySubServiceId(subServiceId);
+                // Permanently delete the sub-service
+                subServiceRepository.delete(subService);
+            } catch (Exception e) {
+                // If referenced by booking cart or service items, fallback to soft delete
+                subService.setIsActive(false);
+                subServiceRepository.save(subService);
+                throw new RuntimeException("Sub-service is referenced in booking records and cannot be permanently purged. It has been deactivated and archived instead.");
+            }
+        } else {
+            subService.setIsActive(false); // Soft delete
+            subServiceRepository.save(subService);
+        }
     }
 
     @Transactional(readOnly = true)

@@ -40,4 +40,8 @@ public interface WorkerServiceLinkRepository extends JpaRepository<WorkerService
     @Modifying
     @Query("DELETE FROM WorkerServiceLink wsl WHERE wsl.id.workerId = :workerId")
     void deleteByWorkerId(@Param("workerId") UUID workerId);
+
+    @Modifying
+    @Query("DELETE FROM WorkerServiceLink wsl WHERE wsl.id.subServiceId = :subServiceId")
+    void deleteBySubServiceId(@Param("subServiceId") UUID subServiceId);
 }

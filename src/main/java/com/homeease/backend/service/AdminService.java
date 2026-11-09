@@ -78,6 +78,16 @@ public class AdminService {
         Worker worker = workerRepository.findById(workerId)
                 .orElseThrow(() -> new RuntimeException("Worker not found"));
         worker.setIsVerified(true);
+        worker.setKycStatus("VERIFIED");
+        return workerRepository.save(worker);
+    }
+
+    @Transactional
+    public Worker rejectWorkerKyc(UUID workerId, String reason) {
+        Worker worker = workerRepository.findById(workerId)
+                .orElseThrow(() -> new RuntimeException("Worker not found"));
+        worker.setIsVerified(false);
+        worker.setKycStatus("REJECTED");
         return workerRepository.save(worker);
     }
 
@@ -95,6 +105,16 @@ public class AdminService {
         Worker worker = workerRepository.findById(workerId)
                 .orElseThrow(() -> new RuntimeException("Worker not found"));
         worker.setBlockedUntil(null);
+        return workerRepository.save(worker);
+    }
+
+    @Transactional
+    public Worker updateWorkerQualifications(UUID workerId, String workingPincodes) {
+        Worker worker = workerRepository.findById(workerId)
+                .orElseThrow(() -> new RuntimeException("Worker not found"));
+        if (workingPincodes != null) {
+            worker.setWorkingPincodes(workingPincodes);
+        }
         return workerRepository.save(worker);
     }
 

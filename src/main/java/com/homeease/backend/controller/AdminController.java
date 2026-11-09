@@ -146,6 +146,13 @@ public class AdminController {
         return ResponseEntity.ok(adminService.verifyWorkerKyc(workerId));
     }
 
+    @PutMapping("/workers/{id}/reject-kyc")
+    public ResponseEntity<Worker> rejectWorkerKyc(
+            @PathVariable("id") UUID workerId,
+            @RequestParam(value = "reason", required = false) String reason) {
+        return ResponseEntity.ok(adminService.rejectWorkerKyc(workerId, reason));
+    }
+
     @PutMapping("/workers/{id}/block")
     public ResponseEntity<Worker> blockWorker(
             @PathVariable("id") UUID workerId,
@@ -156,6 +163,13 @@ public class AdminController {
     @PutMapping("/workers/{id}/unblock")
     public ResponseEntity<Worker> unblockWorker(@PathVariable("id") UUID workerId) {
         return ResponseEntity.ok(adminService.unblockWorker(workerId));
+    }
+
+    @PutMapping("/workers/{id}/qualifications")
+    public ResponseEntity<Worker> updateWorkerQualifications(
+            @PathVariable("id") UUID workerId,
+            @RequestParam(value = "workingPincodes", required = false) String workingPincodes) {
+        return ResponseEntity.ok(adminService.updateWorkerQualifications(workerId, workingPincodes));
     }
 
     // --- 8. User / Customer Management APIs ---
@@ -220,8 +234,10 @@ public class AdminController {
     }
 
     @DeleteMapping("/sub-services/{id}")
-    public ResponseEntity<String> deleteSubService(@PathVariable("id") UUID id) {
-        catalogService.deleteSubService(id);
-        return ResponseEntity.ok("Sub-service item soft-deleted successfully.");
+    public ResponseEntity<String> deleteSubService(
+            @PathVariable("id") UUID id,
+            @RequestParam(name = "hard", required = false, defaultValue = "false") boolean hard) {
+        catalogService.deleteSubService(id, hard);
+        return ResponseEntity.ok(hard ? "Sub-service item permanently deleted from database." : "Sub-service item soft-deleted successfully.");
     }
 }

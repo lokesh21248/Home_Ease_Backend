@@ -194,12 +194,16 @@ public class BookingController {
 
         if (request.getBookingType() == BookingType.SCHEDULED ||
             (request.getScheduledAt() != null && request.getScheduledAt().isAfter(java.time.Instant.now().plus(45, java.time.temporal.ChronoUnit.MINUTES)))) {
-            LocalDate date = request.getScheduledAt() != null
-                    ? request.getScheduledAt().atZone(WorkerAvailabilityService.IST_ZONE).toLocalDate()
-                    : LocalDate.now(WorkerAvailabilityService.IST_ZONE);
-            String timeSlot = request.getScheduledAt() != null
-                    ? request.getScheduledAt().atZone(WorkerAvailabilityService.IST_ZONE).toLocalTime().toString()
-                    : "09:00 AM";
+            LocalDate date = request.getScheduledDate() != null
+                    ? request.getScheduledDate()
+                    : (request.getScheduledAt() != null
+                            ? request.getScheduledAt().atZone(WorkerAvailabilityService.IST_ZONE).toLocalDate()
+                            : LocalDate.now(WorkerAvailabilityService.IST_ZONE));
+            String timeSlot = (request.getTimeSlot() != null && !request.getTimeSlot().isBlank())
+                    ? request.getTimeSlot()
+                    : (request.getScheduledAt() != null
+                            ? request.getScheduledAt().atZone(WorkerAvailabilityService.IST_ZONE).toLocalTime().toString()
+                            : "09:00 AM");
 
             ScheduledBookingRequest schReq = ScheduledBookingRequest.builder()
                     .serviceId(request.getServiceId())
@@ -274,14 +278,39 @@ public class BookingController {
                 "12:00 PM - 01:00 PM", "02:00 PM - 03:00 PM", "03:00 PM - 04:00 PM",
                 "04:00 PM - 05:00 PM", "05:00 PM - 06:00 PM", "06:00 PM - 07:00 PM"
         );
+        java.time.ZonedDateTime nowIst = java.time.ZonedDateTime.now(WorkerAvailabilityService.IST_ZONE);
+        boolean isToday = date.equals(nowIst.toLocalDate());
+        LocalTime minAllowedTime = nowIst.toLocalTime().plusMinutes(30);
+
         List<Map<String, Object>> response = slotTimes.stream()
-                .map(time -> Map.<String, Object>of(
-                        "time", time,
-                        "available", true,
-                        "date", date.toString()
-                ))
+                .map(time -> {
+                    LocalTime slotStart = parseLegacySlotStart(time);
+                    boolean available = !isToday || (slotStart != null && slotStart.isAfter(minAllowedTime));
+                    return Map.<String, Object>of(
+                            "time", time,
+                            "available", available,
+                            "date", date.toString()
+                    );
+                })
                 .toList();
         return ResponseEntity.ok(response);
+    }
+
+    private LocalTime parseLegacySlotStart(String timeSlot) {
+        if (timeSlot == null || timeSlot.isBlank()) return LocalTime.of(9, 0);
+        String startPart = timeSlot.contains("-") ? timeSlot.split("-")[0].trim() : timeSlot.trim();
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d{1,2}):(\\d{2})\\s*(AM|PM)?", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(startPart);
+        if (matcher.find()) {
+            int hrs = Integer.parseInt(matcher.group(1));
+            int mins = Integer.parseInt(matcher.group(2));
+            String mod = matcher.group(3);
+            if (mod != null) {
+                if ("PM".equalsIgnoreCase(mod) && hrs < 12) hrs += 12;
+                if ("AM".equalsIgnoreCase(mod) && hrs == 12) hrs = 0;
+            }
+            return LocalTime.of(hrs, mins);
+        }
+        return LocalTime.of(9, 0);
     }
 
     @GetMapping("/bookings/{id}")

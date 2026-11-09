@@ -217,6 +217,22 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Handles validation and illegal argument exceptions.
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, Object>> handleIllegalArgument(IllegalArgumentException ex) {
+        log.warn("Validation error / illegal argument: {}", ex.getMessage());
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("timestamp", Instant.now().toString());
+        body.put("status", HttpStatus.BAD_REQUEST.value());
+        body.put("error", "INVALID_ARGUMENT");
+        body.put("message", ex.getMessage());
+
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+    }
+
+    /**
      * Fallback for standard application runtime exceptions.
      */
     @ExceptionHandler(RuntimeException.class)
