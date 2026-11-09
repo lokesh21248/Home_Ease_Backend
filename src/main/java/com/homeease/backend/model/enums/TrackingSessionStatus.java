@@ -6,3 +6,4 @@ public enum TrackingSessionStatus {
     ARRIVED,
     STOPPED
 }
+

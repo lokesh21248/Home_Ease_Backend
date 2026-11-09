@@ -42,6 +42,7 @@ public class InstantAcceptService {
     @PersistenceContext
     private EntityManager entityManager;
 
+    @Autowired
     public InstantAcceptService(BookingRepository bookingRepository,
                                 WorkerRepository workerRepository,
                                 BookingAssignmentRepository assignmentRepository,

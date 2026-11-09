@@ -35,6 +35,7 @@ public class BookingCancellationService {
     private final RedisTemplate<String, String> redisTemplate;
     private final TrackingService trackingService;
 
+    @Autowired
     public BookingCancellationService(BookingRepository bookingRepository,
                                       BookingSlotRepository slotRepository,
                                       UserRepository userRepository,

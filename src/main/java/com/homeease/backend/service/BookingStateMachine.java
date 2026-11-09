@@ -51,6 +51,7 @@ public class BookingStateMachine {
 
     private final GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
 
+    @Autowired
     public BookingStateMachine(BookingRepository bookingRepository,
                                UserRepository userRepository,
                                ServiceRepository serviceRepository,

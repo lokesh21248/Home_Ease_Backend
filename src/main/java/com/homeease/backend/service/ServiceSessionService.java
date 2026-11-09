@@ -31,6 +31,7 @@ public class ServiceSessionService {
     private final SimpMessagingTemplate messagingTemplate;
     private final TrackingService trackingService;
 
+    @Autowired
     public ServiceSessionService(ServiceSessionRepository sessionRepository,
                                  BookingRepository bookingRepository,
                                  PaymentRepository paymentRepository,
