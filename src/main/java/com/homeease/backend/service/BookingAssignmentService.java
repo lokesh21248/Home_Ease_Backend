@@ -708,7 +708,9 @@ public class BookingAssignmentService {
 
         List<BookingAssignment> activeAssignments = assignmentRepository.findByWorker_WorkerIdAndStatus(
                 worker.getWorkerId(), AssignmentStatus.ACCEPTED);
-        if (!activeAssignments.isEmpty()) {
+        boolean hasActiveAcceptedJob = activeAssignments.stream()
+                .anyMatch(a -> a.getBooking() != null && activeStages.contains(a.getBooking().getStatus()));
+        if (hasActiveAcceptedJob) {
             if (rejectionReasons != null) rejectionReasons.put(wId, "WORKER_BUSY");
             return false;
         }
