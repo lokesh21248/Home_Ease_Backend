@@ -38,23 +38,33 @@ public class SecurityConfig {
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                // Public auth endpoints
+                // Public auth & registration endpoints
                 .requestMatchers("/api/v1/auth/**", "/api/auth/**", "/api/v1/admin/auth/**", "/api/admin/auth/**").permitAll()
-                // Public catalog, services, banners, categories
+                .requestMatchers("/api/v1/users/register", "/api/users/register", "/api/v1/user/register", "/api/user/register").permitAll()
+                // Public catalog, services, banners, categories, explore, explore-services, coupons
                 .requestMatchers("/api/v1/catalog/**", "/api/catalog/**").permitAll()
                 .requestMatchers("/api/v1/services/**", "/api/services/**").permitAll()
                 .requestMatchers("/api/v1/sub-services/**", "/api/sub-services/**").permitAll()
                 .requestMatchers("/api/v1/banners/**", "/api/banners/**").permitAll()
                 .requestMatchers("/api/v1/categories/**", "/api/categories/**").permitAll()
                 .requestMatchers("/api/v1/explore/**", "/api/explore/**").permitAll()
+                .requestMatchers("/api/v1/explore-services/**", "/api/explore-services/**", "/api/v1/customer/explore-services/**").permitAll()
+                .requestMatchers("/api/v1/coupons/**", "/api/coupons/**").permitAll()
                 .requestMatchers("/api/v1/service-detail/**", "/api/service-detail/**").permitAll()
                 // Slot discovery & holds
                 .requestMatchers("/api/v1/slots/**", "/api/slots/**").permitAll()
                 .requestMatchers("/api/v1/slot-holds/**", "/api/slot-holds/**").permitAll()
-                // Public service areas, geo, app version, health
+                .requestMatchers("/api/v1/bookings/available-dates/**", "/api/bookings/available-dates/**").permitAll()
+                .requestMatchers("/api/v1/bookings/available-slots/**", "/api/bookings/available-slots/**").permitAll()
+                .requestMatchers("/api/v1/bookings/time-slots/**", "/api/bookings/time-slots/**").permitAll()
+                .requestMatchers("/api/v1/bookings/slots/**", "/api/bookings/slots/**").permitAll()
+                .requestMatchers("/api/v1/booking/slots/**", "/api/booking/slots/**").permitAll()
+                // Public service areas, geo, app version, health, serviceability
                 .requestMatchers("/api/v1/service-areas/**", "/api/service-areas/**").permitAll()
+                .requestMatchers("/api/v1/serviceability/**", "/api/serviceability/**", "/serviceability/**").permitAll()
                 .requestMatchers("/api/v1/geo/**", "/api/geo/**").permitAll()
                 .requestMatchers("/api/v1/app-version/**", "/api/app-version/**").permitAll()
+                .requestMatchers("/api/v1/app/**", "/api/app/**").permitAll()
                 .requestMatchers("/api/v1/health/**", "/api/health/**", "/health/**").permitAll()
                 .requestMatchers("/actuator/**").permitAll()
                 // Payment webhooks

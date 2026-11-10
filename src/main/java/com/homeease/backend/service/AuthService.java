@@ -142,21 +142,21 @@ public class AuthService {
         Optional<User> existingUserOpt = findUserByPhoneFlexible(phone);
 
         if (existingUserOpt.isEmpty()) {
-            // NEW WORKER (Not in DB):
-            // Create user record with empty/null name so they have a valid persistent userId and JWT token
+            // NEW USER (Not in DB):
+            // Create user record with default CUSTOMER role so they have a valid persistent userId and cryptographic JWT token
             User newUser = User.builder()
                     .phoneNumber(phone)
                     .fullName("") // Will be filled in registration step
-                    .role(UserRole.WORKER)
+                    .role(UserRole.CUSTOMER)
                     .build();
             User saved = userRepository.save(newUser);
-            String token = saved.getUserId().toString(); // Direct UUID identifier (no JWT required)
+            String token = jwtService.generateToken(saved);
 
             return AuthTokenResponse.builder()
                     .token(token)
                     .userId(saved.getUserId().toString())
                     .phoneNumber(phone)
-                    .role(UserRole.WORKER)
+                    .role(UserRole.CUSTOMER)
                     .isNewUser(true)
                     .userExists(false)
                     .isRegistered(false)
@@ -165,9 +165,9 @@ public class AuthService {
                     .build();
         }
 
-        // EXISTING WORKER (Already in DB):
+        // EXISTING USER (Already in DB):
         User user = existingUserOpt.get();
-        String token = user.getUserId().toString(); // Direct UUID identifier (no JWT required)
+        String token = jwtService.generateToken(user);
 
         boolean isRegistered = user.getFullName() != null && !user.getFullName().trim().isEmpty();
         boolean isKycCompleted = false;
