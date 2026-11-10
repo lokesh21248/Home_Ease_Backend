@@ -87,8 +87,7 @@ class TrackingLifecycleTest {
                 messagingTemplate,
                 bookingRepository,
                 workerRepository,
-                workerService
-        );
+                workerService);
 
         bookingId = UUID.randomUUID();
         workerUserId = UUID.randomUUID();
@@ -141,7 +140,8 @@ class TrackingLifecycleTest {
         assertTrue(updateResult.isTrackingActive());
         assertEquals("ACTIVE", updateResult.getStatus());
 
-        // 4. Worker Arrives at customer doorstep -> session marked ARRIVED, trackingActive = false
+        // 4. Worker Arrives at customer doorstep -> session marked ARRIVED,
+        // trackingActive = false
         TrackingSessionDto arrivedSession = trackingService.handleArrival(bookingId, workerUserId);
         assertNotNull(arrivedSession);
         assertEquals(TrackingSessionStatus.ARRIVED, arrivedSession.getStatus());
