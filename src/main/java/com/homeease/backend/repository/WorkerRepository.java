@@ -23,21 +23,30 @@ public interface WorkerRepository extends JpaRepository<Worker, UUID> {
           AND w.is_online = true 
           AND w.is_verified = true
           AND (w.blocked_until IS NULL OR w.blocked_until < CURRENT_TIMESTAMP)
-          AND w.current_lat IS NOT NULL AND w.current_lng IS NOT NULL
-          AND (6371000 * acos(
+          AND (
+            (w.location IS NOT NULL AND ST_DWithin(
+                w.location,
+                ST_SetSRID(ST_MakePoint(:userLng, :userLat), 4326)::GEOGRAPHY,
+                :radiusMeters
+            ))
+            OR (w.location IS NULL AND w.current_lat IS NOT NULL AND w.current_lng IS NOT NULL AND (6371000 * acos(
                 least(1.0, greatest(-1.0, 
                   cos(radians(:userLat)) * cos(radians(w.current_lat)) * 
                   cos(radians(w.current_lng) - radians(:userLng)) + 
                   sin(radians(:userLat)) * sin(radians(w.current_lat))
                 ))
-              )) <= :radiusMeters
-        ORDER BY (6371000 * acos(
+            )) <= :radiusMeters)
+          )
+        ORDER BY COALESCE(
+            ST_Distance(w.location, ST_SetSRID(ST_MakePoint(:userLng, :userLat), 4326)::GEOGRAPHY),
+            (6371000 * acos(
                 least(1.0, greatest(-1.0, 
                   cos(radians(:userLat)) * cos(radians(w.current_lat)) * 
                   cos(radians(w.current_lng) - radians(:userLng)) + 
                   sin(radians(:userLat)) * sin(radians(w.current_lat))
                 ))
-              )) ASC
+            ))
+        ) ASC
         LIMIT 5
         """, nativeQuery = true)
     List<Worker> findCandidateWorkersNearby(

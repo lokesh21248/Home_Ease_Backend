@@ -10,6 +10,9 @@ import com.homeease.backend.repository.WorkerRepository;
 import com.homeease.backend.security.JwtService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,15 +31,21 @@ public class AuthService {
     private final WorkerRepository workerRepository;
     private final JwtService jwtService;
     private final RedisTemplate<String, String> redisTemplate;
+    private final Environment environment;
+
+    @Value("${homeease.admin.password:AdminPassword123!}")
+    private String adminPassword;
 
     public AuthService(UserRepository userRepository,
                        WorkerRepository workerRepository,
                        JwtService jwtService,
-                       RedisTemplate<String, String> redisTemplate) {
+                       RedisTemplate<String, String> redisTemplate,
+                       Environment environment) {
         this.userRepository = userRepository;
         this.workerRepository = workerRepository;
         this.jwtService = jwtService;
         this.redisTemplate = redisTemplate;
+        this.environment = environment;
     }
 
     /**
@@ -109,7 +118,7 @@ public class AuthService {
         String code = request.getOtpCode() != null ? request.getOtpCode().trim() : "";
         logger.info("Verifying OTP for phone: {}", phone);
 
-        // 1. Verify OTP against Redis or master testing code (123456)
+        // 1. Verify OTP against Redis. Master testing code (123456) is strictly restricted to dev/test profiles.
         String cachedOtp = null;
         try {
             cachedOtp = redisTemplate.opsForValue().get("auth:otp:" + phone);
@@ -117,7 +126,8 @@ public class AuthService {
             logger.warn("Redis error while retrieving OTP: {}", e.getMessage());
         }
 
-        boolean isValid = (cachedOtp != null && cachedOtp.equals(code)) || "123456".equals(code);
+        boolean isDevOrTest = environment != null && environment.acceptsProfiles(Profiles.of("dev", "test", "local"));
+        boolean isValid = (cachedOtp != null && cachedOtp.equals(code)) || (isDevOrTest && "123456".equals(code));
 
         if (!isValid) {
             throw new InvalidOtpException("INVALID_OTP: The OTP code is invalid or has expired.");
@@ -281,9 +291,13 @@ public class AuthService {
     }
 
     public AuthTokenResponse authenticateAdmin(AdminLoginRequest request) {
+        if (request.getPassword() == null || !request.getPassword().equals(adminPassword)) {
+            throw new SecurityException("Invalid admin credentials");
+        }
+
         User admin = userRepository.findByEmail(request.getEmail())
                 .filter(u -> u.getRole() == UserRole.ADMIN)
-                .orElseThrow(() -> new RuntimeException("Invalid admin credentials or role"));
+                .orElseThrow(() -> new SecurityException("Invalid admin credentials or role"));
 
         return buildResponse(admin, jwtService.generateToken(admin));
     }

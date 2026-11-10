@@ -113,17 +113,6 @@ public class TrackingController {
     }
 
     private UUID resolveUserId(String authHeader, String headerUserId, UUID queryUserId) {
-        if (queryUserId != null) return queryUserId;
-        if (headerUserId != null && !headerUserId.isBlank()) {
-            try { return UUID.fromString(headerUserId.trim()); } catch (Exception ignored) {}
-        }
-        if (authHeader != null && authHeader.startsWith("Bearer ")) {
-            String token = authHeader.substring(7);
-            try {
-                UUID sub = jwtService.extractUserId(token);
-                if (sub != null) return sub;
-            } catch (Exception ignored) {}
-        }
-        return null;
+        return com.homeease.backend.security.SecurityUtils.resolveAuthenticatedUserId(queryUserId, headerUserId);
     }
 }

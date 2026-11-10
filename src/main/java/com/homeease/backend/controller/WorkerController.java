@@ -25,22 +25,7 @@ public class WorkerController {
     }
 
     private UUID resolveUserId(String authHeader, String headerUserIdStr, UUID directUserId) {
-        if (directUserId != null) return directUserId;
-        if (headerUserIdStr != null && !headerUserIdStr.isBlank()) {
-            try {
-                return UUID.fromString(headerUserIdStr.trim());
-            } catch (Exception ignored) {}
-        }
-        if (authHeader != null && !authHeader.isBlank()) {
-            try {
-                String clean = authHeader.replace("Bearer ", "").trim();
-                return UUID.fromString(clean);
-            } catch (Exception ignored) {
-                UUID fromJwt = jwtService.extractUserId(authHeader);
-                if (fromJwt != null) return fromJwt;
-            }
-        }
-        throw new ResourceNotFoundException("Missing userId. Please provide userId in the request body, query parameter (?userId=...), or X-User-Id header.");
+        return com.homeease.backend.security.SecurityUtils.resolveAuthenticatedUserId(directUserId, headerUserIdStr);
     }
 
     /**

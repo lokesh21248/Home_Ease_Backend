@@ -614,6 +614,20 @@ public class BookingStateMachine {
     }
 
     public BookingResponse mapToBookingResponse(Booking booking) {
+        String pinCodeToExpose = null;
+        try {
+            org.springframework.security.core.Authentication auth =
+                    org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+            if (auth != null && auth.getPrincipal() instanceof com.homeease.backend.security.UserPrincipal principal) {
+                boolean isOwner = booking.getUser() != null && booking.getUser().getUserId().equals(principal.getUserId());
+                boolean isAdmin = principal.getRole() == UserRole.ADMIN;
+                // Only expose PIN to the customer when the service partner is ARRIVED (or to admin for support)
+                if ((isOwner && booking.getStatus() == BookingStage.ARRIVED) || isAdmin) {
+                    pinCodeToExpose = booking.getPinCode();
+                }
+            }
+        } catch (Exception ignored) {}
+
         return BookingResponse.builder()
                 .bookingId(booking.getBookingId())
                 .userId(booking.getUser().getUserId())
@@ -625,7 +639,7 @@ public class BookingStateMachine {
                 .serviceId(booking.getService().getServiceId())
                 .serviceName(booking.getService().getName())
                 .status(booking.getStatus())
-                .pinCode(booking.getPinCode())
+                .pinCode(pinCodeToExpose)
                 .scheduledAt(booking.getScheduledAt())
                 .startedAt(booking.getStartedAt())
                 .completedAt(booking.getCompletedAt())

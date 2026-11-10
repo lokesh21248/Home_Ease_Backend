@@ -61,6 +61,9 @@ public class BookingAssignmentService {
     @Value("${homeease.dispatch.response-timeout-seconds:180}")
     private int responseTimeoutSeconds = 180;
 
+    @Autowired(required = false)
+    private io.micrometer.core.instrument.MeterRegistry meterRegistry;
+
     @Autowired
     public BookingAssignmentService(WorkerRepository workerRepository,
                                   WorkerServiceLinkRepository workerServiceLinkRepository,
@@ -328,6 +331,13 @@ public class BookingAssignmentService {
 
         logger.info("[WORKER_ACCEPTED] bookingId={}, workerId={}", bookingId, worker.getWorkerId());
         logger.info("BOOKING_ASSIGNED: bookingId={}, partnerId={}", bookingId, worker.getWorkerId());
+
+        if (meterRegistry != null) {
+            try {
+                meterRegistry.counter("homeease.dispatch.assigned",
+                        "pincode", booking.getServicePincode() != null ? booking.getServicePincode() : "unknown").increment();
+            } catch (Exception ignored) {}
+        }
 
         // Update winning assignment to ACCEPTED
         assignmentRepository.findByBooking_BookingIdAndWorker_WorkerId(bookingId, worker.getWorkerId())

@@ -38,29 +38,7 @@ public class BookingCartController {
     }
 
     private UUID resolveUserId(String authHeader, String headerUserIdStr, UUID queryUserId) {
-        if (headerUserIdStr != null && !headerUserIdStr.isBlank()) {
-            try {
-                return UUID.fromString(headerUserIdStr.trim());
-            } catch (Exception ignored) {}
-        }
-        if (queryUserId != null) {
-            return queryUserId;
-        }
-        if (authHeader != null && !authHeader.isBlank()) {
-            try {
-                String clean = authHeader.replace("Bearer ", "").trim();
-                return UUID.fromString(clean);
-            } catch (Exception ignored) {
-                UUID fromJwt = jwtService.extractUserId(authHeader);
-                if (fromJwt != null) return fromJwt;
-            }
-        }
-        // Fallback to first available customer in database for seamless mobile demo/testing
-        List<User> users = userRepository.findAll();
-        if (!users.isEmpty()) {
-            return users.get(0).getUserId();
-        }
-        throw new ResourceNotFoundException("Missing customer identity. Provide X-User-Id header or Bearer token.");
+        return com.homeease.backend.security.SecurityUtils.resolveAuthenticatedUserId(queryUserId, headerUserIdStr);
     }
 
     /**

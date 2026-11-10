@@ -79,15 +79,36 @@ public class JwtService {
 
         try {
             String[] parts = token.split("\\.");
-            if (parts.length < 2) {
+            if (parts.length != 3) {
                 return null;
             }
+
+            // Cryptographically verify HMAC-SHA256 signature
+            String signatureInput = parts[0] + "." + parts[1];
+            String expectedSignature = hmacSha256(signatureInput, secretKey);
+            if (!expectedSignature.equals(parts[2])) {
+                logger.warn("Invalid JWT signature");
+                return null;
+            }
+
             byte[] decoded = Base64.getUrlDecoder().decode(parts[1]);
-            return objectMapper.readValue(decoded, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+            Map<String, Object> claims = objectMapper.readValue(decoded, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+
+            Number exp = (Number) claims.get("exp");
+            if (exp != null && Instant.ofEpochSecond(exp.longValue()).isBefore(Instant.now())) {
+                logger.warn("JWT token has expired");
+                return null;
+            }
+
+            return claims;
         } catch (Exception e) {
-            logger.warn("Could not extract claims from token: {}", e.getMessage());
+            logger.warn("Could not validate and extract claims from token: {}", e.getMessage());
             return null;
         }
+    }
+
+    public boolean isTokenValid(String authHeaderOrToken) {
+        return validateAndExtractClaims(authHeaderOrToken) != null;
     }
 
     public UUID extractUserId(String authHeaderOrToken) {

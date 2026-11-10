@@ -19,7 +19,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 @Service
-@ConditionalOnProperty(name = "homeease.kafka.outbox.enabled", havingValue = "true", matchIfMissing = true)
+@ConditionalOnProperty(name = "homeease.kafka.outbox.enabled", havingValue = "true", matchIfMissing = false)
 public class BookingOutboxPoller {
 
     private static final Logger logger = LoggerFactory.getLogger(BookingOutboxPoller.class);

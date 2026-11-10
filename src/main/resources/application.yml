@@ -105,7 +105,7 @@ homeease:
       partitions: ${KAFKA_TOPIC_PARTITIONS:3}
       replication-factor: ${KAFKA_TOPIC_REPLICATION_FACTOR:1}
     outbox:
-      enabled: ${KAFKA_OUTBOX_ENABLED:true}
+      enabled: ${KAFKA_OUTBOX_ENABLED:false}
       poll-interval-ms: 500
       batch-size: 50
       max-attempts: 5
@@ -126,8 +126,14 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus,metrics
   endpoint:
     health:
       show-details: always
+    prometheus:
+      enabled: true
+  metrics:
+    export:
+      prometheus:
+        enabled: true
 

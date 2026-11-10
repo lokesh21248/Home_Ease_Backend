@@ -147,8 +147,8 @@ public class ScheduledBookingService {
 
         Instant scheduledStartInstant = slotStartIst.toInstant();
 
-        // 4. Redis Distributed Lock to prevent simultaneous slot reservations
-        String lockKey = "lock:slot:" + request.getServiceId() + ":" + scheduledDate + ":" + slotStartTime.getHour();
+        // 4. Redis Distributed Lock to prevent simultaneous slot reservations (partitioned by area/pincode)
+        String lockKey = "lock:slot:" + request.getServiceId() + ":" + (resolvedPincode != null ? resolvedPincode : "all") + ":" + scheduledDate + ":" + slotStartTime.getHour();
         String lockToken = UUID.randomUUID().toString();
         Boolean acquired = false;
         try {

@@ -46,17 +46,9 @@ public class AuthController {
     }
 
     private UUID resolveUserId(String authHeader, UUID headerUserId, UUID queryUserId) {
-        if (queryUserId != null) return queryUserId;
-        if (headerUserId != null) return headerUserId;
-        if (authHeader != null && !authHeader.isBlank()) {
-            try {
-                String clean = authHeader.replace("Bearer ", "").trim();
-                return UUID.fromString(clean);
-            } catch (Exception ignored) {
-                return jwtService.extractUserId(authHeader);
-            }
-        }
-        return null;
+        return com.homeease.backend.security.SecurityUtils.resolveAuthenticatedUserId(
+                queryUserId, headerUserId != null ? headerUserId.toString() : null
+        );
     }
 
     @PostMapping("/auth/firebase-login")
@@ -100,7 +92,7 @@ public class AuthController {
         );
     }
 
-    @PostMapping("/admin/auth/login")
+    @PostMapping({"/admin/auth/login", "/auth/admin/login", "/auth/login/admin", "/admin/login"})
     public ResponseEntity<AuthTokenResponse> adminLogin(@Valid @RequestBody AdminLoginRequest request) {
         return ResponseEntity.ok(authService.authenticateAdmin(request));
     }
