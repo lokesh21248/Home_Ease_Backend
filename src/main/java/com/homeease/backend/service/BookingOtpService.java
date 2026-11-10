@@ -15,12 +15,15 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
+import java.security.InvalidKeyException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 
 @Service
 public class BookingOtpService {
@@ -42,6 +45,9 @@ public class BookingOtpService {
 
     @Value("${homeease.booking.otp.resend-cooldown-seconds:60}")
     private int resendCooldownSeconds = 60;
+
+    @Value("${homeease.booking.otp.hmac-secret:HomeEase-Secure-Doorstep-Pin-Secret-2026-X9A7}")
+    private String hmacSecret = "HomeEase-Secure-Doorstep-Pin-Secret-2026-X9A7";
 
     @Autowired
     public BookingOtpService(BookingOtpRepository otpRepository,
@@ -277,8 +283,24 @@ public class BookingOtpService {
     }
 
     public String hashOtp(String otp, UUID bookingId) {
-        String input = otp + ":" + bookingId.toString();
-        return sha256Hex(input);
+        String input = otp + ":" + (bookingId != null ? bookingId.toString() : "");
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            SecretKeySpec secretKey = new SecretKeySpec(
+                    (hmacSecret != null ? hmacSecret : "HomeEase-Secure-Doorstep-Pin-Secret-2026-X9A7")
+                            .getBytes(StandardCharsets.UTF_8),
+                    "HmacSHA256"
+            );
+            mac.init(secretKey);
+            byte[] hmacBytes = mac.doFinal(input.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(hmacBytes.length * 2);
+            for (byte b : hmacBytes) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException | InvalidKeyException e) {
+            throw new RuntimeException("Failed to calculate HMAC-SHA256 for OTP", e);
+        }
     }
 
     public String hashValue(String value) {

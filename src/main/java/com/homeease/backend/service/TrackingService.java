@@ -21,6 +21,7 @@ import org.springframework.stereotype.Service;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class TrackingService {
@@ -34,6 +35,10 @@ public class TrackingService {
     private static final Duration SESSION_TTL = Duration.ofHours(4);
     private static final Duration LIVE_COORD_TTL = Duration.ofHours(2);
     private static final Duration ARRIVED_COORD_TTL = Duration.ofSeconds(120);
+
+    // In-memory throttles to prevent excessive Redis/DB writes on high-frequency GPS ticks
+    private final ConcurrentHashMap<UUID, Long> sessionTickCounter = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<UUID, Long> lastWorkerHeartbeatMap = new ConcurrentHashMap<>();
 
     private final RedisTemplate<String, String> redisTemplate;
     private final ObjectMapper objectMapper;
@@ -187,16 +192,20 @@ public class TrackingService {
                     .build();
         }
 
-        // 1. Update session in Redis
+        // 1. Update session coordinates in-memory; persist session metadata to Redis periodically (every 10 ticks)
         session.setLastLat(req.getLat());
         session.setLastLng(req.getLng());
         if (req.getBearing() != null) session.setBearing(req.getBearing());
         if (req.getSpeed() != null) session.setSpeed(req.getSpeed());
         if (req.getAccuracy() != null) session.setAccuracy(req.getAccuracy());
         session.setLastTimestamp(coordTime);
-        saveSession(session, SESSION_TTL);
 
-        // 2. Cache latest live coordinate in Redis
+        long ticks = sessionTickCounter.compute(bookingId, (k, v) -> v == null ? 1L : v + 1L);
+        if (ticks % 10 == 0) {
+            saveSession(session, SESSION_TTL);
+        }
+
+        // 2. Cache latest live coordinate in Redis (fast key update for live customer polling)
         Map<String, Object> coordMap = new LinkedHashMap<>();
         coordMap.put("bookingId", bookingId.toString());
         coordMap.put("lat", req.getLat());
@@ -238,10 +247,14 @@ public class TrackingService {
 
         broadcastTrackingEvent(bookingId, session.getCustomerUserId(), event);
 
-        // 4. Update worker general availability heartbeat (asynchronous)
+        // 4. Update worker general availability heartbeat (throttled to at most once per 15s)
         try {
             if (workerUserId != null) {
-                workerService.updateLiveLocation(workerUserId, req.getLat(), req.getLng());
+                Long lastHb = lastWorkerHeartbeatMap.get(workerUserId);
+                if (lastHb == null || (nowMs - lastHb) >= 15_000) {
+                    lastWorkerHeartbeatMap.put(workerUserId, nowMs);
+                    workerService.updateLiveLocation(workerUserId, req.getLat(), req.getLng());
+                }
             }
         } catch (Exception ignored) {}
 
@@ -284,6 +297,7 @@ public class TrackingService {
         session.setTrackingActive(false);
         session.setArrivedAt(arrivedAt);
         saveSession(session, SESSION_TTL);
+        sessionTickCounter.remove(bookingId);
 
         // Update assignment key
         updateAssignmentKey(bookingId, "ARRIVED", false);
@@ -349,6 +363,7 @@ public class TrackingService {
         session.setStoppedAt(Instant.now());
         session.setStopReason(reason);
         saveSession(session, Duration.ofMinutes(10)); // Short audit retention
+        sessionTickCounter.remove(bookingId);
 
         // Update assignment key
         updateAssignmentKey(bookingId, reason, false);
