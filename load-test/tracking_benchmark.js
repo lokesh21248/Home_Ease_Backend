@@ -278,7 +278,13 @@ async function main() {
   // Cool-down period
   await new Promise(r => setTimeout(r, 2000));
 
-  // Test 2: 1,000 Concurrent Sessions
+  // Test 2: 500 Concurrent Sessions
+  const res500 = await runBenchmark(500, 6);
+
+  // Cool-down period
+  await new Promise(r => setTimeout(r, 2000));
+
+  // Test 3: 1,000 Concurrent Sessions
   const res1000 = await runBenchmark(1000, 6);
 
   console.log('\n===============================================================');
@@ -296,6 +302,18 @@ async function main() {
       Redis_min: res100.redisWritesPerMin,
       WS_min: res100.wsMessagesPerMin,
       Success: `${res100.successRate}%`
+    },
+    {
+      Sessions: 500,
+      TotalReqs: res500.totalFired,
+      RPS: res500.throughputRps,
+      P50_ms: res500.stats.p50,
+      P95_ms: res500.stats.p95,
+      P99_ms: res500.stats.p99,
+      GPS_min: res500.gpsUpdatesPerMin,
+      Redis_min: res500.redisWritesPerMin,
+      WS_min: res500.wsMessagesPerMin,
+      Success: `${res500.successRate}%`
     },
     {
       Sessions: 1000,
