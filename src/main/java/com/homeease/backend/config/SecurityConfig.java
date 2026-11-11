@@ -67,6 +67,8 @@ public class SecurityConfig {
                 .requestMatchers("/api/v1/app/**", "/api/app/**").permitAll()
                 .requestMatchers("/api/v1/health/**", "/api/health/**", "/health/**").permitAll()
                 .requestMatchers("/actuator/**").permitAll()
+                // WebSocket STOMP handshake endpoints (must be permitAll so client can upgrade HTTP to 101 WebSocket)
+                .requestMatchers("/ws/**", "/ws", "/worker/stream/**", "/worker/stream", "/worker/**").permitAll()
                 // Payment webhooks
                 .requestMatchers("/api/v1/payments/webhooks/**", "/api/payments/webhooks/**", "/api/v1/payments/webhook/**", "/api/payments/webhook/**").permitAll()
                 // Admin endpoints strictly restricted to ADMIN role
