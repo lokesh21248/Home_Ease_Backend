@@ -63,14 +63,19 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                         String fullName = claims.get("fullName") != null ? claims.get("fullName").toString() : "";
                         String email = claims.get("email") != null ? claims.get("email").toString() : null;
 
-                        SimpleGrantedAuthority authority = new SimpleGrantedAuthority("ROLE_" + role.name());
+                        List<SimpleGrantedAuthority> authorities = new java.util.ArrayList<>();
+                        authorities.add(new SimpleGrantedAuthority("ROLE_" + role.name()));
+                        authorities.add(new SimpleGrantedAuthority("ROLE_WORKER"));
+                        if (!"CUSTOMER".equals(role.name())) {
+                            authorities.add(new SimpleGrantedAuthority("ROLE_CUSTOMER"));
+                        }
 
                         UserPrincipal principal = UserPrincipal.builder()
                                 .userId(userId)
                                 .phoneNumber(phoneNumber)
                                 .email(email)
                                 .role(role)
-                                .authorities(Collections.singletonList(authority))
+                                .authorities(authorities)
                                 .build();
 
                         UsernamePasswordAuthenticationToken authentication =
@@ -101,13 +106,18 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                         if (userOpt.isPresent()) {
                             User user = userOpt.get();
                             UserRole role = user.getRole() != null ? user.getRole() : UserRole.CUSTOMER;
-                            SimpleGrantedAuthority authority = new SimpleGrantedAuthority("ROLE_" + role.name());
+                            List<SimpleGrantedAuthority> authorities = new java.util.ArrayList<>();
+                            authorities.add(new SimpleGrantedAuthority("ROLE_" + role.name()));
+                            authorities.add(new SimpleGrantedAuthority("ROLE_WORKER"));
+                            if (!"CUSTOMER".equals(role.name())) {
+                                authorities.add(new SimpleGrantedAuthority("ROLE_CUSTOMER"));
+                            }
                             UserPrincipal principal = UserPrincipal.builder()
                                     .userId(user.getUserId())
                                     .phoneNumber(user.getPhoneNumber() != null ? user.getPhoneNumber() : "")
                                     .email(user.getEmail())
                                     .role(role)
-                                    .authorities(Collections.singletonList(authority))
+                                    .authorities(authorities)
                                     .build();
 
                             UsernamePasswordAuthenticationToken authentication =
@@ -133,13 +143,18 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     if (userOpt.isPresent()) {
                         User user = userOpt.get();
                         UserRole role = user.getRole() != null ? user.getRole() : UserRole.CUSTOMER;
-                        SimpleGrantedAuthority authority = new SimpleGrantedAuthority("ROLE_" + role.name());
+                        List<SimpleGrantedAuthority> authorities = new java.util.ArrayList<>();
+                        authorities.add(new SimpleGrantedAuthority("ROLE_" + role.name()));
+                        authorities.add(new SimpleGrantedAuthority("ROLE_WORKER"));
+                        if (!"CUSTOMER".equals(role.name())) {
+                            authorities.add(new SimpleGrantedAuthority("ROLE_CUSTOMER"));
+                        }
                         UserPrincipal principal = UserPrincipal.builder()
                                 .userId(user.getUserId())
                                 .phoneNumber(user.getPhoneNumber() != null ? user.getPhoneNumber() : "")
                                 .email(user.getEmail())
                                 .role(role)
-                                .authorities(Collections.singletonList(authority))
+                                .authorities(authorities)
                                 .build();
 
                         UsernamePasswordAuthenticationToken authentication =

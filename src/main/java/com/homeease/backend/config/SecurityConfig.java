@@ -81,8 +81,8 @@ public class SecurityConfig {
                 .requestMatchers("/api/v1/payments/webhooks/**", "/api/payments/webhooks/**", "/api/v1/payments/webhook/**", "/api/payments/webhook/**").permitAll()
                 // Admin endpoints strictly restricted to ADMIN role
                 .requestMatchers("/api/v1/admin/**", "/api/admin/**").hasRole("ADMIN")
-                // Worker endpoints strictly restricted to WORKER or ADMIN
-                .requestMatchers("/api/v1/workers/**", "/api/workers/**").hasAnyRole("WORKER", "ADMIN")
+                // Worker endpoints require authentication (WorkerService enforces worker profile existence & KYC)
+                .requestMatchers("/api/v1/workers/**", "/api/workers/**").authenticated()
                 // All other endpoints require authentication
                 .anyRequest().authenticated()
             )
