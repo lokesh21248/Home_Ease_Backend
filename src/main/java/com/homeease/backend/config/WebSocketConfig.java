@@ -18,11 +18,13 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
+        // Pure WebSockets for Mobile Apps (React Native / Android / iOS native WebSocket)
+        registry.addEndpoint("/ws", "/worker/stream", "/ws/websocket", "/worker/stream/websocket")
+                .setAllowedOriginPatterns("*");
+
+        // SockJS fallback for Web Browsers
         registry.addEndpoint("/ws", "/worker/stream")
                 .setAllowedOriginPatterns("*")
                 .withSockJS();
-
-        registry.addEndpoint("/ws", "/worker/stream")
-                .setAllowedOriginPatterns("*");
     }
 }
