@@ -123,6 +123,37 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             }
         }
 
+        // Header fallback: support X-User-Id authentication directly when Authorization header is omitted
+        if (SecurityContextHolder.getContext().getAuthentication() == null) {
+            String xUserId = request.getHeader("X-User-Id");
+            if (xUserId != null && xUserId.matches("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")) {
+                try {
+                    UUID directUserId = UUID.fromString(xUserId);
+                    Optional<User> userOpt = userRepository.findById(directUserId);
+                    if (userOpt.isPresent()) {
+                        User user = userOpt.get();
+                        UserRole role = user.getRole() != null ? user.getRole() : UserRole.CUSTOMER;
+                        SimpleGrantedAuthority authority = new SimpleGrantedAuthority("ROLE_" + role.name());
+                        UserPrincipal principal = UserPrincipal.builder()
+                                .userId(user.getUserId())
+                                .phoneNumber(user.getPhoneNumber() != null ? user.getPhoneNumber() : "")
+                                .email(user.getEmail())
+                                .role(role)
+                                .authorities(Collections.singletonList(authority))
+                                .build();
+
+                        UsernamePasswordAuthenticationToken authentication =
+                                new UsernamePasswordAuthenticationToken(principal, null, principal.getAuthorities());
+                        authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                        SecurityContextHolder.getContext().setAuthentication(authentication);
+                        logger.debug("Authenticated user {} via X-User-Id header with role ROLE_{}", directUserId, role.name());
+                    }
+                } catch (Exception e) {
+                    logger.debug("Fallback X-User-Id auth lookup skipped: {}", e.getMessage());
+                }
+            }
+        }
+
         filterChain.doFilter(request, response);
     }
 }

@@ -469,6 +469,15 @@ public class BookingAssignmentService {
             throw new SecurityException("Unauthorized: Only the assigned worker can confirm arrival.");
         }
 
+        // Idempotency check: If booking is already at or past ARRIVED stage, return gracefully
+        if (booking.getStatus() == BookingStage.ARRIVED ||
+            booking.getStatus() == BookingStage.IN_PROGRESS ||
+            booking.getStatus() == BookingStage.COMPLETED) {
+            logger.info("Worker {} arrival check: booking {} is already in stage {} - returning idempotent response",
+                    workerUserId, bookingId, booking.getStatus());
+            return booking;
+        }
+
         if (booking.getStatus() != BookingStage.ACCEPTED &&
             booking.getStatus() != BookingStage.CONFIRMED &&
             booking.getStatus() != BookingStage.ON_THE_WAY) {
