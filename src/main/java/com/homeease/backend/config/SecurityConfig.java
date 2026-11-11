@@ -74,7 +74,8 @@ public class SecurityConfig {
                     AntPathRequestMatcher.antMatcher("/ws"),
                     AntPathRequestMatcher.antMatcher("/worker/stream/**"),
                     AntPathRequestMatcher.antMatcher("/worker/stream"),
-                    AntPathRequestMatcher.antMatcher("/worker/**")
+                    AntPathRequestMatcher.antMatcher("/worker/**"),
+                    AntPathRequestMatcher.antMatcher("/error")
                 ).permitAll()
                 // Payment webhooks
                 .requestMatchers("/api/v1/payments/webhooks/**", "/api/payments/webhooks/**", "/api/v1/payments/webhook/**", "/api/payments/webhook/**").permitAll()
