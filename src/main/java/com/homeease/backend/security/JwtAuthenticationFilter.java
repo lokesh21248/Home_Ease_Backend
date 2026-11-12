@@ -1,6 +1,7 @@
 package com.homeease.backend.security;
 
 import com.homeease.backend.model.entity.User;
+import com.homeease.backend.model.entity.Worker;
 import com.homeease.backend.model.enums.UserRole;
 import com.homeease.backend.repository.UserRepository;
 import jakarta.servlet.FilterChain;
