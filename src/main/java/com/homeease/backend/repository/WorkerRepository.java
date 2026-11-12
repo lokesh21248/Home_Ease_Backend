@@ -15,6 +15,12 @@ public interface WorkerRepository extends JpaRepository<Worker, UUID> {
 
     Optional<Worker> findByUser_UserId(UUID userId);
 
+    @Query("SELECT w FROM Worker w JOIN FETCH w.user WHERE w.workerId = :workerId")
+    Optional<Worker> findByIdWithUser(@Param("workerId") UUID workerId);
+
+    @Query("SELECT w FROM Worker w JOIN FETCH w.user WHERE w.user.userId = :userId")
+    Optional<Worker> findByUserIdWithUser(@Param("userId") UUID userId);
+
     @Query(value = """
         SELECT w.* 
         FROM workers w

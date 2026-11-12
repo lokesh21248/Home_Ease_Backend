@@ -110,7 +110,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     if (directUserId != null) {
                         Optional<User> userOpt = userRepository.findById(directUserId);
                         if (userOpt.isEmpty() && workerRepository != null) {
-                            userOpt = workerRepository.findById(directUserId).map(Worker::getUser);
+                            userOpt = workerRepository.findByIdWithUser(directUserId).map(Worker::getUser);
                         }
                         if (userOpt.isPresent()) {
                             User user = userOpt.get();
@@ -150,7 +150,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     UUID directUserId = UUID.fromString(xUserId);
                     Optional<User> userOpt = userRepository.findById(directUserId);
                     if (userOpt.isEmpty() && workerRepository != null) {
-                        userOpt = workerRepository.findById(directUserId).map(Worker::getUser);
+                        userOpt = workerRepository.findByIdWithUser(directUserId).map(Worker::getUser);
                     }
                     if (userOpt.isPresent()) {
                         User user = userOpt.get();
