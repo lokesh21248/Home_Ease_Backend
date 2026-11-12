@@ -158,7 +158,8 @@ public class WorkerService {
 
     @Transactional(readOnly = true)
     public WorkerProfileResponse getWorkerProfile(UUID userId) {
-        Optional<Worker> workerOpt = workerRepository.findByUser_UserId(userId);
+        Optional<Worker> workerOpt = workerRepository.findByUser_UserId(userId)
+                .or(() -> workerRepository.findById(userId));
 
         if (workerOpt.isPresent()) {
             return mapToProfileResponse(workerOpt.get());
@@ -192,6 +193,7 @@ public class WorkerService {
     @Transactional
     public WorkerProfileResponse toggleOnlineStatus(UUID userId, Boolean isOnline, Double lat, Double lng) {
         Worker worker = workerRepository.findByUser_UserId(userId)
+                .or(() -> workerRepository.findById(userId))
                 .orElseThrow(() -> new ResourceNotFoundException("Worker profile not found. Please complete KYC registration."));
 
         if (!Boolean.TRUE.equals(worker.getIsVerified())) {
@@ -255,6 +257,7 @@ public class WorkerService {
     @Transactional
     public WorkerProfileResponse updateWorkerServices(UUID userId, List<String> serviceOrSubServiceIds, String workingPincodes) {
         Worker worker = workerRepository.findByUser_UserId(userId)
+                .or(() -> workerRepository.findById(userId))
                 .orElseThrow(() -> new ResourceNotFoundException("Worker profile not found for user ID: " + userId));
 
         if (workingPincodes != null) {
@@ -303,6 +306,7 @@ public class WorkerService {
     @Transactional
     public void updateLiveLocation(UUID userId, Double lat, Double lng) {
         Worker worker = workerRepository.findByUser_UserId(userId)
+                .or(() -> workerRepository.findById(userId))
                 .orElseThrow(() -> new ResourceNotFoundException("Worker profile not found for user ID: " + userId));
 
         worker.setCurrentLat(lat);
@@ -328,6 +332,7 @@ public class WorkerService {
     @Transactional(readOnly = true)
     public EarningsResponse getWorkerEarnings(UUID userId) {
         Worker worker = workerRepository.findByUser_UserId(userId)
+                .or(() -> workerRepository.findById(userId))
                 .orElseThrow(() -> new ResourceNotFoundException("Worker profile not found"));
 
         List<Payment> payments = paymentRepository.findAll().stream()

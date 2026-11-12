@@ -425,7 +425,9 @@ public class BookingController {
             @RequestHeader(value = "Authorization", required = false) String authHeader,
             @RequestParam(value = "userId", required = false) UUID queryUserId) {
         UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
-        Worker worker = workerRepository.findByUser_UserId(userId).orElse(null);
+        Worker worker = workerRepository.findByUser_UserId(userId)
+                .or(() -> workerRepository.findById(userId))
+                .orElse(null);
         if (worker == null) {
             return ResponseEntity.ok(Collections.emptyList());
         }
@@ -525,6 +527,7 @@ public class BookingController {
 
         // 2. Start Service Session
         Worker worker = workerRepository.findByUser_UserId(userId)
+                .or(() -> workerRepository.findById(userId))
                 .orElseThrow(() -> new ResourceNotFoundException("Worker not found for user: " + userId));
 
         var session = sessionService.startSession(booking, worker);

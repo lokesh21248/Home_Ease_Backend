@@ -176,8 +176,11 @@ public class BookingOtpService {
         }
 
         // 2. Worker ownership check: only the assigned worker can verify PIN
-        if (booking.getWorker() == null || booking.getWorker().getUser() == null ||
-                !booking.getWorker().getUser().getUserId().equals(workerUserId)) {
+        boolean isAssignedWorker = booking.getWorker() != null && (
+                (booking.getWorker().getUser() != null && booking.getWorker().getUser().getUserId().equals(workerUserId)) ||
+                booking.getWorker().getWorkerId().equals(workerUserId)
+        );
+        if (!isAssignedWorker) {
             throw new SecurityException("Unauthorized: Only the assigned worker may verify PIN for this booking.");
         }
 

@@ -318,6 +318,7 @@ public class BookingAssignmentService {
         }
 
         Worker worker = workerRepository.findByUser_UserId(workerUserId)
+                .or(() -> workerRepository.findById(workerUserId))
                 .orElseThrow(() -> new ResourceNotFoundException("Worker profile not found for user: " + workerUserId));
 
         // Generate preliminary 4-digit PIN
@@ -433,8 +434,11 @@ public class BookingAssignmentService {
         Booking booking = bookingRepository.findById(bookingId)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
 
-        if (booking.getWorker() == null || booking.getWorker().getUser() == null ||
-                !booking.getWorker().getUser().getUserId().equals(workerUserId)) {
+        boolean isAssignedWorker = booking.getWorker() != null && (
+                (booking.getWorker().getUser() != null && booking.getWorker().getUser().getUserId().equals(workerUserId)) ||
+                booking.getWorker().getWorkerId().equals(workerUserId)
+        );
+        if (!isAssignedWorker) {
             throw new SecurityException("Unauthorized: Only the assigned worker can start travel.");
         }
 
@@ -464,8 +468,11 @@ public class BookingAssignmentService {
         Booking booking = bookingRepository.findById(bookingId)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
 
-        if (booking.getWorker() == null || booking.getWorker().getUser() == null ||
-                !booking.getWorker().getUser().getUserId().equals(workerUserId)) {
+        boolean isAssignedWorker = booking.getWorker() != null && (
+                (booking.getWorker().getUser() != null && booking.getWorker().getUser().getUserId().equals(workerUserId)) ||
+                booking.getWorker().getWorkerId().equals(workerUserId)
+        );
+        if (!isAssignedWorker) {
             throw new SecurityException("Unauthorized: Only the assigned worker can confirm arrival.");
         }
 
@@ -888,7 +895,9 @@ public class BookingAssignmentService {
 
     @Transactional(readOnly = true)
     public List<WorkerBookingRequestResponse> getPendingRequestsForWorker(UUID userId) {
-        Worker worker = workerRepository.findByUser_UserId(userId).orElse(null);
+        Worker worker = workerRepository.findByUser_UserId(userId)
+                .or(() -> workerRepository.findById(userId))
+                .orElse(null);
         if (worker == null) {
             return Collections.emptyList();
         }

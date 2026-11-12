@@ -304,8 +304,11 @@ public class BookingStateMachine {
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found with ID: " + bookingId));
 
         // P0-3: Verify that the caller is the worker actually assigned to this booking.
-        if (booking.getWorker() == null ||
-                !booking.getWorker().getUser().getUserId().equals(workerUserId)) {
+        boolean isAssignedWorker = booking.getWorker() != null && (
+                (booking.getWorker().getUser() != null && booking.getWorker().getUser().getUserId().equals(workerUserId)) ||
+                booking.getWorker().getWorkerId().equals(workerUserId)
+        );
+        if (!isAssignedWorker) {
             throw new SecurityException(
                     "Worker " + workerUserId + " is not authorised to verify the PIN for booking " + bookingId);
         }
@@ -372,8 +375,11 @@ public class BookingStateMachine {
                 .orElseThrow(() -> new RuntimeException("Booking not found"));
 
         // Auth: only the assigned worker may add extra line items
-        if (booking.getWorker() == null ||
-                !booking.getWorker().getUser().getUserId().equals(workerUserId)) {
+        boolean isAssignedWorker = booking.getWorker() != null && (
+                (booking.getWorker().getUser() != null && booking.getWorker().getUser().getUserId().equals(workerUserId)) ||
+                booking.getWorker().getWorkerId().equals(workerUserId)
+        );
+        if (!isAssignedWorker) {
             throw new SecurityException(
                     "Worker " + workerUserId + " is not authorised to add line items to booking " + bookingId);
         }
@@ -422,8 +428,11 @@ public class BookingStateMachine {
                 .orElseThrow(() -> new RuntimeException("Booking not found"));
 
         // Auth: only the assigned worker may mark the job complete
-        if (booking.getWorker() == null ||
-                !booking.getWorker().getUser().getUserId().equals(workerUserId)) {
+        boolean isAssignedWorker = booking.getWorker() != null && (
+                (booking.getWorker().getUser() != null && booking.getWorker().getUser().getUserId().equals(workerUserId)) ||
+                booking.getWorker().getWorkerId().equals(workerUserId)
+        );
+        if (!isAssignedWorker) {
             throw new SecurityException(
                     "Worker " + workerUserId + " is not authorised to complete booking " + bookingId);
         }
@@ -497,8 +506,10 @@ public class BookingStateMachine {
 
         // Auth: only the booking's customer or the assigned worker may cancel
         boolean isOwner   = booking.getUser().getUserId().equals(userId);
-        boolean isWorker  = booking.getWorker() != null &&
-                booking.getWorker().getUser().getUserId().equals(userId);
+        boolean isWorker  = booking.getWorker() != null && (
+                (booking.getWorker().getUser() != null && booking.getWorker().getUser().getUserId().equals(userId)) ||
+                booking.getWorker().getWorkerId().equals(userId)
+        );
         if (!isOwner && !isWorker) {
             throw new SecurityException(
                     "User " + userId + " is not authorised to cancel booking " + bookingId);

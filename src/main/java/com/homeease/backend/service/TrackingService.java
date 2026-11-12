@@ -619,10 +619,25 @@ public class TrackingService {
     }
 
     private void validateWorkerOwnership(TrackingSessionDto session, UUID workerUserId) {
-        if (session.getWorkerUserId() != null && workerUserId != null &&
-                !session.getWorkerUserId().equals(workerUserId)) {
-            throw new SecurityException("Unauthorized: Worker " + workerUserId + " does not own tracking session for booking " + session.getBookingId());
+        if (session.getWorkerUserId() == null || workerUserId == null) {
+            return;
         }
+        if (session.getWorkerUserId().equals(workerUserId)) {
+            return;
+        }
+        // Dual check: verify if workerUserId is either the Worker.workerId or User.userId of the assigned worker
+        if (workerRepository != null) {
+            Optional<Worker> wOpt = workerRepository.findById(workerUserId)
+                    .or(() -> workerRepository.findByUser_UserId(workerUserId));
+            if (wOpt.isPresent()) {
+                Worker w = wOpt.get();
+                if (w.getWorkerId().equals(session.getWorkerUserId()) ||
+                        (w.getUser() != null && w.getUser().getUserId().equals(session.getWorkerUserId()))) {
+                    return;
+                }
+            }
+        }
+        throw new SecurityException("Unauthorized: Worker " + workerUserId + " does not own tracking session for booking " + session.getBookingId());
     }
 
     private double haversineKm(double lat1, double lon1, double lat2, double lon2) {

@@ -46,6 +46,7 @@ public class WorkerAvailabilityController {
         }
         final UUID finalUserId = userId;
         Worker worker = workerRepository.findByUser_UserId(finalUserId)
+                .or(() -> workerRepository.findById(finalUserId))
                 .orElseThrow(() -> new ResourceNotFoundException("Worker profile not found for user: " + finalUserId));
         return worker.getWorkerId();
     }

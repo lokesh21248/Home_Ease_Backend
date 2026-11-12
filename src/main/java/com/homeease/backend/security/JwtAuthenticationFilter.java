@@ -31,10 +31,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final JwtService jwtService;
     private final UserRepository userRepository;
+    private final com.homeease.backend.repository.WorkerRepository workerRepository;
 
-    public JwtAuthenticationFilter(JwtService jwtService, @Lazy UserRepository userRepository) {
+    public JwtAuthenticationFilter(JwtService jwtService,
+                                   @Lazy UserRepository userRepository,
+                                   @Lazy com.homeease.backend.repository.WorkerRepository workerRepository) {
         this.jwtService = jwtService;
         this.userRepository = userRepository;
+        this.workerRepository = workerRepository;
     }
 
     @Override
@@ -104,6 +108,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
                     if (directUserId != null) {
                         Optional<User> userOpt = userRepository.findById(directUserId);
+                        if (userOpt.isEmpty() && workerRepository != null) {
+                            userOpt = workerRepository.findById(directUserId).map(Worker::getUser);
+                        }
                         if (userOpt.isPresent()) {
                             User user = userOpt.get();
                             UserRole role = user.getRole() != null ? user.getRole() : UserRole.CUSTOMER;
@@ -141,6 +148,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 try {
                     UUID directUserId = UUID.fromString(xUserId);
                     Optional<User> userOpt = userRepository.findById(directUserId);
+                    if (userOpt.isEmpty() && workerRepository != null) {
+                        userOpt = workerRepository.findById(directUserId).map(Worker::getUser);
+                    }
                     if (userOpt.isPresent()) {
                         User user = userOpt.get();
                         UserRole role = user.getRole() != null ? user.getRole() : UserRole.CUSTOMER;
