@@ -103,6 +103,28 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     }
 
     private void authorizeSubscription(StompHeaderAccessor accessor, String bookingId) {
+        // 1. Resolve subscriber identity from session or native STOMP headers
+        String subscriberId = accessor.getUser() != null ? accessor.getUser().getName() : null;
+        if (subscriberId == null) {
+            String authHeader = accessor.getFirstNativeHeader("Authorization");
+            if (authHeader == null) authHeader = accessor.getFirstNativeHeader("token");
+            if (authHeader != null && !authHeader.isBlank()) {
+                UUID fromJwt = jwtValidator.extractUserId(authHeader);
+                if (fromJwt != null) subscriberId = fromJwt.toString();
+            }
+            if (subscriberId == null) {
+                String h = accessor.getFirstNativeHeader("X-User-Id");
+                if (h != null && !h.isBlank()) subscriberId = h.trim();
+            }
+        }
+
+        // Security: Unauthenticated subscribers are strictly rejected regardless of cache state
+        if (subscriberId == null || subscriberId.isBlank()) {
+            logger.warn("Unauthenticated client attempted subscription to /topic/tracking/{}", bookingId);
+            throw new SecurityException("Authentication required to subscribe to tracking for booking " + bookingId);
+        }
+
+        // 2. Check assignment metadata in Redis
         String assignmentKey = "tracking:assignment:" + bookingId;
         String assignmentJson = null;
         try {
@@ -111,9 +133,10 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
             logger.warn("Could not query assignment for subscription authorization on booking {}: {}", bookingId, e.getMessage());
         }
 
-        // If no assignment exists in Redis (e.g. simulator testing BK-TEST-1001), allow subscription
+        // If no assignment exists in Redis (e.g. simulator testing BK-TEST-1001), permit only authenticated subscribers
         if (assignmentJson == null || assignmentJson.isBlank()) {
-            logger.debug("No assignment metadata found for booking {}. Permitting subscription (simulator/unrestricted mode).", bookingId);
+            logger.debug("No assignment metadata found for booking {}. Permitting authenticated subscriber {} (simulator mode).",
+                    bookingId, subscriberId);
             return;
         }
 
@@ -122,25 +145,6 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
             String customerId = node.path("customerId").asText("");
             String workerId = node.path("workerId").asText("");
             String userId = node.path("userId").asText("");
-
-            String subscriberId = accessor.getUser() != null ? accessor.getUser().getName() : null;
-            if (subscriberId == null) {
-                String authHeader = accessor.getFirstNativeHeader("Authorization");
-                if (authHeader == null) authHeader = accessor.getFirstNativeHeader("token");
-                if (authHeader != null && !authHeader.isBlank()) {
-                    UUID fromJwt = jwtValidator.extractUserId(authHeader);
-                    if (fromJwt != null) subscriberId = fromJwt.toString();
-                }
-                if (subscriberId == null) {
-                    String h = accessor.getFirstNativeHeader("X-User-Id");
-                    if (h != null && !h.isBlank()) subscriberId = h.trim();
-                }
-            }
-
-            if (subscriberId == null) {
-                logger.warn("Unauthenticated client attempted subscription to /topic/tracking/{}", bookingId);
-                throw new SecurityException("Authentication required to subscribe to tracking for booking " + bookingId);
-            }
 
             boolean isAuthorized = (!customerId.isBlank() && customerId.equalsIgnoreCase(subscriberId)) ||
                     (!workerId.isBlank() && workerId.equalsIgnoreCase(subscriberId)) ||

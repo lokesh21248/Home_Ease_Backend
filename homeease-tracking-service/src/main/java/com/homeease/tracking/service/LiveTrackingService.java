@@ -540,6 +540,19 @@ public class LiveTrackingService {
         try {
             messagingTemplate.convertAndSend("/topic/tracking/" + bookingId, payload);
             messagingTemplate.convertAndSend("/topic/track/" + bookingId, payload);
+
+            // Distributed WebSocket Relay: publish to Redis pub/sub channel
+            // so homeease-core (port 8080) can forward to clients connected to its STOMP broker
+            try {
+                Map<String, Object> bridgeMsg = new HashMap<>();
+                bridgeMsg.put("destination", "/topic/tracking/" + bookingId);
+                bridgeMsg.put("bookingId", bookingId);
+                bridgeMsg.put("payload", payload);
+                redisTemplate.convertAndSend("ws:broadcast:tracking", objectMapper.writeValueAsString(bridgeMsg));
+            } catch (Exception redisEx) {
+                logger.debug("Redis pub/sub tracking relay notice: {}", redisEx.getMessage());
+            }
+
             long broadcastLatencyMs = System.currentTimeMillis() - broadcastStartMs;
             long e2eLatencyMs = System.currentTimeMillis() - receiptMs;
             logger.debug("[tracking] Broadcast seq={} for booking {} to /topic/tracking/{}: [{}, {}] bearing={} geohash={} "

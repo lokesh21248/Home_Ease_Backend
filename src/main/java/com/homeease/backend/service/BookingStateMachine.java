@@ -550,10 +550,40 @@ public class BookingStateMachine {
             java.util.Map<String, Object> event = new java.util.HashMap<>();
             event.put("bookingId", bookingId.toString());
             event.put("status", "CANCELLED");
+            event.put("type", "BOOKING_CANCELLED");
             event.put("trackingActive", false);
+            event.put("reason", reason != null ? reason : "Cancelled by user");
             event.put("message", "Booking has been cancelled. Live tracking ended.");
             messagingTemplate.convertAndSend("/topic/track/" + bookingId, event);
             messagingTemplate.convertAndSend("/topic/tracking/" + bookingId, event);
+
+            // EDGE-02: Mid-transit cancellation alert directly to assigned worker
+            if (booking.getWorker() != null) {
+                UUID wId = booking.getWorker().getWorkerId();
+                messagingTemplate.convertAndSend("/topic/workers/" + wId + "/bookings", event);
+                messagingTemplate.convertAndSend("/topic/worker/" + wId + "/stream", event);
+
+                if (booking.getWorker().getUser() != null) {
+                    try {
+                        fcmNotificationService.sendPushNotification(
+                                booking.getWorker().getUser().getUserId(),
+                                "Booking Cancelled",
+                                "Booking " + bookingId + " has been cancelled. Please stop travel."
+                        );
+                    } catch (Exception ignored) {}
+                }
+            }
+
+            // Also notify customer if worker was the one who cancelled
+            if (!isOwner && booking.getUser() != null) {
+                try {
+                    fcmNotificationService.sendPushNotification(
+                            booking.getUser().getUserId(),
+                            "Booking Cancelled",
+                            "Your booking was cancelled by the service partner: " + (reason != null ? reason : "")
+                    );
+                } catch (Exception ignored) {}
+            }
         } catch (Exception ignored) {}
 
         if (trackingService != null) {
