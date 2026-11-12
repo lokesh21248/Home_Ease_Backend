@@ -36,9 +36,31 @@ public class DispatchEngine {
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
     private final BookingDomainEventService domainEventService;
     private final SimpMessagingTemplate messagingTemplate;
+    private final BookingAssignmentService bookingAssignmentService;
 
     @Value("${homeease.dispatch.radius-meters:5000}")
     private double radiusMeters;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public DispatchEngine(WorkerRepository workerRepository,
+                          BookingRepository bookingRepository,
+                          AssignmentAttemptRepository assignmentAttemptRepository,
+                          RedisTemplate<String, String> redisTemplate,
+                          FcmNotificationService fcmNotificationService,
+                          com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+                          BookingDomainEventService domainEventService,
+                          SimpMessagingTemplate messagingTemplate,
+                          @org.springframework.context.annotation.Lazy @org.springframework.beans.factory.annotation.Autowired(required = false) BookingAssignmentService bookingAssignmentService) {
+        this.messagingTemplate = messagingTemplate;
+        this.workerRepository = workerRepository;
+        this.bookingRepository = bookingRepository;
+        this.assignmentAttemptRepository = assignmentAttemptRepository;
+        this.redisTemplate = redisTemplate;
+        this.fcmNotificationService = fcmNotificationService;
+        this.objectMapper = objectMapper;
+        this.domainEventService = domainEventService;
+        this.bookingAssignmentService = bookingAssignmentService;
+    }
 
     public DispatchEngine(WorkerRepository workerRepository,
                           BookingRepository bookingRepository,
@@ -48,18 +70,18 @@ public class DispatchEngine {
                           com.fasterxml.jackson.databind.ObjectMapper objectMapper,
                           BookingDomainEventService domainEventService,
                           SimpMessagingTemplate messagingTemplate) {
-        this.messagingTemplate = messagingTemplate;
-        this.workerRepository = workerRepository;
-        this.bookingRepository = bookingRepository;
-        this.assignmentAttemptRepository = assignmentAttemptRepository;
-        this.redisTemplate = redisTemplate;
-        this.fcmNotificationService = fcmNotificationService;
-        this.objectMapper = objectMapper;
-        this.domainEventService = domainEventService;
+        this(workerRepository, bookingRepository, assignmentAttemptRepository, redisTemplate,
+             fcmNotificationService, objectMapper, domainEventService, messagingTemplate, null);
     }
 
     @Transactional
     public void triggerSpatialDispatch(Booking booking, UUID targetSubServiceId) {
+        if (bookingAssignmentService != null) {
+            logger.info("Delegating spatial dispatch for Booking {} to BookingAssignmentService", booking.getBookingId());
+            bookingAssignmentService.dispatchInstantBooking(booking, targetSubServiceId);
+            return;
+        }
+
         logger.info("Initiating 5km spatial candidate matching engine for Booking {}", booking.getBookingId());
 
         List<Worker> candidates = new ArrayList<>();
@@ -166,6 +188,10 @@ public class DispatchEngine {
 
     @Transactional
     public Booking handleWorkerAcceptance(UUID bookingId, UUID workerUserId) {
+        if (bookingAssignmentService != null) {
+            return bookingAssignmentService.handleWorkerAcceptance(bookingId, workerUserId);
+        }
+
         // P0-1: Pessimistic write lock — SELECT ... FOR UPDATE ensures only one concurrent
         // worker acceptance wins. The second caller blocks here, then re-reads ACCEPTED
         // and falls through to the status check below.
@@ -239,6 +265,11 @@ public class DispatchEngine {
 
     @Transactional
     public void handleWorkerRejection(UUID bookingId, UUID workerUserId, UUID targetSubServiceId) {
+        if (bookingAssignmentService != null) {
+            bookingAssignmentService.handleWorkerRejection(bookingId, workerUserId, targetSubServiceId);
+            return;
+        }
+
         Booking booking = bookingRepository.findById(bookingId)
                 .orElseThrow(() -> new RuntimeException("Booking not found"));
 
@@ -278,6 +309,10 @@ public class DispatchEngine {
 
     @Transactional(readOnly = true)
     public List<com.homeease.backend.dto.WorkerDto.WorkerBookingRequestResponse> getPendingRequestsForWorker(UUID userId) {
+        if (bookingAssignmentService != null) {
+            return bookingAssignmentService.getPendingRequestsForWorker(userId);
+        }
+
         Worker worker = workerRepository.findByUser_UserId(userId).orElse(null);
         if (worker == null) {
             return Collections.emptyList();

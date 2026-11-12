@@ -982,8 +982,10 @@ public class BookingAssignmentService {
         // 1. WebSocket topic dispatch
         try {
             messagingTemplate.convertAndSend("/topic/worker/" + worker.getWorkerId() + "/requests", payload);
+            messagingTemplate.convertAndSend("/topic/worker/" + worker.getWorkerId() + "/stream", payload);
             if (worker.getUser() != null) {
                 messagingTemplate.convertAndSend("/topic/worker/" + worker.getUser().getUserId() + "/requests", payload);
+                messagingTemplate.convertAndSend("/topic/worker/" + worker.getUser().getUserId() + "/stream", payload);
             }
             recordNotificationDelivery(booking, null, worker, DeliveryChannel.WS, "/topic/worker/" + worker.getWorkerId() + "/requests", DeliveryStatus.SENT);
         } catch (Exception e) {
