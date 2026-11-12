@@ -86,6 +86,10 @@ supabase:
 homeease:
   firebase:
     credentials-path: ${FIREBASE_CREDENTIALS_PATH:classpath:firebase-service-account.json}
+  razorpay:
+    key-id: ${RAZORPAY_KEY_ID:}
+    key-secret: ${RAZORPAY_KEY_SECRET:}
+    webhook-secret: ${RAZORPAY_WEBHOOK_SECRET:}
   dispatch:
     radius-meters: 5000 # 5 km matching radius
     response-timeout-seconds: 180 # 3 minutes timeout for candidate acceptance

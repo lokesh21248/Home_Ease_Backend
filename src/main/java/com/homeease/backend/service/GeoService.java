@@ -151,9 +151,10 @@ public class GeoService {
                         addrMap.put("country", "India");
                         map.put("address", addrMap);
 
-                        if (!placeId.isBlank()) {
-                            resolvePlaceCoordinates(placeId, key, map);
-                        }
+                        // NOTE: Coordinates are NOT resolved during autocomplete to avoid
+                        // N×1 Places Detail API calls per keystroke (multiplier storm).
+                        // The frontend should call the /api/v1/geo/place-detail?placeId=...
+                        // endpoint only once after the user selects a suggestion.
                         list.add(map);
                     }
                     if (!list.isEmpty()) {
@@ -165,6 +166,22 @@ public class GeoService {
             logger.warn("Google Places (New) autocomplete request failed: {}", e.getMessage());
         }
         return Collections.emptyList();
+    }
+
+    /**
+     * Public single-place detail lookup — resolves coordinates, formatted address, and pincode
+     * for the given placeId. Called by the /api/v1/geo/place-detail endpoint only once per
+     * user selection; never called in the autocomplete loop.
+     */
+    public Map<String, Object> getPlaceDetail(String placeId) {
+        String key = getEffectiveGoogleMapsKey();
+        if (key.isBlank() || placeId == null || placeId.isBlank()) {
+            return Collections.emptyMap();
+        }
+        Map<String, Object> result = new HashMap<>();
+        result.put("placeId", placeId);
+        resolvePlaceCoordinates(placeId, key, result);
+        return result;
     }
 
     private void resolvePlaceCoordinates(String placeId, String key, Map<String, Object> targetMap) {

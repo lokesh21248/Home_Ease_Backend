@@ -63,4 +63,18 @@ public interface WorkerRepository extends JpaRepository<Worker, UUID> {
     );
 
     List<Worker> findByIsVerifiedFalse();
+
+    /**
+     * Returns all online, verified, unblocked workers whose workingPincodes JSON array
+     * contains the given pincode. Used to avoid full table scan in dispatch.
+     * workingPincodes is stored as a JSON text column; the LIKE match is a fast pre-filter.
+     */
+    @Query(value = """
+        SELECT * FROM workers w
+        WHERE w.is_online = true
+          AND w.is_verified = true
+          AND (w.blocked_until IS NULL OR w.blocked_until < CURRENT_TIMESTAMP)
+          AND w.working_pincodes::text LIKE CONCAT('%', :pincode, '%')
+        """, nativeQuery = true)
+    List<Worker> findOnlineVerifiedWorkersByPincode(@Param("pincode") String pincode);
 }

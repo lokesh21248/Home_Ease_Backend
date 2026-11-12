@@ -90,6 +90,28 @@ public class GeoController {
     }
 
     /**
+     * Place Detail — resolves a single Google place (coordinates, formatted address, pincode).
+     * This is the ONLY endpoint that calls the Places Detail API; autocomplete never does.
+     * GET /api/v1/geo/place-detail?placeId=ChIJ...
+     */
+    @GetMapping("/place-detail")
+    public ResponseEntity<Map<String, Object>> getPlaceDetail(
+            @RequestParam("placeId") String placeId) {
+        if (placeId == null || placeId.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "found", false,
+                    "message", "placeId is required"
+            ));
+        }
+        Map<String, Object> result = geoService.getPlaceDetail(placeId.trim());
+        if (result == null || result.isEmpty()) {
+            return ResponseEntity.ok(Map.of("found", false, "message", "Place not found"));
+        }
+        result.put("found", true);
+        return ResponseEntity.ok(result);
+    }
+
+    /**
      * Road Routing POST endpoint
      */
     @PostMapping({"/directions", "/route"})

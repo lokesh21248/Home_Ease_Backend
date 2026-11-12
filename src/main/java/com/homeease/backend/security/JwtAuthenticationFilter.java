@@ -94,91 +94,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 } catch (Exception e) {
                     logger.warn("Could not set user authentication in SecurityContext: {}", e.getMessage());
                 }
-            } else if (claims == null && SecurityContextHolder.getContext().getAuthentication() == null) {
-                // Backward-compatibility: support raw UUID token or X-User-Id header for persistent mobile sessions
-                try {
-                    UUID directUserId = null;
-                    if (token.matches("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")) {
-                        directUserId = UUID.fromString(token);
-                    } else {
-                        String xUserId = request.getHeader("X-User-Id");
-                        if (xUserId != null && xUserId.matches("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")) {
-                            directUserId = UUID.fromString(xUserId);
-                        }
-                    }
-
-                    if (directUserId != null) {
-                        Optional<User> userOpt = userRepository.findById(directUserId);
-                        if (userOpt.isEmpty() && workerRepository != null) {
-                            userOpt = workerRepository.findByIdWithUser(directUserId).map(Worker::getUser);
-                        }
-                        if (userOpt.isPresent()) {
-                            User user = userOpt.get();
-                            UserRole role = user.getRole() != null ? user.getRole() : UserRole.CUSTOMER;
-                            List<SimpleGrantedAuthority> authorities = new java.util.ArrayList<>();
-                            authorities.add(new SimpleGrantedAuthority("ROLE_" + role.name()));
-                            authorities.add(new SimpleGrantedAuthority("ROLE_WORKER"));
-                            if (!"CUSTOMER".equals(role.name())) {
-                                authorities.add(new SimpleGrantedAuthority("ROLE_CUSTOMER"));
-                            }
-                            UserPrincipal principal = UserPrincipal.builder()
-                                    .userId(user.getUserId())
-                                    .phoneNumber(user.getPhoneNumber() != null ? user.getPhoneNumber() : "")
-                                    .email(user.getEmail())
-                                    .role(role)
-                                    .authorities(authorities)
-                                    .build();
-
-                            UsernamePasswordAuthenticationToken authentication =
-                                    new UsernamePasswordAuthenticationToken(principal, null, principal.getAuthorities());
-                            authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-                            SecurityContextHolder.getContext().setAuthentication(authentication);
-                            logger.debug("Authenticated user {} via UUID fallback with role ROLE_{}", directUserId, role.name());
-                        }
-                    }
-                } catch (Exception e) {
-                    logger.debug("Fallback UUID auth lookup skipped: {}", e.getMessage());
-                }
             }
-        }
-
-        // Header fallback: support X-User-Id authentication directly when Authorization header is omitted
-        if (SecurityContextHolder.getContext().getAuthentication() == null) {
-            String xUserId = request.getHeader("X-User-Id");
-            if (xUserId != null && xUserId.matches("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")) {
-                try {
-                    UUID directUserId = UUID.fromString(xUserId);
-                    Optional<User> userOpt = userRepository.findById(directUserId);
-                    if (userOpt.isEmpty() && workerRepository != null) {
-                        userOpt = workerRepository.findByIdWithUser(directUserId).map(Worker::getUser);
-                    }
-                    if (userOpt.isPresent()) {
-                        User user = userOpt.get();
-                        UserRole role = user.getRole() != null ? user.getRole() : UserRole.CUSTOMER;
-                        List<SimpleGrantedAuthority> authorities = new java.util.ArrayList<>();
-                        authorities.add(new SimpleGrantedAuthority("ROLE_" + role.name()));
-                        authorities.add(new SimpleGrantedAuthority("ROLE_WORKER"));
-                        if (!"CUSTOMER".equals(role.name())) {
-                            authorities.add(new SimpleGrantedAuthority("ROLE_CUSTOMER"));
-                        }
-                        UserPrincipal principal = UserPrincipal.builder()
-                                .userId(user.getUserId())
-                                .phoneNumber(user.getPhoneNumber() != null ? user.getPhoneNumber() : "")
-                                .email(user.getEmail())
-                                .role(role)
-                                .authorities(authorities)
-                                .build();
-
-                        UsernamePasswordAuthenticationToken authentication =
-                                new UsernamePasswordAuthenticationToken(principal, null, principal.getAuthorities());
-                        authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-                        SecurityContextHolder.getContext().setAuthentication(authentication);
-                        logger.debug("Authenticated user {} via X-User-Id header with role ROLE_{}", directUserId, role.name());
-                    }
-                } catch (Exception e) {
-                    logger.debug("Fallback X-User-Id auth lookup skipped: {}", e.getMessage());
-                }
-            }
+            // NOTE: UUID-only Bearer token fallback and unauthenticated X-User-Id fallback
+            // have been removed — they were an authentication bypass (IDOR).
+            // All requests MUST carry a valid signed JWT in the Authorization header.
         }
 
         filterChain.doFilter(request, response);

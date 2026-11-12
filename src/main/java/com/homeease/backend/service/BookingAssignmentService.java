@@ -147,10 +147,12 @@ public class BookingAssignmentService {
         Map<String, String> rejectionReasons = new LinkedHashMap<>();
 
         // -------------------------------------------------------------
-        // STRATEGY 1: PINCODE-FIRST MATCHING
+        // STRATEGY 1: PINCODE-FIRST MATCHING (DB-filtered, not findAll)
         // -------------------------------------------------------------
         if (servicePincode != null && !servicePincode.isBlank()) {
-            List<Worker> samePincodeWorkers = workerRepository.findAll().stream()
+            // Use index-optimized DB query instead of full table scan
+            List<Worker> pincodeWorkers = workerRepository.findOnlineVerifiedWorkersByPincode(servicePincode);
+            List<Worker> samePincodeWorkers = pincodeWorkers.stream()
                     .filter(w -> matchesWorkingPincode(w, servicePincode))
                     .filter(w -> {
                         boolean eligible = isCandidateEligible(w, serviceId, targetSubServiceId, servicePincode, rejectionReasons);

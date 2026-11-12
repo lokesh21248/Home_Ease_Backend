@@ -19,7 +19,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.util.Optional;
-import java.util.Random;
 import java.util.UUID;
 
 @Service
@@ -78,21 +77,39 @@ public class AuthService {
     /**
      * POST /api/v1/auth/otp/send
      * Generates a 6-digit OTP, saves in Redis (5 min TTL), and returns whether user exists.
+     * Rate-limited to 5 OTP requests per phone per 10-minute window to prevent SMS abuse.
      */
     public SendOtpResponse sendOtp(SendOtpRequest request) {
         String phone = normalizePhone(request.getPhoneNumber());
         logger.info("Processing send OTP request for phone: {}", phone);
 
+        // --- Rate limiting: max 5 OTP sends per phone per 10 minutes ---
+        String rateLimitKey = "auth:otp:ratelimit:" + phone;
+        try {
+            Long attempts = redisTemplate.opsForValue().increment(rateLimitKey);
+            if (attempts != null && attempts == 1) {
+                redisTemplate.expire(rateLimitKey, Duration.ofMinutes(10));
+            }
+            if (attempts != null && attempts > 5) {
+                logger.warn("OTP rate limit exceeded for phone: {}", phone);
+                throw new RuntimeException("Too many OTP requests. Please wait 10 minutes before requesting again.");
+            }
+        } catch (RuntimeException re) {
+            throw re;
+        } catch (Exception e) {
+            logger.warn("Redis unavailable for OTP rate limiting: {}", e.getMessage());
+        }
+
         boolean userExists = findUserByPhoneFlexible(phone).isPresent();
         boolean isNewUser = !userExists;
 
-        // Generate 6-digit numeric OTP code
-        String otpCode = String.format("%06d", new Random().nextInt(900000) + 100000);
+        // Generate cryptographically secure 6-digit OTP code
+        String otpCode = String.format("%06d", new java.security.SecureRandom().nextInt(900000) + 100000);
 
-        // Store OTP in Redis with 5 minutes TTL
+        // Store OTP in Redis with 5 minutes TTL (overwrites previous unused OTP)
         try {
             redisTemplate.opsForValue().set("auth:otp:" + phone, otpCode, Duration.ofMinutes(5));
-            logger.info("Saved OTP for {} to Redis (TTL 5 mins). Dev Code: {}", phone, otpCode);
+            logger.info("Saved OTP for {} to Redis (TTL 5 mins).", phone);
         } catch (Exception e) {
             logger.warn("Redis unavailable for OTP storage: {}", e.getMessage());
         }
@@ -200,35 +217,37 @@ public class AuthService {
 
     /**
      * POST /api/v1/users/register
-     * Registers worker basic account info (full name, email, role).
+     * Registers worker or customer account info (full name, email, role).
+     *
+     * <p>Security: Only WORKER or CUSTOMER roles are accepted from the client.
+     * The ADMIN role can never be self-assigned through this endpoint.
+     * User identity is resolved strictly from the verified JWT in the Authorization header.
      */
     @Transactional
     public User registerUser(RegisterUserRequest request, String authHeader) {
         String phone = normalizePhone(request.getPhoneNumber());
-        UserRole targetRole = request.getRole() != null ? request.getRole() : UserRole.WORKER;
+
+        // --- Security: prevent ADMIN role self-assignment ---
+        UserRole requestedRole = request.getRole() != null ? request.getRole() : UserRole.WORKER;
+        UserRole targetRole;
+        if (requestedRole == UserRole.ADMIN) {
+            logger.warn("SECURITY: Attempt to self-assign ADMIN role rejected for phone {}", phone);
+            targetRole = UserRole.CUSTOMER;
+        } else {
+            targetRole = requestedRole;
+        }
 
         User user = null;
 
-        // 1. Direct userId in request body
-        if (request.getUserId() != null) {
-            user = userRepository.findById(request.getUserId()).orElse(null);
-        }
-
-        // 2. Check if authHeader passed is a UUID or has userId
-        if (user == null && authHeader != null && !authHeader.isBlank()) {
-            try {
-                String clean = authHeader.replace("Bearer ", "").trim();
-                UUID uid = UUID.fromString(clean);
-                user = userRepository.findById(uid).orElse(null);
-            } catch (Exception ignored) {
-                UUID extracted = jwtService.extractUserId(authHeader);
-                if (extracted != null) {
-                    user = userRepository.findById(extracted).orElse(null);
-                }
+        // 1. Resolve identity strictly from JWT (most trusted source)
+        if (authHeader != null && !authHeader.isBlank()) {
+            UUID extracted = jwtService.extractUserId(authHeader);
+            if (extracted != null) {
+                user = userRepository.findById(extracted).orElse(null);
             }
         }
 
-        // 3. Fallback to phone number
+        // 2. Fallback to phone number lookup (new user registration flow)
         if (user == null && phone != null && !phone.isBlank()) {
             user = findUserByPhoneFlexible(phone).orElse(null);
         }
@@ -245,7 +264,10 @@ public class AuthService {
             if (request.getEmail() != null && !request.getEmail().isBlank()) {
                 user.setEmail(request.getEmail().trim());
             }
-            user.setRole(targetRole);
+            // Prevent ADMIN role demotion — only allow CUSTOMER <-> WORKER changes
+            if (user.getRole() != UserRole.ADMIN) {
+                user.setRole(targetRole);
+            }
             if (phone != null && !phone.isBlank() && (user.getPhoneNumber() == null || user.getPhoneNumber().isBlank())) {
                 user.setPhoneNumber(phone);
             }
@@ -270,8 +292,21 @@ public class AuthService {
         return user;
     }
 
+    /**
+     * Firebase token authentication — STUB.
+     * This method returns a fixed test user and must NEVER be called in production.
+     * It is kept for Firebase SDK integration reference only.
+     * The endpoint must be disabled (not registered) in production profiles.
+     * @deprecated Use OTP-based login instead.
+     */
     @Transactional
+    @Deprecated
     public AuthTokenResponse authenticateFirebaseToken(FirebaseLoginRequest request) {
+        boolean isDevOrTest = environment != null && environment.acceptsProfiles(Profiles.of("dev", "test", "local"));
+        if (!isDevOrTest) {
+            throw new SecurityException("Firebase stub authentication is not available in production. Use OTP login.");
+        }
+        // Stub only used in dev/test for Firebase SDK integration testing
         String phoneNumber = "+919999999999";
         String email = "testuser@homeease.com";
         String name = "HomeEase Test User";
