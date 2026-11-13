@@ -133,7 +133,7 @@ public class BookingAssignmentService {
     /**
      * Dispatch Instant Booking: Finds eligible candidates using radius expansion tiers (5→10→15→20km).
      */
-    @Transactional
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
     public void dispatchInstantBooking(Booking booking, UUID targetSubServiceId) {
         if (booking == null) return;
         UUID serviceId = booking.getService() != null ? booking.getService().getServiceId() : null;
@@ -147,17 +147,10 @@ public class BookingAssignmentService {
         Map<String, String> rejectionReasons = new LinkedHashMap<>();
 
         // -------------------------------------------------------------
-        // STRATEGY 1: PINCODE-FIRST MATCHING (DB-filtered, not findAll)
+        // STRATEGY 1: PINCODE-FIRST MATCHING
         // -------------------------------------------------------------
         if (servicePincode != null && !servicePincode.isBlank()) {
-            // Use index-optimized DB query instead of full table scan
-            List<Worker> pincodeWorkers;
-            try {
-                pincodeWorkers = workerRepository.findOnlineVerifiedWorkersByPincode(servicePincode);
-            } catch (Exception e) {
-                logger.warn("Worker pincode pre-filter query failed: {}. Falling back to radius search.", e.getMessage());
-                pincodeWorkers = Collections.emptyList();
-            }
+            List<Worker> pincodeWorkers = workerRepository.findByIsOnlineTrueAndIsVerifiedTrue();
             List<Worker> samePincodeWorkers = pincodeWorkers.stream()
                     .filter(w -> matchesWorkingPincode(w, servicePincode))
                     .filter(w -> {
@@ -696,27 +689,16 @@ public class BookingAssignmentService {
             logger.warn("Redis GEO lookup fallback to PostGIS query: {}", e.getMessage());
         }
 
-        // 2. PostGIS Fallback Query if Redis GEO returned no eligible candidates
-        if (candidates.isEmpty() && subServiceId != null) {
-            try {
-                List<Worker> dbNearby = workerRepository.findCandidateWorkersNearby(
-                        subServiceId.toString(), userLat, userLng, effectiveRadius);
-                for (Worker w : dbNearby) {
-                    if (isCandidateEligible(w, serviceId, subServiceId, servicePincode, rejectionReasons) && workerIds.add(w.getWorkerId())) {
-                        candidates.add(w);
-                    }
-                }
-            } catch (Exception e) {
-                logger.warn("PostGIS candidate query exception: {}", e.getMessage());
-            }
-        }
-
-        // 3. Fallback: query active verified online workers
+        // 2. Query active verified online workers
         if (candidates.isEmpty()) {
-            List<Worker> onlineWorkers = workerRepository.findAll().stream()
+            List<Worker> onlineWorkers = workerRepository.findByIsOnlineTrueAndIsVerifiedTrue().stream()
                     .filter(w -> {
                         if (w.getCurrentLat() == null || w.getCurrentLng() == null) {
                             if (rejectionReasons != null) rejectionReasons.put(w.getWorkerId() != null ? w.getWorkerId().toString() : "unknown", "LOCATION_MISSING");
+                            return false;
+                        }
+                        if (w.getBlockedUntil() != null && w.getBlockedUntil().isAfter(Instant.now())) {
+                            if (rejectionReasons != null) rejectionReasons.put(w.getWorkerId() != null ? w.getWorkerId().toString() : "unknown", "WORKER_BLOCKED");
                             return false;
                         }
                         double dist = calculateHaversineDistance(userLat, userLng, w.getCurrentLat(), w.getCurrentLng());
@@ -726,6 +708,7 @@ public class BookingAssignmentService {
                         }
                         return isCandidateEligible(w, serviceId, subServiceId, servicePincode, rejectionReasons);
                     })
+                    .sorted(Comparator.comparingDouble(w -> calculateHaversineDistance(userLat, userLng, w.getCurrentLat(), w.getCurrentLng())))
                     .toList();
             for (Worker w : onlineWorkers) {
                 if (workerIds.add(w.getWorkerId())) {

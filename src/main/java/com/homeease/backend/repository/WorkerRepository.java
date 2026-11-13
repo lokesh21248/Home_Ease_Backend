@@ -21,38 +21,7 @@ public interface WorkerRepository extends JpaRepository<Worker, UUID> {
     @Query("SELECT w FROM Worker w JOIN FETCH w.user WHERE w.user.userId = :userId")
     Optional<Worker> findByUserIdWithUser(@Param("userId") UUID userId);
 
-    @Query(value = """
-        SELECT w.* 
-        FROM workers w
-        JOIN worker_services ws ON w.worker_id = ws.worker_id
-        WHERE ws.sub_service_id = CAST(:targetSubServiceId AS UUID)
-          AND w.is_online = true 
-          AND w.is_verified = true
-          AND (w.blocked_until IS NULL OR w.blocked_until < CURRENT_TIMESTAMP)
-          AND w.current_lat IS NOT NULL 
-          AND w.current_lng IS NOT NULL
-          AND (6371000 * acos(
-                least(1.0, greatest(-1.0, 
-                  cos(radians(:userLat)) * cos(radians(w.current_lat)) * 
-                  cos(radians(w.current_lng) - radians(:userLng)) + 
-                  sin(radians(:userLat)) * sin(radians(w.current_lat))
-                ))
-          )) <= :radiusMeters
-        ORDER BY (6371000 * acos(
-            least(1.0, greatest(-1.0, 
-              cos(radians(:userLat)) * cos(radians(w.current_lat)) * 
-              cos(radians(w.current_lng) - radians(:userLng)) + 
-              sin(radians(:userLat)) * sin(radians(w.current_lat))
-            ))
-        )) ASC
-        LIMIT 5
-        """, nativeQuery = true)
-    List<Worker> findCandidateWorkersNearby(
-            @Param("targetSubServiceId") String targetSubServiceId,
-            @Param("userLat") Double userLat,
-            @Param("userLng") Double userLng,
-            @Param("radiusMeters") Double radiusMeters
-    );
+    List<Worker> findByIsOnlineTrueAndIsVerifiedTrue();
 
     List<Worker> findByIsVerifiedFalse();
 
