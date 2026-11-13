@@ -17,3 +17,4 @@ UPDATE booking_slots
 SET status = 'EXPIRED'
 WHERE status = 'RESERVED'
   AND created_at < NOW() - INTERVAL '2 minutes';
+

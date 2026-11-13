@@ -60,6 +60,7 @@ public class SecurityConfig {
                 .requestMatchers("/api/v1/bookings/time-slots/**", "/api/bookings/time-slots/**").permitAll()
                 .requestMatchers("/api/v1/bookings/slots/**", "/api/bookings/slots/**").permitAll()
                 .requestMatchers("/api/v1/booking/slots/**", "/api/booking/slots/**").permitAll()
+                .requestMatchers("/api/v1/bookings/nearby-workers/**", "/api/bookings/nearby-workers/**").permitAll()
                 // Public service areas, geo, app version, health, serviceability
                 .requestMatchers("/api/v1/service-areas/**", "/api/service-areas/**").permitAll()
                 .requestMatchers("/api/v1/serviceability/**", "/api/serviceability/**", "/serviceability/**").permitAll()
