@@ -265,7 +265,11 @@ public class InstantBookingService {
         );
 
         // Dispatch candidate alerts to nearby workers
-        assignmentService.dispatchInstantBooking(booking, firstSubServiceId);
+        try {
+            assignmentService.dispatchInstantBooking(booking, firstSubServiceId);
+        } catch (Exception dispatchEx) {
+            logger.error("Error during instant booking dispatch for booking {}: {}", booking.getBookingId(), dispatchEx.getMessage(), dispatchEx);
+        }
 
         return mapToResponse(booking);
     }
