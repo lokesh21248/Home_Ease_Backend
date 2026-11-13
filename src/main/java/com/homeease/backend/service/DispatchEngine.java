@@ -101,14 +101,19 @@ public class DispatchEngine {
             logger.warn("Redis GEOSEARCH query fallback to PostGIS native SQL: {}", e.getMessage());
         }
 
-        // 2. PostGIS Fallback Spatial Query
+        // 2. Spatial / Candidate Query
         if (candidates.isEmpty()) {
-            candidates = workerRepository.findCandidateWorkersNearby(
-                    targetSubServiceId.toString(),
-                    booking.getUserLat(),
-                    booking.getUserLng(),
-                    radiusMeters
-            );
+            try {
+                candidates = workerRepository.findCandidateWorkersNearby(
+                        targetSubServiceId.toString(),
+                        booking.getUserLat(),
+                        booking.getUserLng(),
+                        radiusMeters
+                );
+            } catch (Exception e) {
+                logger.warn("Spatial candidate query fallback: {}", e.getMessage());
+                candidates = workerRepository.findByIsOnlineTrueAndIsVerifiedTrue();
+            }
         }
 
         if (candidates.isEmpty()) {
