@@ -32,7 +32,7 @@ public interface WorkerRepository extends JpaRepository<Worker, UUID> {
           AND (
             (w.location IS NOT NULL AND ST_DWithin(
                 w.location,
-                ST_SetSRID(ST_MakePoint(:userLng, :userLat), 4326)::GEOGRAPHY,
+                CAST(ST_SetSRID(ST_MakePoint(:userLng, :userLat), 4326) AS geography),
                 :radiusMeters
             ))
             OR (w.location IS NULL AND w.current_lat IS NOT NULL AND w.current_lng IS NOT NULL AND (6371000 * acos(
@@ -44,7 +44,7 @@ public interface WorkerRepository extends JpaRepository<Worker, UUID> {
             )) <= :radiusMeters)
           )
         ORDER BY COALESCE(
-            ST_Distance(w.location, ST_SetSRID(ST_MakePoint(:userLng, :userLat), 4326)::GEOGRAPHY),
+            ST_Distance(w.location, CAST(ST_SetSRID(ST_MakePoint(:userLng, :userLat), 4326) AS geography)),
             (6371000 * acos(
                 least(1.0, greatest(-1.0, 
                   cos(radians(:userLat)) * cos(radians(w.current_lat)) * 
@@ -74,7 +74,7 @@ public interface WorkerRepository extends JpaRepository<Worker, UUID> {
         WHERE w.is_online = true
           AND w.is_verified = true
           AND (w.blocked_until IS NULL OR w.blocked_until < CURRENT_TIMESTAMP)
-          AND w.working_pincodes::text LIKE CONCAT('%', :pincode, '%')
+          AND CAST(w.working_pincodes AS text) LIKE CONCAT('%', :pincode, '%')
         """, nativeQuery = true)
     List<Worker> findOnlineVerifiedWorkersByPincode(@Param("pincode") String pincode);
 }

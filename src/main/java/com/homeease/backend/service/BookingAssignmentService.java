@@ -151,7 +151,13 @@ public class BookingAssignmentService {
         // -------------------------------------------------------------
         if (servicePincode != null && !servicePincode.isBlank()) {
             // Use index-optimized DB query instead of full table scan
-            List<Worker> pincodeWorkers = workerRepository.findOnlineVerifiedWorkersByPincode(servicePincode);
+            List<Worker> pincodeWorkers;
+            try {
+                pincodeWorkers = workerRepository.findOnlineVerifiedWorkersByPincode(servicePincode);
+            } catch (Exception e) {
+                logger.warn("Worker pincode pre-filter query failed: {}. Falling back to radius search.", e.getMessage());
+                pincodeWorkers = Collections.emptyList();
+            }
             List<Worker> samePincodeWorkers = pincodeWorkers.stream()
                     .filter(w -> matchesWorkingPincode(w, servicePincode))
                     .filter(w -> {
