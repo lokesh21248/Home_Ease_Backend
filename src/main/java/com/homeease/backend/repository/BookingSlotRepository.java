@@ -55,5 +55,17 @@ public interface BookingSlotRepository extends JpaRepository<BookingSlot, UUID> 
            "WHERE bs.status = 'RESERVED' " +
            "AND bs.lockedUntil < :now")
     List<BookingSlot> findExpiredHolds(@Param("now") Instant now);
+
+    /**
+     * Find RESERVED holds in a window that were created before a cutoff time (stale holds).
+     * Used to auto-clean holds that accumulated from repeated slot taps in the same session.
+     */
+    @Query("SELECT bs FROM BookingSlot bs " +
+           "WHERE bs.windowKey = :windowKey " +
+           "AND bs.status = 'RESERVED' " +
+           "AND bs.createdAt < :cutoff")
+    List<BookingSlot> findStaleHoldsInWindow(
+            @Param("windowKey") String windowKey,
+            @Param("cutoff") Instant cutoff);
 }
 

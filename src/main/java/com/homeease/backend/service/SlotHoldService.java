@@ -74,8 +74,8 @@ public class SlotHoldService {
 
         Instant now = Instant.now();
 
-        // 2. Fetch configured window capacity (default to 3 if not explicitly seeded)
-        int maxCapacity = 3;
+        // 2. Fetch configured window capacity (default to 10 if not explicitly seeded)
+        int maxCapacity = 10;
         Optional<SlotWindowCapacity> capOpt = capacityRepository.findSpecificWindow(
                 request.getServiceId(), pincode, dayOfWeek, startTime);
         if (capOpt.isPresent()) {
@@ -84,6 +84,24 @@ public class SlotHoldService {
 
         // 3. Count active holds and confirmed bookings in this window
         long activeCount = slotRepository.countActiveHoldsInWindow(windowKey, now);
+
+        // 3a. If still at capacity, auto-expire stale RESERVED holds older than 2 minutes
+        //     (caused by user tapping slots repeatedly without navigating away)
+        if (activeCount >= maxCapacity) {
+            logger.info("Window {} at capacity ({}/{}). Auto-expiring stale holds older than 2 minutes.",
+                    windowKey, activeCount, maxCapacity);
+            List<BookingSlot> staleHolds = slotRepository.findStaleHoldsInWindow(windowKey, now.minusSeconds(120));
+            for (BookingSlot stale : staleHolds) {
+                stale.setStatus("EXPIRED");
+                slotRepository.save(stale);
+                logger.info("Auto-expired stale hold: slotId={}, windowKey={}", stale.getSlotId(), windowKey);
+            }
+            if (!staleHolds.isEmpty()) {
+                invalidateRedisSlotCacheByWindowKey(windowKey);
+            }
+            // Re-count after cleanup
+            activeCount = slotRepository.countActiveHoldsInWindow(windowKey, now);
+        }
 
         if (activeCount >= maxCapacity) {
             logger.warn("Slot capacity exceeded for window {}. Current: {}/{}. Request rejected.",
@@ -229,7 +247,7 @@ public class SlotHoldService {
                     .dayOfWeek(dayOfWeek)
                     .startTime(st)
                     .endTime(st.plusHours(1))
-                    .maxCapacity(3)
+                    .maxCapacity(10)
                     .active(true)
                     .build());
         }
