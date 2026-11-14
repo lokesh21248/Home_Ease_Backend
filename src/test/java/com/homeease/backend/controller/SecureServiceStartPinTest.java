@@ -10,6 +10,7 @@ import com.homeease.backend.repository.BookingRepository;
 import com.homeease.backend.repository.WorkerRepository;
 import com.homeease.backend.security.JwtService;
 import com.homeease.backend.service.*;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -62,6 +63,11 @@ public class SecureServiceStartPinTest {
     private Worker testWorker;
     private User testCustomer;
 
+    @AfterEach
+    void clearAuthentication() {
+        TestAuth.clear();
+    }
+
     @BeforeEach
     void setUp() {
         bookingId = UUID.randomUUID();
@@ -98,7 +104,7 @@ public class SecureServiceStartPinTest {
         when(bookingOtpService.getCustomerPin(testBooking)).thenReturn("7492");
 
         mockMvc.perform(get("/api/bookings/" + bookingId + "/service-pin")
-                        .header("X-User-Id", customerId.toString()))
+                        .header("X-User-Id", customerId.toString()).with(TestAuth.customer(customerId)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.bookingId").value(bookingId.toString()))
                 .andExpect(jsonPath("$.pinCode").value("7492"))
@@ -112,7 +118,7 @@ public class SecureServiceStartPinTest {
         when(bookingRepository.findById(bookingId)).thenReturn(Optional.of(testBooking));
 
         mockMvc.perform(get("/api/bookings/" + bookingId + "/service-pin")
-                        .header("X-User-Id", customerId.toString()))
+                        .header("X-User-Id", customerId.toString()).with(TestAuth.customer(customerId)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.pinCode").doesNotExist())
                 .andExpect(jsonPath("$.status").value("ON_THE_WAY"));
@@ -125,7 +131,7 @@ public class SecureServiceStartPinTest {
         when(bookingRepository.findById(bookingId)).thenReturn(Optional.of(testBooking));
 
         mockMvc.perform(get("/api/bookings/" + bookingId + "/service-pin")
-                        .header("X-User-Id", otherCustomerId.toString()))
+                        .header("X-User-Id", otherCustomerId.toString()).with(TestAuth.customer(otherCustomerId)))
                 .andExpect(status().isForbidden());
     }
 
@@ -141,7 +147,7 @@ public class SecureServiceStartPinTest {
                 .build());
 
         mockMvc.perform(post("/api/bookings/" + bookingId + "/arrive")
-                        .header("X-User-Id", workerUserId.toString()))
+                        .header("X-User-Id", workerUserId.toString()).with(TestAuth.worker(workerUserId)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("ARRIVED"))
                 .andExpect(jsonPath("$.pinCode").doesNotExist());
@@ -166,7 +172,7 @@ public class SecureServiceStartPinTest {
         Map<String, String> body = Map.of("pin", "7492");
 
         mockMvc.perform(post("/api/bookings/" + bookingId + "/verify-pin")
-                        .header("X-User-Id", workerUserId.toString())
+                        .header("X-User-Id", workerUserId.toString()).with(TestAuth.worker(workerUserId))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(body)))
                 .andExpect(status().isOk())
@@ -187,7 +193,7 @@ public class SecureServiceStartPinTest {
         Map<String, String> body = Map.of("pin", "0000");
 
         mockMvc.perform(post("/api/bookings/" + bookingId + "/verify-pin")
-                        .header("X-User-Id", workerUserId.toString())
+                        .header("X-User-Id", workerUserId.toString()).with(TestAuth.worker(workerUserId))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(body)))
                 .andExpect(status().isBadRequest())
@@ -205,7 +211,7 @@ public class SecureServiceStartPinTest {
         Map<String, String> body = Map.of("pin", "7492");
 
         mockMvc.perform(post("/api/bookings/" + bookingId + "/verify-pin")
-                        .header("X-User-Id", workerUserId.toString())
+                        .header("X-User-Id", workerUserId.toString()).with(TestAuth.worker(workerUserId))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(body)))
                 .andExpect(status().isBadRequest());

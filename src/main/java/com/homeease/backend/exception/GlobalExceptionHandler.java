@@ -57,6 +57,22 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * The worker already holds an in-flight instant job (see WorkerAcceptanceGuard): 409 Conflict.
+     */
+    @ExceptionHandler(WorkerBusyException.class)
+    public ResponseEntity<Map<String, Object>> handleWorkerBusy(WorkerBusyException ex) {
+        log.warn("Acceptance rejected, worker is busy: {}", ex.getMessage());
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("timestamp", Instant.now().toString());
+        body.put("status", HttpStatus.CONFLICT.value());
+        body.put("error", "WORKER_BUSY");
+        body.put("message", ex.getMessage());
+
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
+    }
+
+    /**
      * P0-2 — Duplicate booking detected via idempotency key.
      * Returns 409 Conflict with the existing booking ID so the client can redirect.
      */

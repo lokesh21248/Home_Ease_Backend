@@ -25,8 +25,31 @@ public class DispatchEngineService {
     @Value("${homeease.dispatch.radius-meters:5000}")
     private double radiusMeters;
 
+    /**
+     * Same switch and key contract as the core backend ({@code WORKER_PRESENCE_ENFORCE}). GEO members never
+     * expire, so a worker found by GEO radius is only a candidate while {@code worker:heartbeat:<id>} exists
+     * (written by the core with TTL {@code WORKER_HEARTBEAT_TTL_SECONDS}). This service only tests existence,
+     * so it needs no TTL value of its own and cannot disagree with the writer.
+     */
+    @Value("${homeease.worker.presence.enforce:false}")
+    private boolean enforcePresence = false;
+
+    private static final String HEARTBEAT_PREFIX = "worker:heartbeat:";
+
     public DispatchEngineService(RedisTemplate<String, String> redisTemplate) {
         this.redisTemplate = redisTemplate;
+    }
+
+    private boolean anyWorkerAlive(java.util.List<String> workerIds) {
+        if (workerIds.isEmpty()) {
+            return false;
+        }
+        java.util.List<String> keys = new java.util.ArrayList<>(workerIds.size());
+        for (String id : workerIds) {
+            keys.add(HEARTBEAT_PREFIX + id);
+        }
+        java.util.List<String> values = redisTemplate.opsForValue().multiGet(keys); // one command for all candidates
+        return values != null && values.stream().anyMatch(java.util.Objects::nonNull);
     }
 
     public DispatchResultResponse triggerSpatialMatching(TriggerDispatchRequest request) {
@@ -37,10 +60,12 @@ public class DispatchEngineService {
             Circle area = new Circle(new org.springframework.data.geo.Point(request.getUserLng(), request.getUserLat()), new Distance(radiusMeters, Metrics.NEUTRAL));
             var results = redisTemplate.opsForGeo().radius("active_workers_geo", area);
             if (results != null && !results.getContent().isEmpty()) {
-                candidateFound = true;
+                candidateFound = !enforcePresence || anyWorkerAlive(results.getContent().stream()
+                        .map(r -> r.getContent().getName()).toList());
             }
         } catch (Exception e) {
-            logger.warn("Redis spatial lookup fallback: {}", e.getMessage());
+            // exception class only: messages from the Redis driver can include connection details
+            logger.warn("Redis spatial lookup fallback: {}", e.getClass().getSimpleName());
         }
 
         return DispatchResultResponse.builder()

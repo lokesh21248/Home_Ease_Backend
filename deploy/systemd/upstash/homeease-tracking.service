@@ -1,0 +1,56 @@
+# ==============================================================================
+# HOME EASE - systemd unit: Live Tracking Service (port 8082), managed Upstash Redis variant
+# Install: sudo install -m 644 homeease-tracking.service /etc/systemd/system/
+#          sudo systemctl daemon-reload && sudo systemctl enable homeease-tracking
+# Review before use. Not applied automatically; do not restart production without approval.
+# ==============================================================================
+
+[Unit]
+Description=HomeEase Live Tracking Service (port 8082)
+# No Requires=redis.service: Redis is the managed Upstash instance reached over TLS (outbound TCP 6379).
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=homeease
+Group=homeease
+WorkingDirectory=/opt/homeease/tracking
+
+# Secrets (REDIS_URL, JWT_SECRET, DB_*) live ONLY in this root-owned 0600 file. systemd reads it as root
+# before dropping privileges, so the service user never needs read access to the file itself.
+EnvironmentFile=/etc/homeease/tracking.env
+
+Environment=SPRING_PROFILES_ACTIVE=prod
+# Bind to loopback: only Nginx on this host may reach the service port.
+Environment=SERVER_ADDRESS=127.0.0.1
+
+ExecStart=/usr/bin/java -Xms192m -Xmx384m   -XX:+UseG1GC -XX:MaxGCPauseMillis=100   -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/var/log/homeease/   -Djava.security.egd=file:/dev/./urandom   -jar /opt/homeease/tracking/homeease-tracking-service-1.0.0-SNAPSHOT.jar
+
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=homeease-tracking
+
+# -- hardening ------------------------------------------------------------------
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+ReadWritePaths=/var/log/homeease /opt/homeease/tracking
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

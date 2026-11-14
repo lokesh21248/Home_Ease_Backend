@@ -27,7 +27,7 @@ public class JwtTokenValidator {
 
     public JwtTokenValidator(
             ObjectMapper objectMapper,
-            @Value("${homeease.jwt.secret:404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}") String secretKey) {
+            @Value("${homeease.jwt.secret}") String secretKey) {
         this.objectMapper = objectMapper;
         this.secretKey = secretKey;
     }

@@ -22,6 +22,20 @@ Thumbs.db
 *.env
 firebase-service-account.json
 src/main/resources/firebase-service-account.json
+*service-account*.json
+credentials*.json
+# Keys / certificates / keystores
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+# Machine-local config that may hold real values (application-dev.yml is committed: throw-away values only)
+application-local.yml
+application-local.yaml
+application-local.properties
+application-prod.local.*
 
 # Logs
 *.log
@@ -38,3 +52,6 @@ logs/
 # Postman collections
 *Postman*.json
 *postman*.json
+
+# Generated live-test reports (sanitized, but machine-local)
+reports/

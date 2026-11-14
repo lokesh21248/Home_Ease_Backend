@@ -27,6 +27,9 @@ services:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      # Optional managed Redis (e.g. Upstash): rediss://default:<password>@host:6379. When set it
+      # overrides REDIS_HOST/PORT/PASSWORD above. Leave unset to use the local redis container.
+      - REDIS_URL=${REDIS_URL:-}
     depends_on:
       redis:
         condition: service_healthy
@@ -50,6 +53,9 @@ services:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      # Optional managed Redis (e.g. Upstash): rediss://default:<password>@host:6379. When set it
+      # overrides REDIS_HOST/PORT/PASSWORD above. Leave unset to use the local redis container.
+      - REDIS_URL=${REDIS_URL:-}
     depends_on:
       redis:
         condition: service_healthy
@@ -73,6 +79,9 @@ services:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      # Optional managed Redis (e.g. Upstash): rediss://default:<password>@host:6379. When set it
+      # overrides REDIS_HOST/PORT/PASSWORD above. Leave unset to use the local redis container.
+      - REDIS_URL=${REDIS_URL:-}
     depends_on:
       redis:
         condition: service_healthy
@@ -96,6 +105,9 @@ services:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      # Optional managed Redis (e.g. Upstash): rediss://default:<password>@host:6379. When set it
+      # overrides REDIS_HOST/PORT/PASSWORD above. Leave unset to use the local redis container.
+      - REDIS_URL=${REDIS_URL:-}
     depends_on:
       redis:
         condition: service_healthy

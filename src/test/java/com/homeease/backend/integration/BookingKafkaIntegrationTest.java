@@ -55,6 +55,42 @@ import static org.junit.jupiter.api.Assertions.*;
 })
 class BookingKafkaIntegrationTest {
 
+    // ---------------------------------------------------------------------------------------------------------
+    // Test infrastructure (no assertion below was changed).
+    //  * Redis: an in-process server, forced over any REDIS_URL set in the developer's shell, so this test can never
+    //    reach a real Redis such as Upstash.
+    //  * Kafka: @EmbeddedKafka above.
+    //  * PostgreSQL + PostGIS: NOT provided here (the schema needs PostGIS: migrations V9, V14, V17 and V24 and the
+    //    Booking/Worker geometry columns). Supply a DISPOSABLE LOCAL database through TEST_POSTGIS_JDBC_URL,
+    //    TEST_POSTGIS_USER and TEST_POSTGIS_PASSWORD (scripts\run-integration-tests.ps1 prompts for them and
+    //    DisposableDatabaseGuard refuses anything that is not a local database named like a test database).
+    //    Without them the datasource stays the unreachable 127.0.0.1:1 of application-test.yml and this test fails
+    //    fast at Flyway, which is the honest "blocked" state.
+    // ---------------------------------------------------------------------------------------------------------
+    private static com.github.fppt.jedismock.RedisServer inProcessRedis;
+
+    @org.springframework.test.context.DynamicPropertySource
+    static void infrastructure(org.springframework.test.context.DynamicPropertyRegistry registry) throws Exception {
+        inProcessRedis = com.github.fppt.jedismock.RedisServer.newRedisServer().start();
+        String redisUrl = "redis://" + inProcessRedis.getHost() + ":" + inProcessRedis.getBindPort();
+        registry.add("spring.data.redis.url", () -> redisUrl);
+
+        String jdbcUrl = System.getenv("TEST_POSTGIS_JDBC_URL");
+        if (jdbcUrl != null && !jdbcUrl.isBlank()) {
+            DisposableDatabaseGuard.requireSafe(jdbcUrl);
+            registry.add("spring.datasource.url", () -> jdbcUrl);
+            registry.add("spring.datasource.username", () -> System.getenv().getOrDefault("TEST_POSTGIS_USER", "postgres"));
+            registry.add("spring.datasource.password", () -> System.getenv().getOrDefault("TEST_POSTGIS_PASSWORD", ""));
+        }
+    }
+
+    @org.junit.jupiter.api.AfterAll
+    static void stopInProcessRedis() throws Exception {
+        if (inProcessRedis != null) {
+            inProcessRedis.stop();
+        }
+    }
+
     @Autowired
     private BookingRepository bookingRepository;
 

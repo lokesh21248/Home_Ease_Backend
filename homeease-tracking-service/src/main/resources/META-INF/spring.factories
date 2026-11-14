@@ -1,0 +1,3 @@
+org.springframework.boot.env.EnvironmentPostProcessor=\
+com.homeease.tracking.config.RedisUrlEnvironmentPostProcessor,\
+com.homeease.tracking.config.RequiredSecretsEnvironmentPostProcessor

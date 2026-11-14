@@ -14,8 +14,8 @@ spring:
 
   datasource:
     url: jdbc:postgresql://${DB_HOST:aws-0-ap-south-1.pooler.supabase.com}:${DB_PORT:5432}/${DB_NAME:postgres}?sslmode=require&stringtype=unspecified&prepareThreshold=0
-    username: ${DB_USER:postgres.gheiuyygjssqatziviix}
-    password: ${DB_PASS:HomeEase@Supa2026#Secure!}
+    username: ${DB_USER}
+    password: ${DB_PASS}
     driver-class-name: org.postgresql.Driver
     hikari:
       maximum-pool-size: 20
@@ -42,10 +42,15 @@ spring:
 
   data:
     redis:
+      # If the REDIS_URL environment variable is set (e.g. rediss://default:<password>@host:6379),
+      # RedisUrlEnvironmentPostProcessor maps it to spring.data.redis.url, which overrides
+      # host/port/password below. The "rediss://" scheme enables TLS. Never hard-code the password.
+      # (An empty spring.data.redis.url is rejected by Spring Boot, so it is not declared here.)
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
-      timeout: 2000ms
+      timeout: ${REDIS_COMMAND_TIMEOUT:2000ms}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:5000ms}
 
   servlet:
     multipart:
@@ -84,6 +89,13 @@ supabase:
 
 # App Configuration
 homeease:
+  # Protection for the PUBLIC (unauthenticated) nearby-workers preview: each uncached call costs ~12 Redis commands
+  # plus DB queries. 0 disables the respective protection.
+  public-api:
+    nearby-workers:
+      per-client-per-minute: ${NEARBY_WORKERS_RATE_PER_CLIENT:60}   # keyed by CF-Connecting-IP / X-Real-IP / socket
+      global-per-minute: ${NEARBY_WORKERS_RATE_GLOBAL:1200}         # all callers together; holds against forged headers
+      cache-seconds: ${NEARBY_WORKERS_CACHE_SECONDS:10}             # share results within a ~11 m cell for N seconds
   firebase:
     credentials-path: ${FIREBASE_CREDENTIALS_PATH:classpath:firebase-service-account.json}
   razorpay:
@@ -93,15 +105,28 @@ homeease:
   dispatch:
     radius-meters: 5000 # 5 km matching radius
     response-timeout-seconds: 180 # 3 minutes timeout for candidate acceptance
+    worker-accept-guard:
+      enabled: ${WORKER_ACCEPT_GUARD_ENABLED:false} # OPT-IN: one in-flight instant job per worker; off = previous behaviour
   billing:
     platform-commission-percent: 2.00 # 2% platform commission
   worker:
     auto-verify: ${AUTO_VERIFY_WORKERS:true} # Workers require admin approval via /admin/workers/{id}/verify-kyc
+    # Worker presence / heartbeat policy (single source of truth; see HOME_EASE_WORKER_HEARTBEAT_AUDIT.md)
+    presence:
+      heartbeat-interval-seconds: ${WORKER_HEARTBEAT_INTERVAL_SECONDS:15}  # client ping cadence; job-time GPS refresh throttle
+      heartbeat-ttl-seconds: ${WORKER_HEARTBEAT_TTL_SECONDS:60}            # key TTL == stale-worker threshold (must be >= 3 x interval)
+      enforce: ${WORKER_PRESENCE_ENFORCE:false}                            # OPT-IN: true = dispatch requires a live heartbeat; enable only after the worker app's ping cadence is confirmed
+      sweep-interval-seconds: ${WORKER_PRESENCE_SWEEP_SECONDS:900}         # stale GEO member cleanup (hygiene only), 0 = off
+      sweep-zone-sets: ${WORKER_PRESENCE_SWEEP_ZONES:false}               # also sweep geo:workers:<zone> sets (adds commands per pincode)
+      stationary:                  # OFF by default: heartbeat-only SET (1 command instead of 7) for workers who have not moved
+        enabled: ${WORKER_PING_STATIONARY_ENABLED:false}
+        max-move-meters: ${WORKER_PING_STATIONARY_METERS:25}
+        full-refresh-seconds: ${WORKER_PING_STATIONARY_FULL_REFRESH_SECONDS:120}
   google:
     maps:
       api-key: ${GOOGLE_MAPS_API_KEY:}
   jwt:
-    secret: ${JWT_SECRET:404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}
+    secret: ${JWT_SECRET}
   kafka:
     topics:
       booking-events: ${KAFKA_TOPIC_BOOKING_EVENTS:firstdoor.booking.events.v1}
@@ -133,7 +158,7 @@ management:
         include: health,info,prometheus,metrics
   endpoint:
     health:
-      show-details: always
+      show-details: when-authorized
     prometheus:
       enabled: true
   metrics:

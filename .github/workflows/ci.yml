@@ -1,0 +1,74 @@
+name: CI (tests only, never deploys)
+
+# Runs on pull requests, and is called by deploy.yml before any deployment. It needs NO secrets: tests run under the
+# 'test' profile whose datasource is an unreachable local port, Redis is an in-process server, Kafka is embedded.
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Unit and slice tests (core, tracking, dispatch) + deploy script tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      # BookingKafkaIntegrationTest needs PostgreSQL + PostGIS; it runs in the 'integration-postgis' job below.
+      # Everything else (including the real-PostgreSQL advisory-lock tests, which use an embedded PostgreSQL) runs here.
+      - name: Core backend tests
+        run: mvn -B test "-Dtest=!BookingKafkaIntegrationTest"
+
+      - name: Tracking service tests
+        run: mvn -B test
+        working-directory: homeease-tracking-service
+
+      - name: Dispatch service tests
+        run: mvn -B test
+        working-directory: homeease-dispatch-service
+
+      - name: Deploy pre-flight script tests
+        run: bash deploy/test-preflight-env.sh
+
+  integration-postgis:
+    name: BookingKafkaIntegrationTest against a real PostGIS database
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # NOT gating yet: this test has never run against a real PostGIS database. Once it is green on GitHub, remove
+    # this line so a failure blocks deployment too.
+    continue-on-error: true
+    services:
+      postgis:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_DB: homeease_it_test
+          POSTGRES_HOST_AUTH_METHOD: trust   # throw-away container: no password exists at all
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d homeease_it_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: BookingKafkaIntegrationTest (real Flyway + JPA + PostGIS, embedded Kafka, in-process Redis)
+        run: mvn -B test -Dtest=BookingKafkaIntegrationTest
+        env:
+          TEST_POSTGIS_JDBC_URL: jdbc:postgresql://localhost:5432/homeease_it_test
+          TEST_POSTGIS_USER: postgres

@@ -42,6 +42,14 @@ public class InstantAcceptService {
     @PersistenceContext
     private EntityManager entityManager;
 
+    /** Optional so directly-constructed instances (unit tests) keep their previous behaviour. */
+    @Autowired(required = false)
+    private WorkerAcceptanceGuard acceptanceGuard;
+
+    public void setAcceptanceGuard(WorkerAcceptanceGuard acceptanceGuard) {
+        this.acceptanceGuard = acceptanceGuard;
+    }
+
     @Autowired
     public InstantAcceptService(BookingRepository bookingRepository,
                                 WorkerRepository workerRepository,
@@ -120,6 +128,12 @@ public class InstantAcceptService {
 
         Worker worker = workerRepository.findByUser_UserId(workerUserId)
                 .orElseThrow(() -> new ResourceNotFoundException("Worker profile not found for user: " + workerUserId));
+
+        // 3b. A worker may hold only one in-flight instant job: serialised per worker (advisory lock), checked
+        // after the booking lock so the lock order is always booking -> worker
+        if (acceptanceGuard != null) {
+            acceptanceGuard.ensureWorkerFree(worker.getWorkerId(), booking);
+        }
 
         // 4. Generate 4-digit verification PIN
         String pinCode = String.format("%04d", new SecureRandom().nextInt(10000));

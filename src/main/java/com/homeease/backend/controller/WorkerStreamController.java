@@ -40,7 +40,7 @@ public class WorkerStreamController {
 
     /**
      * Real-time worker telemetry ping endpoint:
-     * Updates Redis GEO set geo:workers:{zone} and sets 30-second TTL heartbeat.
+     * Updates the Redis GEO sets and refreshes the worker heartbeat (TTL = WORKER_HEARTBEAT_TTL_SECONDS).
      * POST /api/v1/workers/stream/ping
      */
     @PostMapping("/ping")
@@ -63,12 +63,18 @@ public class WorkerStreamController {
             throw new ResourceNotFoundException("Worker ID required in ping request.");
         }
 
-        workerStreamService.recordWorkerPing(workerId, request.getLat(), request.getLng(), request.getZone(), request.getAccuracy());
+        boolean registered = workerStreamService.recordWorkerPing(
+                workerId, request.getLat(), request.getLng(), request.getZone(), request.getAccuracy());
 
+        // "status" stays PONG for backward compatibility. "presence" tells the app whether this ping made the
+        // worker discoverable: ACTIVE, or IGNORED (offline/unverified/blocked/invalid fix) so the app can
+        // prompt the worker to go online. ttl/interval are the single configured heartbeat policy.
         return ResponseEntity.ok(Map.of(
                 "status", "PONG",
+                "presence", registered ? "ACTIVE" : "IGNORED",
                 "workerId", workerId.toString(),
-                "ttlSeconds", 30,
+                "ttlSeconds", workerStreamService.heartbeatTtlSeconds(),
+                "pingIntervalSeconds", workerStreamService.heartbeatIntervalSeconds(),
                 "timestamp", System.currentTimeMillis()
         ));
     }

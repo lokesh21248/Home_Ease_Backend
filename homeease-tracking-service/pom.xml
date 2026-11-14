@@ -57,6 +57,13 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Pure-Java in-process Redis server (test only); not a substitute for the Upstash live tests -->
+        <dependency>
+            <groupId>com.github.fppt</groupId>
+            <artifactId>jedis-mock</artifactId>
+            <version>1.1.21</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

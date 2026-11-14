@@ -1,0 +1,16 @@
+﻿# ==============================================================================
+# DEVELOPMENT-ONLY configuration  (activate with: --spring.profiles.active=dev)
+#
+# Nothing here is a production credential. It points at a LOCAL database and uses a throw-away JWT secret that
+# exists only so a developer can run the app on their own machine. The application refuses to start with this
+# profile when the 'prod' or 'production' profile is also active (see RequiredSecretsEnvironmentPostProcessor).
+# Production values must come from the environment (/etc/homeease/backend.env), never from this file.
+# ==============================================================================
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/homeease_dev
+    username: homeease_dev
+    password: homeease_dev_local_only
+homeease:
+  jwt:
+    secret: 8ba50161402fd08abb075cd61dfe6c2e0a0a5f2177309b895f65e1c5e9f8557c

@@ -49,6 +49,9 @@ services:
       - SPRING_DATA_REDIS_HOST=redis
       - SPRING_DATA_REDIS_PORT=6379
       - SPRING_DATA_REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      # Optional managed Redis (e.g. Upstash): rediss://default:<password>@host:6379. When set it
+      # overrides the HOST/PORT/PASSWORD above. Blank/unset keeps the bundled redis service.
+      - REDIS_URL=${REDIS_URL:-}
       # JWT & Secrets
       - JWT_SECRET=${JWT_SECRET}
       - RAZORPAY_KEY_ID=${RAZORPAY_KEY_ID}

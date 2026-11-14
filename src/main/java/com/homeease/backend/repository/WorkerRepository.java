@@ -23,6 +23,14 @@ public interface WorkerRepository extends JpaRepository<Worker, UUID> {
 
     List<Worker> findByIsOnlineTrueAndIsVerifiedTrue();
 
+    /**
+     * Transaction-scoped Postgres advisory lock (released automatically on commit/rollback). Serialises concurrent
+     * acceptances by the SAME worker across all API instances; used only by WorkerAcceptanceGuard. Must be called
+     * inside a transaction. The cast makes the void-returning function usable as a native query result.
+     */
+    @Query(value = "SELECT CAST(pg_advisory_xact_lock(hashtext(:lockKey)) AS text)", nativeQuery = true)
+    String lockWorkerAcceptance(@Param("lockKey") String lockKey);
+
     List<Worker> findByIsVerifiedFalse();
 
     @Query(value = """

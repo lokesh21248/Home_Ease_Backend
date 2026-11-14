@@ -148,7 +148,8 @@ public class AuthController {
             try {
                 redisTemplate.opsForValue().set("fcm_token:" + userId, fcmToken);
             } catch (Exception ignored) {}
-            logger.info("Registered FCM token for user {}: {}", userId, fcmToken);
+            // The device push token is a bearer-style identifier; never write its value to logs.
+            logger.info("Registered FCM token for user {} (length {})", userId, fcmToken.length());
         }
         return ResponseEntity.ok(Map.of("message", "FCM token registered successfully."));
     }

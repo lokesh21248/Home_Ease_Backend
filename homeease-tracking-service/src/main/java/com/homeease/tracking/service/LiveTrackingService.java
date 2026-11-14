@@ -46,6 +46,10 @@ public class LiveTrackingService {
     @Value("${homeease.google.maps.api-key:}")
     private String googleMapsApiKey;
 
+    /** Same switch as the core and dispatch services (WORKER_PRESENCE_ENFORCE). */
+    @Value("${homeease.worker.presence.enforce:false}")
+    private boolean enforcePresence = false;
+
     @Value("${homeease.tracking.rate-limit.window-seconds:60}")
     private int windowSeconds;
 
@@ -722,7 +726,32 @@ public class LiveTrackingService {
 
             GeoResults<RedisGeoCommands.GeoLocation<String>> geoResults = redisTemplate.opsForGeo().radius(GEO_WORKERS_KEY, circle, args);
             if (geoResults != null) {
+                // GEO members never expire: keep only workers with a live worker:heartbeat:<id> key
+                // (written by the core with the configured TTL). One MGET for all candidates.
+                Set<String> alive = null;
+                if (enforcePresence) {
+                    List<String> names = new ArrayList<>();
+                    for (var r : geoResults) {
+                        names.add(r.getContent().getName());
+                    }
+                    alive = new HashSet<>();
+                    if (!names.isEmpty()) {
+                        List<String> keys = new ArrayList<>(names.size());
+                        for (String n : names) {
+                            keys.add("worker:heartbeat:" + n);
+                        }
+                        List<String> values = redisTemplate.opsForValue().multiGet(keys);
+                        for (int i = 0; values != null && i < values.size() && i < names.size(); i++) {
+                            if (values.get(i) != null) {
+                                alive.add(names.get(i));
+                            }
+                        }
+                    }
+                }
                 for (var geoResult : geoResults) {
+                    if (alive != null && !alive.contains(geoResult.getContent().getName())) {
+                        continue;
+                    }
                     Map<String, Object> item = new HashMap<>();
                     item.put("workerId", geoResult.getContent().getName());
                     item.put("distanceKm", Math.round(geoResult.getDistance().getValue() * 100.0) / 100.0);

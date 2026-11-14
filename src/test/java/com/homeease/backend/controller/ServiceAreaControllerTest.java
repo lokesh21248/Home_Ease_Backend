@@ -29,6 +29,11 @@ class ServiceAreaControllerTest {
     @MockBean
     private ServiceAreaService serviceAreaService;
 
+    // The @WebMvcTest slice still component-scans JwtAuthenticationFilter, which needs a JwtService bean
+    // (same approach as AdminCalendarControllerIntegrationTest). Filters themselves are disabled above.
+    @MockBean
+    private com.homeease.backend.security.JwtService jwtService;
+
     // ─────────────────────────────────────────────────────────────────
     // CUSTOMER PUBLIC ENDPOINTS
     // ─────────────────────────────────────────────────────────────────

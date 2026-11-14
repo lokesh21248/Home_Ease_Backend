@@ -1,0 +1,5 @@
+﻿# DEVELOPMENT-ONLY (activate with: --spring.profiles.active=dev). Same throw-away JWT secret as the core's dev
+# profile so tokens interoperate locally. Never use for any real environment.
+homeease:
+  jwt:
+    secret: 8ba50161402fd08abb075cd61dfe6c2e0a0a5f2177309b895f65e1c5e9f8557c

@@ -40,6 +40,10 @@ public class TrackingService {
     private final ConcurrentHashMap<UUID, Long> sessionTickCounter = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<UUID, Long> lastWorkerHeartbeatMap = new ConcurrentHashMap<>();
 
+    /** Job-time availability heartbeat cadence: the single policy value shared with WorkerPresenceService. */
+    @org.springframework.beans.factory.annotation.Value("${homeease.worker.presence.heartbeat-interval-seconds:15}")
+    private int workerHeartbeatIntervalSeconds = 15;
+
     private final RedisTemplate<String, String> redisTemplate;
     private final ObjectMapper objectMapper;
     private final SimpMessagingTemplate messagingTemplate;
@@ -247,11 +251,11 @@ public class TrackingService {
 
         broadcastTrackingEvent(bookingId, session.getCustomerUserId(), event);
 
-        // 4. Update worker general availability heartbeat (throttled to at most once per 15s)
+        // 4. Update worker general availability heartbeat (throttled to once per heartbeat interval, default 15s)
         try {
             if (workerUserId != null) {
                 Long lastHb = lastWorkerHeartbeatMap.get(workerUserId);
-                if (lastHb == null || (nowMs - lastHb) >= 15_000) {
+                if (lastHb == null || (nowMs - lastHb) >= workerHeartbeatIntervalSeconds * 1000L) {
                     lastWorkerHeartbeatMap.put(workerUserId, nowMs);
                     workerService.updateLiveLocation(workerUserId, req.getLat(), req.getLng());
                 }

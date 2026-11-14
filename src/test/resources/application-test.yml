@@ -1,0 +1,14 @@
+# TEST-ONLY configuration, activated for every test by the surefire plugin (spring.profiles.active=test).
+#
+# Purpose: unit/slice tests must never be able to reach a real database. The JDBC URL points at a local port
+# that nothing listens on, so a full-context @SpringBootTest fails fast and loudly instead of silently connecting
+# to (and running Flyway migrations against) a real Supabase database, which the previous committed defaults did.
+# Tests that need a database must be given a disposable one explicitly (BLOCKED until one is provisioned).
+spring:
+  datasource:
+    url: jdbc:postgresql://127.0.0.1:1/homeease_test_unreachable
+    username: test
+    password: test
+homeease:
+  jwt:
+    secret: test-only-secret-test-only-secret-0123456789

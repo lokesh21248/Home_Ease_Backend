@@ -254,7 +254,7 @@ public class InstantBookingDispatchIntegrationTest {
         when(geoOperations.radius(eq("geo:workers:global"), any(Circle.class)))
                 .thenReturn(new GeoResults<>(Collections.emptyList()));
 
-        when(workerRepository.findAll()).thenReturn(List.of(worker));
+        when(workerRepository.findByIsOnlineTrueAndIsVerifiedTrue()).thenReturn(List.of(worker));
 
         Map<String, String> rejectionReasons = new LinkedHashMap<>();
         List<Worker> found = assignmentService.findEligibleCandidateWorkers(
@@ -424,8 +424,8 @@ public class InstantBookingDispatchIntegrationTest {
         when(geoOperations.radius(anyString(), any(Circle.class)))
                 .thenThrow(new org.springframework.data.redis.RedisConnectionFailureException("Redis connection refused"));
 
-        // PostGIS fallback succeeds cleanly
-        when(workerRepository.findCandidateWorkersNearby(anyString(), anyDouble(), anyDouble(), anyDouble()))
+        // DB fallback (the PostGIS native query is no longer used by BookingAssignmentService; see commit ebf1f94)
+        when(workerRepository.findByIsOnlineTrueAndIsVerifiedTrue())
                 .thenReturn(List.of(worker));
         when(workerServiceLinkRepository.existsById_WorkerIdAndId_SubServiceId(workerId, subServiceId)).thenReturn(true);
 

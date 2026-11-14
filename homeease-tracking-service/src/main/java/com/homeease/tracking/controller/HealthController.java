@@ -70,19 +70,19 @@ public class HealthController {
 
         Map<String, Object> redisHealth = new LinkedHashMap<>();
         long startMs = System.currentTimeMillis();
-        try {
+        // A single connection, closed on exit. Previously each probe borrowed 3 pooled connections and
+        // never returned them, so frequent probes could exhaust the 64-connection Lettuce pool.
+        try (org.springframework.data.redis.connection.RedisConnection conn =
+                     redisTemplate.getConnectionFactory().getConnection()) {
             // PING round-trip latency
-            redisTemplate.getConnectionFactory().getConnection().ping();
+            conn.ping();
             long latencyMs = System.currentTimeMillis() - startMs;
             redisHealth.put("status", "UP");
             redisHealth.put("pingLatencyMs", latencyMs);
 
             // Memory info
             try {
-                Properties memInfo = redisTemplate.getConnectionFactory()
-                        .getConnection()
-                        .serverCommands()
-                        .info("memory");
+                Properties memInfo = conn.serverCommands().info("memory");
                 if (memInfo != null) {
                     redisHealth.put("usedMemoryHuman",  memInfo.getProperty("used_memory_human", "?"));
                     redisHealth.put("maxMemoryHuman",   memInfo.getProperty("maxmemory_human", "?"));
@@ -95,10 +95,7 @@ public class HealthController {
 
             // Stats: eviction and command counts
             try {
-                Properties stats = redisTemplate.getConnectionFactory()
-                        .getConnection()
-                        .serverCommands()
-                        .info("stats");
+                Properties stats = conn.serverCommands().info("stats");
                 if (stats != null) {
                     redisHealth.put("evictedKeys",             stats.getProperty("evicted_keys", "0"));
                     redisHealth.put("totalCommandsProcessed",  stats.getProperty("total_commands_processed", "?"));
@@ -113,7 +110,9 @@ public class HealthController {
 
         } catch (Exception e) {
             redisHealth.put("status", "DOWN");
-            redisHealth.put("error", e.getMessage());
+            // Exception class only: driver messages can carry connection details and must never reach a
+            // health response (which load balancers and monitoring read).
+            redisHealth.put("error", e.getClass().getSimpleName());
             redisHealth.put("pingLatencyMs", System.currentTimeMillis() - startMs);
             response.put("status", "DEGRADED");
             response.put("redis", redisHealth);

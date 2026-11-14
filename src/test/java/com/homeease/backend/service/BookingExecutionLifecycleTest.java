@@ -435,7 +435,7 @@ public class BookingExecutionLifecycleTest {
         @DisplayName("Task 9 Scenario 1: One online electrician within 5 km discovered, assigned, and notified")
         void testScenario01_OneOnlineElectricianWithin5Km() {
                 UUID subServiceElectrician = UUID.randomUUID();
-                when(workerRepository.findAll()).thenReturn(List.of(testWorker1));
+                when(workerRepository.findByIsOnlineTrueAndIsVerifiedTrue()).thenReturn(List.of(testWorker1));
                 when(workerServiceLinkRepository.existsById_WorkerIdAndId_SubServiceId(testWorker1.getWorkerId(), subServiceElectrician))
                                 .thenReturn(true);
                 when(bookingRepository.save(any(Booking.class))).thenAnswer(i -> i.getArgument(0));
@@ -458,7 +458,7 @@ public class BookingExecutionLifecycleTest {
                 testWorker2.setCurrentLng(78.3740);
 
                 UUID subServiceElectrician = UUID.randomUUID();
-                when(workerRepository.findAll()).thenReturn(List.of(testWorker2));
+                when(workerRepository.findByIsOnlineTrueAndIsVerifiedTrue()).thenReturn(List.of(testWorker2));
                 when(workerServiceLinkRepository.existsById_WorkerIdAndId_SubServiceId(testWorker2.getWorkerId(), subServiceElectrician))
                                 .thenReturn(true);
                 when(bookingRepository.save(any(Booking.class))).thenAnswer(i -> i.getArgument(0));
@@ -472,7 +472,10 @@ public class BookingExecutionLifecycleTest {
         }
 
         @Test
-        @DisplayName("Task 9 Scenario 3: Worker online but wrong service category records WRONG_SERVICE_CATEGORY")
+        // Reason codes are the ones BookingAssignmentService, AssignmentScorer and InstantBookingDispatchIntegrationTest
+        // use (SERVICE_NOT_SUPPORTED, WORKER_BUSY, LOCATION_MISSING). This class still expected older names that
+        // never existed in src/main, which made the suite inconsistent with itself.
+        @DisplayName("Task 9 Scenario 3: Worker online but wrong service category records SERVICE_NOT_SUPPORTED")
         void testScenario03_WorkerOnlineWrongServiceCategory_RejectionReason() {
                 UUID requestedSubService = UUID.randomUUID();
                 Map<String, String> rejectionReasons = new LinkedHashMap<>();
@@ -485,11 +488,11 @@ public class BookingExecutionLifecycleTest {
                 boolean eligible = assignmentService.isCandidateEligible(testWorker1, null, requestedSubService, rejectionReasons);
 
                 assertFalse(eligible);
-                assertEquals("WRONG_SERVICE_CATEGORY", rejectionReasons.get(testWorker1.getWorkerId().toString()));
+                assertEquals("SERVICE_NOT_SUPPORTED", rejectionReasons.get(testWorker1.getWorkerId().toString()));
         }
 
         @Test
-        @DisplayName("Task 9 Scenario 4: Worker online but already doing another job records ALREADY_ASSIGNED_TO_ACTIVE_JOB")
+        @DisplayName("Task 9 Scenario 4: Worker online but already doing another job records WORKER_BUSY")
         void testScenario04_WorkerOnlineAlreadyAssignedToActiveJob() {
                 Map<String, String> rejectionReasons = new LinkedHashMap<>();
                 Booking activeBooking = Booking.builder()
@@ -503,13 +506,13 @@ public class BookingExecutionLifecycleTest {
                 boolean eligible = assignmentService.isCandidateEligible(testWorker1, null, null, rejectionReasons);
 
                 assertFalse(eligible);
-                assertEquals("ALREADY_ASSIGNED_TO_ACTIVE_JOB", rejectionReasons.get(testWorker1.getWorkerId().toString()));
+                assertEquals("WORKER_BUSY", rejectionReasons.get(testWorker1.getWorkerId().toString()));
         }
 
         @Test
         @DisplayName("Task 9 Scenario 5: Worker location not updated or stale records appropriate rejection reasons")
         void testScenario05_WorkerLocationNotUpdatedOrStale() {
-                // Sub-case A: null location -> LOCATION_NOT_UPDATED
+                // Sub-case A: null location -> LOCATION_MISSING
                 Worker workerNullLoc = Worker.builder()
                                 .workerId(UUID.randomUUID())
                                 .isOnline(true)
@@ -519,7 +522,7 @@ public class BookingExecutionLifecycleTest {
                                 .build();
                 Map<String, String> reasonsA = new LinkedHashMap<>();
                 assertFalse(assignmentService.isCandidateEligible(workerNullLoc, null, null, reasonsA));
-                assertEquals("LOCATION_NOT_UPDATED", reasonsA.get(workerNullLoc.getWorkerId().toString()));
+                assertEquals("LOCATION_MISSING", reasonsA.get(workerNullLoc.getWorkerId().toString()));
 
                 // Sub-case B: location stale (>30 minutes) -> LOCATION_STALE
                 Worker workerStaleLoc = Worker.builder()
@@ -644,7 +647,7 @@ public class BookingExecutionLifecycleTest {
                 testBooking.setStatus(BookingStage.WORKER_NOT_FOUND);
                 UUID subServiceId = UUID.randomUUID();
 
-                when(workerRepository.findAll()).thenReturn(List.of(testWorker1));
+                when(workerRepository.findByIsOnlineTrueAndIsVerifiedTrue()).thenReturn(List.of(testWorker1));
                 when(workerServiceLinkRepository.existsById_WorkerIdAndId_SubServiceId(testWorker1.getWorkerId(), subServiceId))
                                 .thenReturn(true);
                 when(bookingRepository.save(any(Booking.class))).thenAnswer(i -> i.getArgument(0));
@@ -677,7 +680,7 @@ public class BookingExecutionLifecycleTest {
                                 .totalAmount(new BigDecimal("800.00"))
                                 .build();
 
-                when(workerRepository.findAll()).thenReturn(List.of(testWorker1, testWorker2));
+                when(workerRepository.findByIsOnlineTrueAndIsVerifiedTrue()).thenReturn(List.of(testWorker1, testWorker2));
                 when(workerServiceLinkRepository.existsByWorkerIdAndServiceId(any(), any())).thenReturn(true);
                 when(bookingRepository.save(any(Booking.class))).thenAnswer(i -> i.getArgument(0));
 

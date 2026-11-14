@@ -5,8 +5,14 @@ on:
     branches: [ "main" ]
 
 jobs:
+  # Tests must pass before anything is deployed (previously every push to main deployed with -DskipTests).
+  ci:
+    name: Tests
+    uses: ./.github/workflows/ci.yml
+
   deploy:
     name: Build & Deploy to AWS EC2
+    needs: ci
     runs-on: ubuntu-latest
 
     steps:
@@ -33,6 +39,11 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
             git clean -fd
+
+            echo "🔎 Pre-flight: the new build REQUIRES DB_USER/DB_PASS (or SPRING_DATASOURCE_*) and JWT_SECRET..."
+            echo "   If a variable is missing this step fails BEFORE anything is built, copied or restarted,"
+            echo "   so the running services stay up. Set the variables in the services' EnvironmentFile and redeploy."
+            bash deploy/preflight-env.sh homeease-core:core homeease-tracking:tracking
 
             echo "📦 Building Core Backend JAR..."
             mvn clean package -DskipTests

@@ -12,6 +12,7 @@ import com.homeease.backend.repository.BookingRepository;
 import com.homeease.backend.repository.WorkerRepository;
 import com.homeease.backend.security.JwtService;
 import com.homeease.backend.service.*;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -63,6 +64,11 @@ public class BookingExecutionControllerIntegrationTest {
     private Booking testBooking;
     private Worker testWorker;
 
+    @AfterEach
+    void clearAuthentication() {
+        TestAuth.clear();
+    }
+
     @BeforeEach
     void setUp() {
         bookingId = UUID.randomUUID();
@@ -95,7 +101,7 @@ public class BookingExecutionControllerIntegrationTest {
         when(assignmentService.getPendingRequestsForWorker(workerUserId)).thenReturn(List.of(req));
 
         mockMvc.perform(get("/api/workers/me/requests")
-                        .header("X-User-Id", workerUserId.toString()))
+                        .header("X-User-Id", workerUserId.toString()).with(TestAuth.worker(workerUserId)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].bookingId").value(bookingId.toString()))
                 .andExpect(jsonPath("$[0].serviceName").value("Electrician"));
@@ -111,7 +117,7 @@ public class BookingExecutionControllerIntegrationTest {
                 .build());
 
         mockMvc.perform(post("/api/bookings/" + bookingId + "/accept")
-                        .header("X-User-Id", workerUserId.toString()))
+                        .header("X-User-Id", workerUserId.toString()).with(TestAuth.worker(workerUserId)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.bookingId").value(bookingId.toString()))
                 .andExpect(jsonPath("$.status").value("ACCEPTED"));
@@ -128,7 +134,7 @@ public class BookingExecutionControllerIntegrationTest {
                 .build());
 
         mockMvc.perform(post("/api/bookings/" + bookingId + "/arrive")
-                        .header("X-User-Id", workerUserId.toString()))
+                        .header("X-User-Id", workerUserId.toString()).with(TestAuth.worker(workerUserId)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.bookingId").value(bookingId.toString()))
                 .andExpect(jsonPath("$.status").value("ARRIVED"));
@@ -152,7 +158,7 @@ public class BookingExecutionControllerIntegrationTest {
         Map<String, String> body = Map.of("otp", "4321");
 
         mockMvc.perform(post("/api/bookings/" + bookingId + "/verify-otp")
-                        .header("X-User-Id", workerUserId.toString())
+                        .header("X-User-Id", workerUserId.toString()).with(TestAuth.worker(workerUserId))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(body)))
                 .andExpect(status().isOk())
@@ -196,7 +202,7 @@ public class BookingExecutionControllerIntegrationTest {
         when(sessionService.completeSession(eq(testBooking), eq(workerUserId))).thenReturn(completedSession);
 
         mockMvc.perform(post("/api/bookings/" + bookingId + "/complete")
-                        .header("X-User-Id", workerUserId.toString()))
+                        .header("X-User-Id", workerUserId.toString()).with(TestAuth.worker(workerUserId)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("SUCCESS"))
                 .andExpect(jsonPath("$.bookingStatus").value("COMPLETED"))

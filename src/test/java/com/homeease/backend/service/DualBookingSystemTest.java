@@ -60,6 +60,7 @@ public class DualBookingSystemTest {
     private UUID serviceId;
     private UUID subServiceId;
 
+/**     * The date n days from now (IST), moved forward past a Sunday. The service returns no slots on Sundays, so     * tests that need slots must not depend on which weekday the suite happens to run on (the original     * plusDays(1) failed every Saturday).     */    private static LocalDate futureNonSunday(int days) {        LocalDate d = LocalDate.now(WorkerAvailabilityService.IST_ZONE).plusDays(days);        return d.getDayOfWeek() == java.time.DayOfWeek.SUNDAY ? d.plusDays(1) : d;    }
     @BeforeEach
     void setUp() {
         userId = UUID.randomUUID();
@@ -148,7 +149,7 @@ public class DualBookingSystemTest {
     @Test
     @DisplayName("Worker Availability: Dynamic Time Slots calculation excludes break times & past slots")
     void testDynamicTimeSlotsCalculation() {
-        LocalDate testDate = LocalDate.now(WorkerAvailabilityService.IST_ZONE).plusDays(2); // In future
+        LocalDate testDate = futureNonSunday(2); // In future
         when(workerRepository.findAll()).thenReturn(List.of(testWorker));
 
         WorkerAvailability wa = WorkerAvailability.builder()
@@ -192,7 +193,7 @@ public class DualBookingSystemTest {
     @Test
     @DisplayName("Worker Availability: Overlapping booking blocks slot from being double-booked")
     void testOverlappingBookingPreventsDoubleBooking() {
-        LocalDate testDate = LocalDate.now(WorkerAvailabilityService.IST_ZONE).plusDays(1);
+        LocalDate testDate = futureNonSunday(1);
         when(workerRepository.findAll()).thenReturn(List.of(testWorker));
 
         WorkerAvailability wa = WorkerAvailability.builder()
@@ -229,7 +230,7 @@ public class DualBookingSystemTest {
     @Test
     @DisplayName("Worker Availability: Worker Time Off marks entire day unavailable")
     void testWorkerTimeOffMarksDayUnavailable() {
-        LocalDate testDate = LocalDate.now(WorkerAvailabilityService.IST_ZONE).plusDays(3);
+        LocalDate testDate = futureNonSunday(3);
         when(workerRepository.findAll()).thenReturn(List.of(testWorker));
 
         WorkerAvailability wa = WorkerAvailability.builder()
@@ -259,7 +260,7 @@ public class DualBookingSystemTest {
     @Test
     @DisplayName("Scheduled Booking: Creates booking with Redis lock and CONFIRMED status")
     void testCreateScheduledBooking() {
-        LocalDate futureDate = LocalDate.now(WorkerAvailabilityService.IST_ZONE).plusDays(2);
+        LocalDate futureDate = futureNonSunday(2);
         ScheduledBookingRequest req = ScheduledBookingRequest.builder()
                 .serviceId(serviceId)
                 .subServices(List.of(SubServiceRequestItem.builder().subServiceId(subServiceId).quantity(1).build()))

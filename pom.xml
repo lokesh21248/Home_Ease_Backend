@@ -124,6 +124,23 @@
             <artifactId>spring-kafka-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Pure-Java in-process Redis server (test only) so Redis logic such as TTL expiry, GEO,
+             Lua cleanup and pub/sub can be verified without Docker or a native binary. It is NOT
+             a substitute for the authenticated Upstash tests, which stay gated on REDIS_URL. -->
+        <dependency>
+            <groupId>com.github.fppt</groupId>
+            <artifactId>jedis-mock</artifactId>
+            <version>1.1.21</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- A real PostgreSQL started in a throw-away temp directory on a random local port (test only). Used to
+             verify advisory-lock behaviour with real Postgres semantics. It never touches any existing database. -->
+        <dependency>
+            <groupId>io.zonky.test</groupId>
+            <artifactId>embedded-postgres</artifactId>
+            <version>2.0.7</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -142,6 +159,18 @@
                             <version>1.18.30</version>
                         </path>
                     </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- Every test runs with the throw-away 'test' profile (src/test/resources/application-test.yml):
+                         no production secret defaults exist any more, and the datasource points at an unreachable
+                         local port so no test can ever reach a real database. -->
+                    <systemPropertyVariables>
+                        <spring.profiles.active>test</spring.profiles.active>
+                    </systemPropertyVariables>
                 </configuration>
             </plugin>
             <plugin>

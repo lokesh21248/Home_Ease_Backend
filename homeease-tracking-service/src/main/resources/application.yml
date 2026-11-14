@@ -10,6 +10,10 @@ spring:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
+      # REDIS_URL (rediss://default:<password>@host:6379) is mapped to spring.data.redis.url by
+      # RedisUrlEnvironmentPostProcessor and overrides host/port/password; rediss:// enables TLS.
+      timeout: ${REDIS_COMMAND_TIMEOUT:2000ms}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:5000ms}
 
 management:
   endpoints:
@@ -18,11 +22,14 @@ management:
         include: health,info,prometheus
   endpoint:
     health:
-      show-details: always
+      show-details: when-authorized
 
 homeease:
+  worker:
+    presence:
+      enforce: ${WORKER_PRESENCE_ENFORCE:false}   # same switch as core/dispatch; GEO members count only with a live heartbeat
   jwt:
-    secret: ${JWT_SECRET:404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}
+    secret: ${JWT_SECRET}
   google:
     maps:
       api-key: ${GOOGLE_MAPS_API_KEY:}

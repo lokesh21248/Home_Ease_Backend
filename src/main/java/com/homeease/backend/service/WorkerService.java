@@ -30,6 +30,7 @@ public class WorkerService {
     private final PaymentRepository paymentRepository;
     private final ReviewRepository reviewRepository;
     private final RedisTemplate<String, String> redisTemplate;
+    private final WorkerPresenceService presenceService;
 
     @Value("${homeease.worker.auto-verify:false}")
     private boolean autoVerifyWorker;
@@ -40,7 +41,8 @@ public class WorkerService {
                          WorkerServiceLinkRepository workerServiceLinkRepository,
                          PaymentRepository paymentRepository,
                          ReviewRepository reviewRepository,
-                         RedisTemplate<String, String> redisTemplate) {
+                         RedisTemplate<String, String> redisTemplate,
+                         WorkerPresenceService presenceService) {
         this.workerRepository = workerRepository;
         this.userRepository = userRepository;
         this.subServiceRepository = subServiceRepository;
@@ -48,6 +50,7 @@ public class WorkerService {
         this.paymentRepository = paymentRepository;
         this.reviewRepository = reviewRepository;
         this.redisTemplate = redisTemplate;
+        this.presenceService = presenceService;
     }
 
     @Transactional
@@ -209,39 +212,42 @@ public class WorkerService {
         }
 
         worker.setIsOnline(isOnline);
-        if (lat != null && lng != null) {
+        // A worker is only (re)discoverable from a FRESH fix supplied with this request. Previously, going
+        // online without coordinates re-stamped the stored (possibly days-old) position as "just updated".
+        final boolean freshFix = WorkerPresenceService.isUsableCoordinate(lat, lng);
+        if (freshFix) {
             worker.setCurrentLat(lat);
             worker.setCurrentLng(lng);
             worker.setLastLocationUpdatedAt(Instant.now());
-        } else if (Boolean.TRUE.equals(isOnline) && worker.getCurrentLat() != null) {
-            worker.setLastLocationUpdatedAt(Instant.now());
+        } else if (!presenceService.isEnforced()
+                && Boolean.TRUE.equals(isOnline) && worker.getCurrentLat() != null) {
+            worker.setLastLocationUpdatedAt(Instant.now()); // legacy behaviour, only with WORKER_PRESENCE_ENFORCE=false
         }
         worker = workerRepository.save(worker);
 
         if (!Boolean.TRUE.equals(isOnline) && worker.getWorkerId() != null) {
-            // Going OFFLINE: remove from Redis GEO dispatch pool & heartbeat
+            // Going OFFLINE: leave every GEO set and drop the heartbeat (explicit, immediate)
             try {
-                redisTemplate.opsForGeo().remove("active_workers_geo", worker.getWorkerId().toString());
-                redisTemplate.opsForGeo().remove("geo:workers:global", worker.getWorkerId().toString());
-                redisTemplate.delete("worker:heartbeat:" + worker.getWorkerId());
-                logger.info("[WorkerService] Removed worker {} from active_workers_geo and geo:workers:global (OFFLINE)", worker.getWorkerId());
-            } catch (Exception ignored) {}
+                presenceService.markOffline(worker.getWorkerId());
+                logger.info("[WorkerService] Worker {} removed from GEO sets and heartbeat cleared (OFFLINE)", worker.getWorkerId());
+            } catch (Exception e) {
+                logger.warn("[WorkerService] Redis offline cleanup failed for worker {} ({}); dispatch is still blocked by is_online=false and heartbeat TTL",
+                        worker.getWorkerId(), e.getClass().getSimpleName());
+            }
         } else if (Boolean.TRUE.equals(isOnline) && worker.getWorkerId() != null && Boolean.TRUE.equals(worker.getIsVerified())) {
-            // Going ONLINE: add to Redis GEO if we have coordinates
-            if (worker.getCurrentLat() != null && worker.getCurrentLng() != null) {
+            boolean legacyStoredFix = !presenceService.isEnforced()
+                    && WorkerPresenceService.isUsableCoordinate(worker.getCurrentLat(), worker.getCurrentLng());
+            if (freshFix || legacyStoredFix) {
                 try {
-                    org.springframework.data.geo.Point point = new org.springframework.data.geo.Point(worker.getCurrentLng(), worker.getCurrentLat());
-                    redisTemplate.opsForGeo().add("active_workers_geo", point, worker.getWorkerId().toString());
-                    redisTemplate.opsForGeo().add("geo:workers:global", point, worker.getWorkerId().toString());
-                    redisTemplate.opsForValue().set("worker:heartbeat:" + worker.getWorkerId(), "ALIVE", java.time.Duration.ofMinutes(5));
-                    redisTemplate.opsForValue().set("worker:last_location_time:" + worker.getWorkerId(), String.valueOf(Instant.now().toEpochMilli()));
-                    logger.info("[WorkerService] Added worker {} to active_workers_geo and geo:workers:global at ({},{}) (ONLINE)",
-                            worker.getWorkerId(), worker.getCurrentLat(), worker.getCurrentLng());
+                    presenceService.registerPresence(worker.getWorkerId(),
+                            worker.getCurrentLat(), worker.getCurrentLng(), null, "ALIVE");
+                    logger.info("[WorkerService] Worker {} registered as present (ONLINE)", worker.getWorkerId());
                 } catch (Exception e) {
-                    logger.warn("[WorkerService] Failed to add worker {} to GEO on ONLINE toggle: {}", worker.getWorkerId(), e.getMessage());
+                    logger.warn("[WorkerService] Failed to register presence for worker {} on ONLINE toggle: {}",
+                            worker.getWorkerId(), e.getClass().getSimpleName());
                 }
             } else {
-                logger.warn("[WorkerService] Worker {} is ONLINE but has no GPS coordinates yet. Send location heartbeat to become discoverable.",
+                logger.warn("[WorkerService] Worker {} is ONLINE but sent no fresh GPS fix. It becomes discoverable on its first valid location ping.",
                         worker.getWorkerId());
             }
         }
@@ -303,7 +309,8 @@ public class WorkerService {
         return mapToProfileResponse(worker);
     }
 
-    @Transactional
+    // Deliberately NOT @Transactional (see WorkerStreamService.recordWorkerPing): the Redis presence call below must not
+    // run while a database connection is held. The read and the save are each their own short repository transaction.
     public void updateLiveLocation(UUID userId, Double lat, Double lng) {
         Worker worker = workerRepository.findByUser_UserId(userId)
                 .or(() -> workerRepository.findById(userId))
@@ -315,17 +322,22 @@ public class WorkerService {
 
         workerRepository.save(worker);
 
-        try {
-            redisTemplate.opsForValue().set("worker:last_location_time:" + worker.getWorkerId(), String.valueOf(Instant.now().toEpochMilli()));
-            redisTemplate.opsForValue().set("worker:heartbeat:" + worker.getWorkerId(), "ALIVE", java.time.Duration.ofMinutes(5));
-        } catch (Exception ignored) {}
-
-        if (Boolean.TRUE.equals(worker.getIsOnline()) && Boolean.TRUE.equals(worker.getIsVerified())) {
+        // Every accepted location update refreshes the heartbeat (and GEO position), but only for a worker who
+        // is explicitly online and verified; an offline worker's stray update must not make it discoverable.
+        boolean online = Boolean.TRUE.equals(worker.getIsOnline()) && Boolean.TRUE.equals(worker.getIsVerified());
+        if (online && WorkerPresenceService.isUsableCoordinate(lat, lng)) {
             try {
-                org.springframework.data.geo.Point point = new org.springframework.data.geo.Point(lng, lat);
-                redisTemplate.opsForGeo().add("active_workers_geo", point, worker.getWorkerId().toString());
-                redisTemplate.opsForGeo().add("geo:workers:global", point, worker.getWorkerId().toString());
-            } catch (Exception ignored) {}
+                presenceService.registerPresence(worker.getWorkerId(), lat, lng, null, "ALIVE");
+            } catch (Exception e) {
+                logger.warn("[WorkerService] Presence refresh failed for worker {}: {}", worker.getWorkerId(), e.getClass().getSimpleName());
+            }
+        } else if (!presenceService.isEnforced()) {
+            try { // legacy behaviour (WORKER_PRESENCE_ENFORCE=false)
+                redisTemplate.opsForValue().set("worker:last_location_time:" + worker.getWorkerId(), String.valueOf(Instant.now().toEpochMilli()));
+                redisTemplate.opsForValue().set("worker:heartbeat:" + worker.getWorkerId(), "ALIVE", presenceService.heartbeatTtl());
+            } catch (Exception e) {
+                logger.warn("[WorkerService] Legacy heartbeat write failed for worker {}: {}", worker.getWorkerId(), e.getClass().getSimpleName());
+            }
         }
     }
 

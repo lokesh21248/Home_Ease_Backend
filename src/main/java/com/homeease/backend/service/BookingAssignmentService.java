@@ -64,6 +64,25 @@ public class BookingAssignmentService {
     @Autowired(required = false)
     private io.micrometer.core.instrument.MeterRegistry meterRegistry;
 
+    /**
+     * Dispatch-time presence gate (heartbeat). Optional so that directly-constructed instances (unit tests)
+     * keep their previous behaviour; in the running application Spring always injects it.
+     */
+    @Autowired(required = false)
+    private WorkerPresenceService presenceService;
+
+    public void setPresenceService(WorkerPresenceService presenceService) {
+        this.presenceService = presenceService;
+    }
+
+    /** Prevents one worker from winning two instant bookings at once. Optional for the same reason as above. */
+    @Autowired(required = false)
+    private WorkerAcceptanceGuard acceptanceGuard;
+
+    public void setAcceptanceGuard(WorkerAcceptanceGuard acceptanceGuard) {
+        this.acceptanceGuard = acceptanceGuard;
+    }
+
     @Autowired
     public BookingAssignmentService(WorkerRepository workerRepository,
                                   WorkerServiceLinkRepository workerServiceLinkRepository,
@@ -234,6 +253,7 @@ public class BookingAssignmentService {
             String primaryReason = "NO_WORKER_IN_PINCODE";
             if (rejectionReasons.containsValue("WORKER_BUSY")) primaryReason = "WORKER_ALREADY_BUSY";
             else if (rejectionReasons.containsValue("WORKER_OFFLINE")) primaryReason = "WORKER_OFFLINE";
+            else if (rejectionReasons.containsValue("HEARTBEAT_EXPIRED")) primaryReason = "WORKER_HEARTBEAT_EXPIRED";
             else if (rejectionReasons.containsValue("LOCATION_STALE")) primaryReason = "LOCATION_STALE";
             else if (rejectionReasons.containsValue("SERVICE_NOT_SUPPORTED")) primaryReason = "SERVICE_NOT_SUPPORTED";
             else if (rejectionReasons.containsValue("OUTSIDE_RADIUS")) primaryReason = "OUTSIDE_ALLOWED_DISTANCE";
@@ -321,6 +341,11 @@ public class BookingAssignmentService {
         Worker worker = workerRepository.findByUser_UserId(workerUserId)
                 .or(() -> workerRepository.findById(workerUserId))
                 .orElseThrow(() -> new ResourceNotFoundException("Worker profile not found for user: " + workerUserId));
+
+        // A worker may hold only one in-flight instant job: serialised per worker, checked after the booking lock
+        if (acceptanceGuard != null) {
+            acceptanceGuard.ensureWorkerFree(worker.getWorkerId(), booking);
+        }
 
         // Generate preliminary 4-digit PIN
         String pinCode = String.format("%04d", new SecureRandom().nextInt(10000));
@@ -756,6 +781,14 @@ public class BookingAssignmentService {
             return false;
         }
 
+        // 3b. Presence: the worker must have a live heartbeat (default TTL 60s). Redis GEO members never
+        // expire, and is_online stays true after an unexpected disconnect, so this is what stops dispatch to
+        // a worker who has silently gone away. Checked before the costlier DB queries below.
+        if (presenceService != null && !presenceService.isDispatchable(worker)) {
+            if (rejectionReasons != null) rejectionReasons.put(wId, "HEARTBEAT_EXPIRED");
+            return false;
+        }
+
         // 4. Active job check
         List<BookingStage> activeStages = List.of(
                 BookingStage.ACCEPTED,
@@ -857,10 +890,42 @@ public class BookingAssignmentService {
         return false;
     }
 
+    /**
+     * TTL of the public nearby-workers result cache (seconds, 0 = off). The field default is 0 so that directly
+     * constructed instances (unit tests) are unaffected; Spring injects the configured value (default 10).
+     */
+    @Value("${homeease.public-api.nearby-workers.cache-seconds:10}")
+    private int nearbyCacheSeconds = 0;
+
+    private volatile NearbyWorkersCache<NearbyWorkerDto> nearbyWorkersCache;
+
+    private NearbyWorkersCache<NearbyWorkerDto> nearbyCache() {
+        NearbyWorkersCache<NearbyWorkerDto> c = nearbyWorkersCache;
+        if (c == null) {
+            synchronized (this) {
+                c = nearbyWorkersCache;
+                if (c == null) {
+                    c = new NearbyWorkersCache<>(nearbyCacheSeconds, 4, 2000, System::currentTimeMillis);
+                    nearbyWorkersCache = c;
+                }
+            }
+        }
+        return c;
+    }
+
     public List<NearbyWorkerDto> findNearbyAvailableWorkers(UUID serviceId, UUID subServiceId,
                                                           double userLat, double userLng,
                                                           Double radiusMeters) {
         double effectiveRadius = (radiusMeters != null && radiusMeters > 0) ? radiusMeters : this.radiusMeters;
+        // Public, unauthenticated, ~12 Redis commands per uncached call: share results within a ~11 m cell for a
+        // few seconds (see NearbyWorkersCache). Same response shape; distances may differ by about one cell width.
+        return nearbyCache().get(serviceId, subServiceId, userLat, userLng, effectiveRadius,
+                () -> computeNearbyAvailableWorkers(serviceId, subServiceId, userLat, userLng, effectiveRadius));
+    }
+
+    private List<NearbyWorkerDto> computeNearbyAvailableWorkers(UUID serviceId, UUID subServiceId,
+                                                                double userLat, double userLng,
+                                                                double effectiveRadius) {
         List<Worker> candidates = findEligibleCandidateWorkers(serviceId, subServiceId, userLat, userLng, effectiveRadius);
 
         List<NearbyWorkerDto> dtoList = new ArrayList<>();

@@ -9,7 +9,6 @@ import org.springframework.data.redis.connection.RedisGeoCommands;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -19,34 +18,61 @@ import java.util.*;
 public class WorkerStreamService {
 
     private static final Logger logger = LoggerFactory.getLogger(WorkerStreamService.class);
+    /**
+     * @deprecated the heartbeat TTL is now one configurable policy value:
+     * {@link WorkerPresenceService#heartbeatTtl()} ({@code WORKER_HEARTBEAT_TTL_SECONDS}, default 60s).
+     * Retained only so existing references still compile; it is no longer used for writes.
+     */
+    @Deprecated
     public static final Duration HEARTBEAT_TTL = Duration.ofSeconds(30);
 
     private final RedisTemplate<String, String> redisTemplate;
     private final WorkerRepository workerRepository;
     private final SimpMessagingTemplate messagingTemplate;
     private final FraudDetectionService fraudDetectionService;
+    private final WorkerPresenceService presenceService;
 
     public WorkerStreamService(RedisTemplate<String, String> redisTemplate,
                                WorkerRepository workerRepository,
                                SimpMessagingTemplate messagingTemplate,
-                               FraudDetectionService fraudDetectionService) {
+                               FraudDetectionService fraudDetectionService,
+                               WorkerPresenceService presenceService) {
         this.redisTemplate = redisTemplate;
         this.workerRepository = workerRepository;
         this.messagingTemplate = messagingTemplate;
         this.fraudDetectionService = fraudDetectionService;
+        this.presenceService = presenceService;
+    }
+
+    /** Heartbeat TTL (seconds) the clients should plan around; reported back in the ping response. */
+    public int heartbeatTtlSeconds() {
+        return presenceService.heartbeatTtlSeconds();
+    }
+
+    /** Interval (seconds) at which clients should ping. */
+    public int heartbeatIntervalSeconds() {
+        return presenceService.heartbeatIntervalSeconds();
     }
 
     /**
-     * Records real-time worker ping from /worker/stream:
-     * 1. Validates telemetry against GPS spoofing and velocity anomalies (Phase 5).
-     * 2. Adds to Redis GEO set geo:workers:{zone} (Point: lng, lat).
-     * 3. Sets 30-second TTL heartbeat key in Redis: worker:heartbeat:{workerId}.
-     * 4. Updates Postgres worker location & is_online = true.
+     * Records a real-time worker ping from /worker/stream:
+     * 1. Ignores pings from workers that are not explicitly online, verified and unblocked (a stray late ping
+     *    after "go offline" must not make a worker discoverable again; online status is explicit).
+     * 2. Validates telemetry against GPS spoofing and velocity anomalies.
+     * 3. Registers presence in ONE pipelined round trip: GEO sets plus the heartbeat key
+     *    worker:heartbeat:{workerId} with the configured TTL (default 60s).
+     * 4. Updates the Postgres worker location (it no longer flips is_online to true).
+     *
+     * @return true if presence was registered, false if the ping was ignored or rejected
      */
-    @Transactional
-    public void recordWorkerPing(UUID workerId, double lat, double lng, String zone, Double accuracy) {
-        if (workerId == null || Double.isNaN(lat) || Double.isNaN(lng)) {
-            return;
+    // Deliberately NOT @Transactional: this method makes 2-3 synchronous Redis round trips (fraud check, presence
+    // pipeline), each of which can take up to the 2 s command timeout when the remote Redis is slow. Inside a
+    // transaction that would pin a Hikari connection (pool of 20) for the whole call, so a Redis brownout could
+    // starve every other endpoint of database connections. The two database touches (read worker, save worker) are
+    // each their own short repository transaction.
+    public boolean recordWorkerPing(UUID workerId, double lat, double lng, String zone, Double accuracy) {
+        if (workerId == null || !WorkerPresenceService.isUsableCoordinate(lat, lng)) {
+            return false;
         }
 
         // Resolve canonical worker whether workerId is worker_id (PK) or user_id (FK)
@@ -54,7 +80,34 @@ public class WorkerStreamService {
                 .or(() -> workerRepository.findByUser_UserId(workerId))
                 .orElse(null);
 
+        if (presenceService.isEnforced()) {
+            boolean explicitlyOnline = worker != null
+                    && Boolean.TRUE.equals(worker.getIsOnline())
+                    && Boolean.TRUE.equals(worker.getIsVerified())
+                    && (worker.getBlockedUntil() == null || !worker.getBlockedUntil().isAfter(Instant.now()));
+            if (!explicitlyOnline) {
+                logger.debug("Ping ignored: worker {} is unknown, offline, unverified or blocked", workerId);
+                return false;
+            }
+        }
+
         UUID canonicalWorkerId = worker != null ? worker.getWorkerId() : workerId;
+        String targetZone = (zone != null && !zone.isBlank()) ? zone.trim() : null;
+        String heartbeatValue = targetZone != null ? targetZone : "ONLINE";
+
+        // Optional stationary optimisation (WORKER_PING_STATIONARY_ENABLED, default OFF): a worker who has not
+        // moved since a recent full registration only refreshes the heartbeat (ONE Redis command instead of 7).
+        // The fraud check is skipped for these pings because the position is within a few metres of one that
+        // already passed it. Any Redis error here falls through to the normal full path below.
+        try {
+            if (presenceService.tryLightweightRefresh(canonicalWorkerId, lat, lng, heartbeatValue)) {
+                updateWorkerRecord(worker, lat, lng);
+                return true;
+            }
+        } catch (Exception e) {
+            logger.debug("Lightweight heartbeat refresh failed for worker {} ({}); using the full path",
+                    canonicalWorkerId, e.getClass().getSimpleName());
+        }
 
         // Phase 5 Fraud hardening: Anti-GPS spoofing check
         double acc = accuracy != null ? accuracy : 10.0;
@@ -63,39 +116,32 @@ public class WorkerStreamService {
 
         if (!validation.isValid()) {
             logger.warn("Worker {} ping rejected by fraud filter: {}", canonicalWorkerId, validation.getReason());
-            return;
+            return false;
         }
 
-        String targetZone = (zone != null && !zone.isBlank()) ? zone.trim() : null;
-        String heartbeatKey = "worker:heartbeat:" + canonicalWorkerId;
-        String wIdStr = canonicalWorkerId.toString();
-
-        // 1. Redis GEO Sets: geo:workers:{zone} (if zone provided), geo:workers:global, AND active_workers_geo
+        // GEO sets (geo:workers:{zone}, geo:workers:global, active_workers_geo) + heartbeat + last-location
+        // timestamp, all with the configured TTL, in a single pipelined round trip.
+        boolean registered = false;
         try {
-            Point pt = new Point(lng, lat);
-            if (targetZone != null) {
-                redisTemplate.opsForGeo().add("geo:workers:" + targetZone, pt, wIdStr);
-            }
-            redisTemplate.opsForGeo().add("geo:workers:global", pt, wIdStr);
-            redisTemplate.opsForGeo().add("active_workers_geo", pt, wIdStr);
+            presenceService.registerPresence(canonicalWorkerId, lat, lng, targetZone, heartbeatValue);
+            registered = true;
         } catch (Exception e) {
-            logger.warn("Redis GEOADD error for worker {}: {}", canonicalWorkerId, e.getMessage());
+            logger.warn("Redis presence registration failed for worker {}: {}", canonicalWorkerId, e.getClass().getSimpleName());
         }
 
-        // 2. Redis 30-second TTL heartbeat and location timestamp
-        try {
-            redisTemplate.opsForValue().set(heartbeatKey, targetZone != null ? targetZone : "ONLINE", HEARTBEAT_TTL);
-            redisTemplate.opsForValue().set("worker:last_location_time:" + canonicalWorkerId, String.valueOf(System.currentTimeMillis()), HEARTBEAT_TTL);
-        } catch (Exception e) {
-            logger.warn("Redis heartbeat set error for worker {}: {}", canonicalWorkerId, e.getMessage());
-        }
+        updateWorkerRecord(worker, lat, lng);
+        return registered;
+    }
 
-        // 3. Update Worker Postgres record
+    /** Updates the Postgres worker record (location only; online status stays explicit). */
+    private void updateWorkerRecord(Worker worker, double lat, double lng) {
         try {
             if (worker != null) {
                 worker.setCurrentLat(lat);
                 worker.setCurrentLng(lng);
-                worker.setIsOnline(true);
+                if (!presenceService.isEnforced()) {
+                    worker.setIsOnline(true); // legacy behaviour, only with WORKER_PRESENCE_ENFORCE=false
+                }
                 worker.setLastLocationUpdatedAt(Instant.now());
                 workerRepository.save(worker);
             }
@@ -105,13 +151,12 @@ public class WorkerStreamService {
     }
 
     /**
-     * Finds active nearby workers from Redis GEO set geo:workers:{zone}
-     * filtering strictly by valid 30-second heartbeats.
+     * Finds active nearby workers from the Redis GEO sets, keeping only those with a live heartbeat
+     * (one MGET for all candidates; TTL = {@code WORKER_HEARTBEAT_TTL_SECONDS}).
      */
     public List<UUID> findActiveWorkersInZone(String zone, double lat, double lng, double radiusMeters) {
         double radiusKm = radiusMeters / 1000.0;
         List<UUID> activeWorkers = new ArrayList<>();
-        Set<String> processedWorkerIds = new HashSet<>();
 
         try {
             Circle searchArea = new Circle(new Point(lng, lat), new Distance(radiusKm, Metrics.KILOMETERS));
@@ -127,19 +172,18 @@ public class WorkerStreamService {
             }
 
             if (results != null && !results.getContent().isEmpty()) {
+                Set<UUID> candidates = new LinkedHashSet<>();
                 for (var res : results.getContent()) {
-                    String workerIdStr = res.getContent().getName();
-                    if (!processedWorkerIds.add(workerIdStr)) continue;
-
-                    // Check if 30-second heartbeat is still active
-                    Boolean hasHeartbeat = redisTemplate.hasKey("worker:heartbeat:" + workerIdStr);
-                    if (Boolean.TRUE.equals(hasHeartbeat)) {
-                        activeWorkers.add(UUID.fromString(workerIdStr));
+                    try {
+                        candidates.add(UUID.fromString(res.getContent().getName()));
+                    } catch (IllegalArgumentException notAWorkerId) {
+                        // ignore foreign members
                     }
                 }
+                activeWorkers.addAll(presenceService.retainAlive(candidates));
             }
         } catch (Exception e) {
-            logger.warn("Redis GEO search failed for zone {}: {}", zone, e.getMessage());
+            logger.warn("Redis GEO search failed for zone {}: {}", zone, e.getClass().getSimpleName());
         }
 
         return activeWorkers;

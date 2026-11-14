@@ -24,8 +24,10 @@ spring:
       host: ${REDIS_HOST:127.0.0.1}
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
-      timeout: 2000ms
-      connect-timeout: 1000ms
+      timeout: ${REDIS_COMMAND_TIMEOUT:2000ms}
+      # Was 1000ms but never applied (the value was read and ignored). Now applied; 5s leaves room
+      # for a remote TLS endpoint such as Upstash. Override with REDIS_CONNECT_TIMEOUT.
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:5000ms}
       lettuce:
         pool:
           min-idle: 4
@@ -50,6 +52,9 @@ management:
 
 # ── HomeEase Tracking Configuration ──────────────────────────────────────────
 homeease:
+  worker:
+    presence:
+      enforce: ${WORKER_PRESENCE_ENFORCE:false}   # same switch as core/dispatch; GEO members count only with a live heartbeat
   jwt:
     secret: ${JWT_SECRET:}
 
