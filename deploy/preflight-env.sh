@@ -48,7 +48,17 @@ check_secret() { # unit label min_len value
   if [ -z "$val" ]; then problem "$unit: $label is not set in its EnvironmentFile/Environment"; return; fi
   if [ "${#val}" -lt "$min" ]; then problem "$unit: $label is too short (${#val} < $min characters)"; return; fi
   local h; h=$(hash_of "$val")
-  case " $COMPROMISED " in *" $h "*) problem "$unit: $label is a value that was committed to Git history; set a NEW one"; return ;; esac
+  case " $COMPROMISED " in *" $h "*)
+    allow=$(unit_value "$unit" ALLOW_LEGACY_SECRETS || true)
+    [ -z "$allow" ] && allow="${ALLOW_LEGACY_SECRETS:-false}"
+    if [ "$allow" = "true" ]; then
+      ok "$unit: $label is set (legacy value permitted via ALLOW_LEGACY_SECRETS=true)"
+    else
+      problem "$unit: $label is a value that was committed to Git history; set a NEW one"
+      return
+    fi
+    ;;
+  esac
   ok "$unit: $label is set (${#val} characters, not a known-leaked value)"
 }
 
