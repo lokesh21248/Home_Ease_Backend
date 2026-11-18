@@ -52,6 +52,9 @@ public class RedisConfig {
     @Value("${spring.data.redis.connect-timeout:1000ms}")
     private Duration connectTimeout;
 
+    @Value("${spring.data.redis.ssl.enabled:${REDIS_SSL_ENABLED:false}}")
+    private boolean sslEnabled;
+
     /**
      * Optional full connection URL (e.g. rediss://default:&lt;password&gt;@host:6379), populated from the
      * REDIS_URL environment variable by {@link RedisUrlEnvironmentPostProcessor}. When present it
@@ -126,8 +129,9 @@ public class RedisConfig {
         if (redisUrl != null && !redisUrl.isBlank()) {
             return parseUrl(redisUrl);
         }
+        boolean ssl = sslEnabled || (redisHost != null && (redisHost.contains("upstash.io") || redisPort == 6380));
         return new RedisTarget(redisHost, redisPort, null,
-                redisPassword == null || redisPassword.isBlank() ? null : redisPassword, 0, false);
+                redisPassword == null || redisPassword.isBlank() ? null : redisPassword, 0, ssl);
     }
 
     @Bean

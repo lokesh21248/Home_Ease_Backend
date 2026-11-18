@@ -333,7 +333,8 @@ public class WorkerService {
             }
         } else if (!presenceService.isEnforced()) {
             try { // legacy behaviour (WORKER_PRESENCE_ENFORCE=false)
-                redisTemplate.opsForValue().set("worker:last_location_time:" + worker.getWorkerId(), String.valueOf(Instant.now().toEpochMilli()));
+                redisTemplate.opsForValue().set("worker:last_location_time:" + worker.getWorkerId(),
+                        String.valueOf(Instant.now().toEpochMilli()), presenceService.heartbeatTtl());
                 redisTemplate.opsForValue().set("worker:heartbeat:" + worker.getWorkerId(), "ALIVE", presenceService.heartbeatTtl());
             } catch (Exception e) {
                 logger.warn("[WorkerService] Legacy heartbeat write failed for worker {}: {}", worker.getWorkerId(), e.getClass().getSimpleName());

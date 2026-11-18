@@ -30,6 +30,30 @@ public interface BookingAssignmentRepository extends JpaRepository<BookingAssign
 
     List<BookingAssignment> findByStatusAndExpiresAtBefore(AssignmentStatus status, Instant now);
 
+    /**
+     * Bookings that have an unanswered, expired offer made by the standard engine (no score), in ID order. IDs only:
+     * the sweeper then locks each booking BEFORE it touches that booking's offers (the same order acceptance uses),
+     * which is what keeps the two from deadlocking on each other.
+     */
+    @Query("""
+        SELECT DISTINCT a.booking.bookingId FROM BookingAssignment a
+        WHERE a.status = com.homeease.backend.model.enums.AssignmentStatus.PENDING
+          AND a.expiresAt < :now
+          AND a.score IS NULL
+        ORDER BY a.booking.bookingId
+        """)
+    List<UUID> findBookingIdsWithExpiredStandardOffers(@Param("now") Instant now);
+
+    /** Same as {@link #findBookingIdsWithExpiredStandardOffers} for offers made by the wave engine (they carry a score). */
+    @Query("""
+        SELECT DISTINCT a.booking.bookingId FROM BookingAssignment a
+        WHERE a.status = com.homeease.backend.model.enums.AssignmentStatus.PENDING
+          AND a.expiresAt < :now
+          AND a.score IS NOT NULL
+        ORDER BY a.booking.bookingId
+        """)
+    List<UUID> findBookingIdsWithExpiredWaveOffers(@Param("now") Instant now);
+
     Optional<BookingAssignment> findByBooking_BookingIdAndWorker_WorkerId(UUID bookingId, UUID workerId);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)

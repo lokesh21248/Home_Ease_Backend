@@ -14,6 +14,7 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -146,7 +147,7 @@ public class AuthController {
         String fcmToken = request.get("fcmToken");
         if (userId != null && fcmToken != null && !fcmToken.isBlank()) {
             try {
-                redisTemplate.opsForValue().set("fcm_token:" + userId, fcmToken);
+                redisTemplate.opsForValue().set("fcm_token:" + userId, fcmToken, Duration.ofDays(30));
             } catch (Exception ignored) {}
             // The device push token is a bearer-style identifier; never write its value to logs.
             logger.info("Registered FCM token for user {} (length {})", userId, fcmToken.length());

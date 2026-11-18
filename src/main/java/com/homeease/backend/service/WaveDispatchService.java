@@ -5,9 +5,12 @@ import com.homeease.backend.model.enums.*;
 import com.homeease.backend.repository.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -44,6 +47,14 @@ public class WaveDispatchService {
         this.assignmentScorer = assignmentScorer;
         this.weightConfigRepository = weightConfigRepository;
         this.fcmNotificationService = fcmNotificationService;
+    }
+
+    /** Gives post-commit offers their own transaction (FCM writes a row). Optional: without one they run inline. */
+    @Autowired(required = false)
+    private PlatformTransactionManager transactionManager;
+
+    public void setTransactionManager(PlatformTransactionManager transactionManager) {
+        this.transactionManager = transactionManager;
     }
 
     /**
@@ -167,57 +178,91 @@ public class WaveDispatchService {
         payload.put("customerLng", booking.getUserLng());
         payload.put("status", "SEARCHING");
 
-        workerStreamService.pushOfferToWorkerStream(worker.getWorkerId(), payload);
+        UUID workerId = worker.getWorkerId();
+        UUID workerUserId = worker.getUser() != null ? worker.getUser().getUserId() : null;
 
-        if (worker.getUser() != null) {
-            try {
-                fcmNotificationService.sendPushNotification(
-                        worker.getUser().getUserId(),
-                        "New Job Offer (Round " + round + ")",
-                        "Immediate job offer for " + serviceName + ". Tap to accept!"
-                );
-            } catch (Exception ignored) {}
-        }
+        // Only after the offer row has been committed (see AfterCommit): a rolled-back offer must never be announced.
+        AfterCommit.run(transactionManager, "wave offer for booking " + booking.getBookingId(), () -> {
+            workerStreamService.pushOfferToWorkerStream(workerId, payload);
+
+            if (workerUserId != null) {
+                try {
+                    fcmNotificationService.sendPushNotification(
+                            workerUserId,
+                            "New Job Offer (Round " + round + ")",
+                            "Immediate job offer for " + serviceName + ". Tap to accept!"
+                    );
+                } catch (Exception ignored) {}
+            }
+        });
     }
 
     /**
      * Scheduled scanner running every 5 seconds to advance expired rounds to the next wave.
      */
     @Scheduled(fixedDelay = 5000)
-    @Transactional
     public void scanAndAdvanceRounds() {
         Instant now = Instant.now();
-        List<BookingAssignment> expiredAssignments = assignmentRepository.findByStatusAndExpiresAtBefore(
-                AssignmentStatus.PENDING, now
-        );
+        // Only offers made by THIS engine (they carry a score and rank; see dispatchRound and BatchAssigner). Offers
+        // created by BookingAssignmentService.dispatchToBatch have no score and are timed out and cascaded by
+        // BookingAssignmentService.processExpiredAssignments with that engine's own matching rules. This scanner used
+        // to claim every expired PENDING offer, so after the first batch it silently replaced the standard engine
+        // with this one (different candidate source, 20 s rounds, heartbeat-only) for every booking.
+        List<UUID> bookingIds = assignmentRepository.findBookingIdsWithExpiredWaveOffers(now);
+        if (bookingIds == null || bookingIds.isEmpty()) return;
 
-        if (expiredAssignments.isEmpty()) return;
+        // One short transaction per booking: a failure affects only that booking and is retried on the next scan.
+        for (UUID bookingId : bookingIds) {
+            try {
+                inOwnTransaction(() -> expireAndAdvance(bookingId, now));
+            } catch (Exception e) {
+                logger.error("Wave round advance failed for booking {}: {}", bookingId, e.getMessage(), e);
+            }
+        }
+    }
 
-        Set<UUID> bookingsToAdvance = new HashSet<>();
-        for (BookingAssignment ba : expiredAssignments) {
+    /**
+     * LOCK ORDER: the booking row first, then its offers, the same order acceptance uses. Updating the offers first
+     * and taking the booking afterwards made this scanner and a worker accepting at the moment of expiry wait for each
+     * other's row, and PostgreSQL aborted one of them with "deadlock detected". The offers are read afresh under the
+     * lock, so an offer accepted a moment ago is never overwritten with TIMEOUT.
+     */
+    private void expireAndAdvance(UUID bookingId, Instant now) {
+        Booking b = bookingRepository.findByIdForUpdate(bookingId).orElse(null);
+        if (b == null) return;
+
+        List<BookingAssignment> expired = assignmentRepository
+                .findByBooking_BookingIdAndStatus(bookingId, AssignmentStatus.PENDING).stream()
+                .filter(a -> a.getScore() != null && a.getExpiresAt() != null && a.getExpiresAt().isBefore(now))
+                .toList();
+        if (expired.isEmpty()) return;
+
+        for (BookingAssignment ba : expired) {
             ba.setStatus(AssignmentStatus.TIMEOUT);
             ba.setRespondedAt(now);
             assignmentRepository.save(ba);
-            if (ba.getBooking() != null) {
-                bookingsToAdvance.add(ba.getBooking().getBookingId());
-            }
         }
 
-        for (UUID bookingId : bookingsToAdvance) {
-            bookingRepository.findById(bookingId).ifPresent(b -> {
-                if (b.getStatus() == BookingStage.SEARCHING || b.getStatus() == BookingStage.REQUESTED) {
-                    List<BookingAssignment> activePending = assignmentRepository.findByBooking_BookingIdAndStatus(
-                            bookingId, AssignmentStatus.PENDING
-                    );
-                    if (activePending.isEmpty()) {
-                        List<BookingAssignment> all = assignmentRepository.findByBooking_BookingId(bookingId);
-                        int maxAttempt = all.stream().mapToInt(BookingAssignment::getAttemptNo).max().orElse(1);
-                        logger.info("Advancing booking {} from round {} to round {}", bookingId, maxAttempt, maxAttempt + 1);
-                        dispatchRound(b, null, maxAttempt + 1);
-                    }
-                }
-            });
+        if (b.getStatus() == BookingStage.SEARCHING || b.getStatus() == BookingStage.REQUESTED) {
+            List<BookingAssignment> activePending = assignmentRepository.findByBooking_BookingIdAndStatus(
+                    bookingId, AssignmentStatus.PENDING
+            );
+            if (activePending.isEmpty()) {
+                List<BookingAssignment> all = assignmentRepository.findByBooking_BookingId(bookingId);
+                int maxAttempt = all.stream().mapToInt(BookingAssignment::getAttemptNo).max().orElse(1);
+                logger.info("Advancing booking {} from round {} to round {}", bookingId, maxAttempt, maxAttempt + 1);
+                dispatchRound(b, null, maxAttempt + 1);
+            }
         }
+    }
+
+    /** Runs {@code work} in its own transaction (inline when no transaction manager is wired, as in unit tests). */
+    private void inOwnTransaction(Runnable work) {
+        if (transactionManager == null) {
+            work.run();
+            return;
+        }
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> work.run());
     }
 
     private void handleDispatchExhausted(Booking booking) {

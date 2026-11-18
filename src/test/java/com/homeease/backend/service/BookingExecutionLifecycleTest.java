@@ -422,7 +422,7 @@ public class BookingExecutionLifecycleTest {
                 when(bookingServiceItemRepository.findByBooking_BookingId(bookingId))
                                 .thenReturn(Collections.emptyList());
 
-                dispatchConsumer.consumeBookingEvent(record, null);
+                dispatchConsumer.consumeBookingEvent(record);
 
                 verify(bookingEventRepository).save(any(BookingEvent.class));
         }
@@ -542,7 +542,8 @@ public class BookingExecutionLifecycleTest {
         @DisplayName("Task 9 Scenario 6: Worker rejects the request triggers cascading re-dispatch")
         void testScenario06_WorkerRejection_CascadesToNextBatch() {
                 testBooking.setStatus(BookingStage.SEARCHING);
-                when(bookingRepository.findById(bookingId)).thenReturn(Optional.of(testBooking));
+                // Rejection now locks the booking row (same lock as acceptance) so concurrent rejections serialise.
+                when(bookingRepository.findByIdForUpdate(bookingId)).thenReturn(Optional.of(testBooking));
                 when(workerRepository.findByUser_UserId(workerUserId1)).thenReturn(Optional.of(testWorker1));
 
                 BookingAssignment assignment = BookingAssignment.builder()
@@ -578,10 +579,13 @@ public class BookingExecutionLifecycleTest {
                                 .expiresAt(Instant.now().minus(15, ChronoUnit.SECONDS))
                                 .build();
 
-                when(assignmentRepository.findByStatusAndExpiresAtBefore(eq(AssignmentStatus.PENDING), any(Instant.class)))
-                                .thenReturn(List.of(expiredAssignment));
-                when(bookingRepository.findById(bookingId)).thenReturn(Optional.of(testBooking));
+                // The sweeper lists the bookings with expired offers, locks each booking, then reads that booking's
+                // offers under the lock (first the expired one, then nothing left pending).
+                when(assignmentRepository.findBookingIdsWithExpiredStandardOffers(any(Instant.class)))
+                                .thenReturn(List.of(bookingId));
+                when(bookingRepository.findByIdForUpdate(bookingId)).thenReturn(Optional.of(testBooking));
                 when(assignmentRepository.findByBooking_BookingIdAndStatus(bookingId, AssignmentStatus.PENDING))
+                                .thenReturn(List.of(expiredAssignment))
                                 .thenReturn(Collections.emptyList());
 
                 assignmentService.processExpiredAssignments();

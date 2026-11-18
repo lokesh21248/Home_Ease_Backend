@@ -12,14 +12,19 @@ import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.Point;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.security.SecureRandom;
 import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -75,10 +80,73 @@ public class CartCheckoutService {
         this.pricingEngineService = pricingEngineService;
     }
 
+    /** Used to open the checkout transaction explicitly. Optional so unit tests that build the service by hand still work. */
+    @Autowired(required = false)
+    private PlatformTransactionManager transactionManager;
+
+    public void setTransactionManager(PlatformTransactionManager transactionManager) {
+        this.transactionManager = transactionManager;
+    }
+
+    /** What the checkout transaction produced. */
+    private record CheckoutResult(BookingResponse response, UUID bookingId, UUID dispatchSubServiceId, boolean dispatchNeeded) { }
+
     /**
-     * Checkout from Cart to create an atomic Booking
+     * Checkout from Cart to create an atomic Booking.
+     *
+     * <p>Same three steps as {@link InstantBookingService#createInstantBooking}: the booking is committed first, worker
+     * dispatch then runs in its own transaction against the committed booking, and the response is built from the
+     * committed state. {@code SUPPORTS} stops the class-level {@code @Transactional} from wrapping all three steps in a
+     * single transaction (which is what made the dispatch invisible to the booking it needed).
      */
+    @Transactional(propagation = Propagation.SUPPORTS)
     public BookingResponse checkout(UUID userId, CheckoutFromCartRequest req) {
+        CheckoutResult result = inTransaction(false, () -> persistCheckout(userId, req));
+        if (!result.dispatchNeeded()) {
+            return result.response();
+        }
+
+        if (AfterCommit.inTransaction()) {
+            AfterCommit.run("cart checkout dispatch " + result.bookingId(),
+                    () -> dispatch(result.bookingId(), result.dispatchSubServiceId()));
+            return result.response();
+        }
+
+        dispatch(result.bookingId(), result.dispatchSubServiceId());
+        return currentState(result.bookingId(), result.response());
+    }
+
+    private void dispatch(UUID bookingId, UUID subServiceId) {
+        try {
+            assignmentService.dispatchInstantBookingById(bookingId, subServiceId);
+        } catch (Exception e) {
+            log.error("Booking {} was saved but dispatching it failed; it stays REQUESTED and will be dispatched "
+                    + "again by the recovery job: {}", bookingId, e.getMessage(), e);
+        }
+    }
+
+    private BookingResponse currentState(UUID bookingId, BookingResponse fallback) {
+        try {
+            BookingResponse fresh = inTransaction(true,
+                    () -> bookingRepository.findById(bookingId).map(this::mapToBookingResponse).orElse(null));
+            return fresh != null ? fresh : fallback;
+        } catch (Exception e) {
+            log.warn("Could not re-read booking {} after dispatch, returning the creation snapshot: {}", bookingId, e.getMessage());
+            return fallback;
+        }
+    }
+
+    private <T> T inTransaction(boolean readOnly, Supplier<T> work) {
+        if (transactionManager == null) {
+            return work.get();
+        }
+        TransactionTemplate template = new TransactionTemplate(transactionManager);
+        template.setReadOnly(readOnly);
+        return template.execute(status -> work.get());
+    }
+
+    /** Runs inside the checkout transaction. Must not dispatch or notify anyone. */
+    private CheckoutResult persistCheckout(UUID userId, CheckoutFromCartRequest req) {
         log.info("Processing checkout for user: {}, bookingType: {}", userId, req.getBookingType());
 
         // 1. Idempotency Guard
@@ -86,7 +154,7 @@ public class CartCheckoutService {
             Optional<Booking> existing = bookingRepository.findByIdempotencyKey(req.getIdempotencyKey().trim());
             if (existing.isPresent()) {
                 log.info("Returning existing booking for idempotencyKey: {}", req.getIdempotencyKey());
-                return mapToBookingResponse(existing.get());
+                return new CheckoutResult(mapToBookingResponse(existing.get()), existing.get().getBookingId(), null, false);
             }
         }
 
@@ -254,19 +322,11 @@ public class CartCheckoutService {
                 null
         );
 
-        // 14. Dispatch matching workers
-        if (bType == BookingType.INSTANT && firstSubServiceId != null) {
-            try {
-                assignmentService.dispatchInstantBooking(booking, firstSubServiceId);
-            } catch (Exception e) {
-                log.warn("Instant dispatch exception (non-fatal, continuing checkout): {}", e.getMessage());
-            }
-        }
-
-        // 15. Clear the user's cart
+        // 14. Clear the user's cart (worker matching runs after this transaction commits, see checkout())
         cartItemRepository.deleteByCart_CartId(cart.getCartId());
 
-        return mapToBookingResponse(booking);
+        boolean dispatchNeeded = bType == BookingType.INSTANT && firstSubServiceId != null;
+        return new CheckoutResult(mapToBookingResponse(booking), booking.getBookingId(), firstSubServiceId, dispatchNeeded);
     }
 
     private Instant parseScheduledTime(LocalDate date, String slot) {

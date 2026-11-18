@@ -92,9 +92,15 @@ public class ReassignmentService {
             logger.warn("Domain event record skipped: {}", e.getMessage());
         }
 
-        // 4. Re-dispatch booking to next eligible candidate
+        // 4. Re-dispatch booking to next eligible candidate, once this transaction has committed.
+        // This transaction holds the booking row lock (findByIdForUpdate above) and has uncommitted changes to it.
+        // Dispatching from inside it would need a second transaction on the very same row, which can never proceed
+        // while this one waits for it: a self-deadlock the database cannot detect. After the commit the booking is
+        // SEARCHING with no worker and no outstanding offer, which dispatchInstantBookingById accepts.
         UUID subServiceId = null;
-        assignmentService.dispatchInstantBooking(booking, subServiceId);
+        UUID dispatchBookingId = booking.getBookingId();
+        AfterCommit.run("reassignment dispatch " + dispatchBookingId,
+                () -> assignmentService.dispatchInstantBookingById(dispatchBookingId, subServiceId));
     }
 
     /**

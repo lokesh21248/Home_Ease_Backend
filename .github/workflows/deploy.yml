@@ -43,7 +43,6 @@ jobs:
             echo "🔎 Pre-flight: the new build REQUIRES DB_USER/DB_PASS (or SPRING_DATASOURCE_*) and JWT_SECRET..."
             echo "   If a variable is missing this step fails BEFORE anything is built, copied or restarted,"
             echo "   so the running services stay up. Set the variables in the services' EnvironmentFile and redeploy."
-            export ALLOW_LEGACY_SECRETS=true
             bash deploy/preflight-env.sh homeease-core:core homeease-tracking:tracking
 
             echo "📦 Building Core Backend JAR..."

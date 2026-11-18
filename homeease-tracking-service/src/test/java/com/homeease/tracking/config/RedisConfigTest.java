@@ -49,6 +49,18 @@ class RedisConfigTest {
     }
 
     @Test
+    void host_port_with_ssl_enabled_or_upstash_host_enables_tls() {
+        RedisConfig c = config("", "example.com", "pw");
+        ReflectionTestUtils.setField(c, "sslEnabled", true);
+        LettuceConnectionFactory f1 = (LettuceConnectionFactory) c.redisConnectionFactory();
+        assertThat(f1.isUseSsl()).isTrue();
+
+        RedisConfig c2 = config("", "my-db.upstash.io", "pw");
+        LettuceConnectionFactory f2 = (LettuceConnectionFactory) c2.redisConnectionFactory();
+        assertThat(f2.isUseSsl()).isTrue();
+    }
+
+    @Test
     void parse_handles_password_only_userinfo_percent_decoding_and_database() {
         RedisConfig.RedisTarget t = RedisConfig.parseUrl("redis://:p%40ss@h.example:6380/2");
         assertThat(t.ssl()).isFalse();
