@@ -46,6 +46,8 @@ import static org.junit.jupiter.api.Assertions.*;
 @TestPropertySource(properties = {
         "spring.kafka.bootstrap-servers=${spring.embedded.kafka.brokers}",
         "spring.kafka.listener.concurrency=1",
+        // consumers are off by default (KAFKA_LISTENER_AUTO_STARTUP=false); this test needs them running
+        "spring.kafka.listener.auto-startup=true",
         "homeease.kafka.topics.partitions=1",
         "homeease.kafka.topics.booking-events=firstdoor.booking.events.v1",
         "homeease.kafka.topics.booking-events-dlt=firstdoor.booking.events.DLT",

@@ -343,6 +343,8 @@ public class DualBookingSystemTest {
         assertEquals(BookingStage.REQUESTED, response.getStatus());
         assertNotNull(response.getPinCode());
         assertEquals(4, response.getPinCode().length());
-        verify(assignmentService).dispatchInstantBooking(any(Booking.class), eq(subServiceId));
+        // Dispatch is requested by booking ID, after the booking transaction (see InstantBookingDispatchPostgresTest
+        // for the real-PostgreSQL proof that the offers are actually persisted).
+        verify(assignmentService).dispatchInstantBookingById(any(UUID.class), eq(subServiceId));
     }
 }

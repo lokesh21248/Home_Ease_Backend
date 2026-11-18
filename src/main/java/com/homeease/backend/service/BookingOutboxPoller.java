@@ -45,6 +45,15 @@ public class BookingOutboxPoller {
     @Value("${homeease.kafka.outbox.publish-timeout-seconds:5}")
     private long publishTimeoutSeconds;
 
+    /**
+     * Injected by Spring only; stays null in hand-built instances (unit tests), which are treated as "configured".
+     * A BLANK value means no broker has been provisioned.
+     */
+    @Value("${spring.kafka.bootstrap-servers:}")
+    private String bootstrapServers;
+
+    private volatile boolean warnedNoBroker;
+
     public BookingOutboxPoller(BookingEventOutboxRepository outboxRepository,
                                KafkaTemplate<String, String> kafkaTemplate) {
         this.outboxRepository = outboxRepository;
@@ -56,6 +65,16 @@ public class BookingOutboxPoller {
      */
     @Scheduled(fixedDelayString = "${homeease.kafka.outbox.poll-interval-ms:500}")
     public void pollAndPublishPendingEvents() {
+        if (bootstrapServers != null && bootstrapServers.isBlank()) {
+            // Outbox enabled but no broker provisioned: leave every row PENDING. Trying anyway would burn each event's
+            // attempts against a producer that cannot even be created and mark them FAILED for good.
+            if (!warnedNoBroker) {
+                warnedNoBroker = true;
+                logger.warn("homeease.kafka.outbox.enabled=true but spring.kafka.bootstrap-servers (KAFKA_BOOTSTRAP_SERVERS) "
+                        + "is blank: not publishing; outbox rows stay PENDING until a broker is configured");
+            }
+            return;
+        }
         List<BookingEventOutbox> pendingEvents;
         try {
             pendingEvents = outboxRepository.findPendingEventsForProcessing(Instant.now(), batchSize);

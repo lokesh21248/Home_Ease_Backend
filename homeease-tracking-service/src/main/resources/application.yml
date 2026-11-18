@@ -14,6 +14,8 @@ spring:
       # RedisUrlEnvironmentPostProcessor and overrides host/port/password; rediss:// enables TLS.
       timeout: ${REDIS_COMMAND_TIMEOUT:2000ms}
       connect-timeout: ${REDIS_CONNECT_TIMEOUT:5000ms}
+      ssl:
+        enabled: ${REDIS_SSL_ENABLED:false}
 
 management:
   endpoints:

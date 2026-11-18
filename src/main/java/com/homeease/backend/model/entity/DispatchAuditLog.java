@@ -3,6 +3,8 @@ package com.homeease.backend.model.entity;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -45,7 +47,12 @@ public class DispatchAuditLog {
     @Builder.Default
     private Integer eligibleWorkersCount = 0;
 
-    @Column(name = "rejected_worker_reasons", columnDefinition = "TEXT")
+    // The column is JSONB (V14). Mapped like BookingEvent/BookingEventOutbox.payload so the write works whether or not
+    // the JDBC URL carries stringtype=unspecified: without a JSON mapping PostgreSQL rejects the insert ("column is of
+    // type jsonb but expression is of type character varying"), and because the insert is only sent at commit it is not
+    // caught by the audit code's try/catch but rolls back the whole dispatch transaction (no offers for the booking).
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "rejected_worker_reasons", columnDefinition = "jsonb")
     private String rejectedWorkerReasons;
 
     @Column(name = "selected_worker_id")

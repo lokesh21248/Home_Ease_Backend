@@ -10,14 +10,17 @@ import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.Point;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 @Service
 public class InstantBookingService {
@@ -64,8 +67,86 @@ public class InstantBookingService {
         this.userAddressService = userAddressService;
     }
 
-    @Transactional
+    /** Used to open the booking transaction explicitly. Optional so unit tests that build the service by hand still work. */
+    @Autowired(required = false)
+    private PlatformTransactionManager transactionManager;
+
+    public void setTransactionManager(PlatformTransactionManager transactionManager) {
+        this.transactionManager = transactionManager;
+    }
+
+    /** What the booking transaction produced. */
+    private record CreatedBooking(BookingResponse response, UUID firstSubServiceId, boolean idempotentReplay) { }
+
+    /**
+     * Creates an instant booking and dispatches it to nearby workers, in three separate steps.
+     *
+     * <ol>
+     *   <li><b>Booking transaction</b>: the booking, its line items and the domain event / outbox row are written and
+     *       COMMITTED. Nothing else happens inside this transaction.</li>
+     *   <li><b>Dispatch</b>: only after that commit, worker matching and the {@code booking_assignment} /
+     *       audit rows are written in their own transaction, against the committed booking
+     *       ({@link BookingAssignmentService#dispatchInstantBookingById}). It used to run inside the booking
+     *       transaction via {@code REQUIRES_NEW}: the new transaction could not see the uncommitted booking, every
+     *       insert referencing it violated a foreign key, the error was swallowed, and the booking was left
+     *       {@code SEARCHING} with no assignments. A dispatch failure can no longer affect the booking: it stays
+     *       {@code REQUESTED} and the recovery job dispatches it again.</li>
+     *   <li><b>Response</b>: built from the committed state, so it reports what really happened
+     *       ({@code SEARCHING}, or {@code WORKER_NOT_FOUND}), exactly as the API has always documented.</li>
+     * </ol>
+     */
     public BookingResponse createInstantBooking(UUID userId, InstantBookingRequest request, String idempotencyKey) {
+        CreatedBooking created = inTransaction(false, () -> persistInstantBooking(userId, request, idempotencyKey));
+        if (created.idempotentReplay()) {
+            return created.response();
+        }
+
+        UUID bookingId = created.response().getBookingId();
+        if (AfterCommit.inTransaction()) {
+            // The caller itself runs inside a transaction that has not committed yet: dispatching now would not see
+            // the booking. Dispatch as soon as that outer transaction commits instead.
+            AfterCommit.run("instant booking dispatch " + bookingId,
+                    () -> dispatch(bookingId, created.firstSubServiceId()));
+            return created.response();
+        }
+
+        dispatch(bookingId, created.firstSubServiceId());
+        return currentState(bookingId, created.response());
+    }
+
+    private void dispatch(UUID bookingId, UUID firstSubServiceId) {
+        try {
+            assignmentService.dispatchInstantBookingById(bookingId, firstSubServiceId);
+        } catch (Exception dispatchEx) {
+            logger.error("Instant booking {} was saved but dispatching it failed; it stays REQUESTED and will be "
+                            + "dispatched again by the recovery job: {}",
+                    bookingId, dispatchEx.getMessage(), dispatchEx);
+        }
+    }
+
+    /** Re-reads the committed booking so the response reflects the dispatch outcome; falls back to the creation snapshot. */
+    private BookingResponse currentState(UUID bookingId, BookingResponse fallback) {
+        try {
+            BookingResponse fresh = inTransaction(true,
+                    () -> bookingRepository.findById(bookingId).map(this::mapToResponse).orElse(null));
+            return fresh != null ? fresh : fallback;
+        } catch (Exception e) {
+            logger.warn("Could not re-read booking {} after dispatch, returning the creation snapshot: {}", bookingId, e.getMessage());
+            return fallback;
+        }
+    }
+
+    private <T> T inTransaction(boolean readOnly, Supplier<T> work) {
+        if (transactionManager == null) {
+            return work.get();
+        }
+        TransactionTemplate template = new TransactionTemplate(transactionManager);
+        template.setReadOnly(readOnly);
+        return template.execute(status -> work.get());
+    }
+
+    /** Phase 1: runs inside the booking transaction. Must not dispatch or notify anyone. */
+    private CreatedBooking persistInstantBooking(UUID userId, InstantBookingRequest request, String idempotencyKey) {
         logger.info("Creating Instant Booking for customer {} at ({}, {}) in pincode {}",
                 userId, request.getUserLat(), request.getUserLng(), request.getPincode());
 
@@ -73,7 +154,7 @@ public class InstantBookingService {
         if (idempotencyKey != null && !idempotencyKey.isBlank()) {
             var existing = bookingRepository.findByIdempotencyKey(idempotencyKey.trim());
             if (existing.isPresent()) {
-                return mapToResponse(existing.get());
+                return new CreatedBooking(mapToResponse(existing.get()), null, true);
             }
         }
 
@@ -264,14 +345,8 @@ public class InstantBookingService {
                 null
         );
 
-        // Dispatch candidate alerts to nearby workers
-        try {
-            assignmentService.dispatchInstantBooking(booking, firstSubServiceId);
-        } catch (Exception dispatchEx) {
-            logger.error("Error during instant booking dispatch for booking {}: {}", booking.getBookingId(), dispatchEx.getMessage(), dispatchEx);
-        }
-
-        return mapToResponse(booking);
+        // Worker matching is deliberately NOT done here: it runs after this transaction commits (see createInstantBooking).
+        return new CreatedBooking(mapToResponse(booking), firstSubServiceId, false);
     }
 
     public BookingResponse mapToResponse(Booking b) {

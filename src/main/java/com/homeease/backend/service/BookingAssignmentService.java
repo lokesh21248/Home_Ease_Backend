@@ -21,7 +21,12 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
+
+import jakarta.persistence.EntityManager;
 
 import java.security.SecureRandom;
 import java.time.Duration;
@@ -81,6 +86,50 @@ public class BookingAssignmentService {
 
     public void setAcceptanceGuard(WorkerAcceptanceGuard acceptanceGuard) {
         this.acceptanceGuard = acceptanceGuard;
+    }
+
+    /**
+     * Gives post-commit notifications their own transaction (FCM and delivery bookkeeping write rows). Optional so
+     * directly-constructed instances (unit tests) keep working: without one, post-commit actions simply run inline.
+     */
+    @Autowired(required = false)
+    private PlatformTransactionManager transactionManager;
+
+    public void setTransactionManager(PlatformTransactionManager transactionManager) {
+        this.transactionManager = transactionManager;
+    }
+
+    /**
+     * Only used to re-read a locked booking (see {@link #lockBooking}). Null in directly-constructed instances (unit
+     * tests), where there is no persistence context to go stale.
+     */
+    @Autowired(required = false)
+    private EntityManager entityManager;
+
+    /** Runs {@code work} in its own transaction (or inline when no transaction manager is wired, as in unit tests). */
+    private void inOwnTransaction(Runnable work) {
+        if (transactionManager == null) {
+            work.run();
+            return;
+        }
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> work.run());
+    }
+
+    /**
+     * Locks the booking row ({@code SELECT ... FOR UPDATE}) and returns its CURRENT committed state.
+     *
+     * <p>With open-in-view (Spring Boot's default for web requests) one EntityManager lives for the whole request, so a
+     * copy of the booking read earlier in the request may already be cached in it. A locking query waits for the row
+     * lock but hands back that cached copy, so the status checks made under the lock would be made against stale data
+     * (a booking another transaction has since cancelled or accepted would still look like it is waiting). Re-reading
+     * the row after the lock is taken makes every check run against what is really committed.
+     */
+    private Optional<Booking> lockBooking(UUID bookingId) {
+        Optional<Booking> locked = bookingRepository.findByIdForUpdate(bookingId);
+        if (entityManager != null && locked != null && locked.isPresent()) {
+            entityManager.refresh(locked.get());
+        }
+        return locked;
     }
 
     @Autowired
@@ -150,9 +199,68 @@ public class BookingAssignmentService {
     }
 
     /**
-     * Dispatch Instant Booking: Finds eligible candidates using radius expansion tiers (5→10→15→20km).
+     * Production entry point for dispatching an instant booking: matches workers, persists the offers
+     * ({@code booking_assignment}) and the audit row, and alerts workers.
+     *
+     * <p>It takes the booking ID, never an entity, and runs in its OWN transaction. That transaction loads the booking
+     * row and locks it ({@code SELECT ... FOR UPDATE}), so:
+     * <ul>
+     *   <li>the booking must already be COMMITTED. Callers that create the booking in a transaction must call this
+     *       only after that transaction has committed (see {@code InstantBookingService}); a transaction that has not
+     *       committed is invisible here, so inserting rows that reference it violates the foreign keys;</li>
+     *   <li>no entity instance is shared between the caller's transaction and this one, so nothing the dispatch
+     *       changes can leak back into, or conflict with, the caller's persistence context;</li>
+     *   <li>concurrent dispatches of the same booking (request thread, recovery job, Kafka consumer, retry endpoint)
+     *       are serialised and the later ones find the work already done, so workers are not offered the job twice;</li>
+     *   <li>if anything fails, this transaction rolls back completely: no partial offers, no status change, and (see
+     *       {@link AfterCommit}) no worker is ever notified. The booking is simply still {@code REQUESTED} and can be
+     *       dispatched again.</li>
+     * </ul>
      */
-    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void dispatchInstantBookingById(UUID bookingId, UUID targetSubServiceId) {
+        if (bookingId == null) return;
+
+        Booking booking = lockBooking(bookingId).orElse(null);
+        if (booking == null) {
+            logger.warn("[DISPATCH_SKIPPED] bookingId={} reason=NOT_FOUND", bookingId);
+            return;
+        }
+        if (!isDispatchable(booking)) {
+            logger.info("[DISPATCH_SKIPPED] bookingId={} reason=ALREADY_HANDLED status={}", bookingId, booking.getStatus());
+            return;
+        }
+        dispatchInstantBooking(booking, targetSubServiceId);
+    }
+
+    /**
+     * A booking may start (or restart) dispatch when it is waiting ({@code REQUESTED}/{@code PENDING}), or when it is
+     * {@code SEARCHING} with nobody currently holding an offer (for example after a reassignment). Anything else
+     * (accepted, cancelled, completed, an offer still outstanding, ...) means the work is already done or in flight.
+     */
+    private boolean isDispatchable(Booking booking) {
+        BookingStage status = booking.getStatus();
+        if (status == BookingStage.REQUESTED || status == BookingStage.PENDING) {
+            return true;
+        }
+        if (status == BookingStage.SEARCHING && booking.getWorker() == null) {
+            return assignmentRepository
+                    .findByBooking_BookingIdAndStatus(booking.getBookingId(), AssignmentStatus.PENDING).isEmpty();
+        }
+        return false;
+    }
+
+    /**
+     * Dispatch Instant Booking: Finds eligible candidates using radius expansion tiers (5→10→15→20km).
+     *
+     * <p>Entity-based variant: it runs in the CALLER'S transaction ({@code REQUIRED}) and works on the caller's
+     * entity, which must therefore belong to that same transaction. It previously ran in {@code REQUIRES_NEW}, which
+     * is wrong for a booking created in the caller's still-uncommitted transaction (foreign-key violations on the
+     * rows inserted here) and made it mutate an entity owned by another transaction. Code that creates a booking and
+     * then dispatches it must use {@link #dispatchInstantBookingById(UUID, UUID)} after the creating transaction
+     * has committed.
+     */
+    @Transactional
     public void dispatchInstantBooking(Booking booking, UUID targetSubServiceId) {
         if (booking == null) return;
         UUID serviceId = booking.getService() != null ? booking.getService().getServiceId() : null;
@@ -165,6 +273,17 @@ public class BookingAssignmentService {
         double usedRadius = radiusMeters;
         Map<String, String> rejectionReasons = new LinkedHashMap<>();
 
+        // A worker who already holds (or answered, or ignored) an offer for this booking is never offered it a second
+        // time: dispatchToBatch skips such workers anyway. Leaving them in the candidate list made a retry or a
+        // reassignment with nobody new to offer end with the booking SEARCHING and not a single pending offer, i.e.
+        // nobody looking for a worker and the customer never told. Without them the empty-list branch below applies.
+        Set<UUID> alreadyOffered = new HashSet<>();
+        for (BookingAssignment previous : assignmentRepository.findByBooking_BookingId(booking.getBookingId())) {
+            if (previous.getWorker() != null) {
+                alreadyOffered.add(previous.getWorker().getWorkerId());
+            }
+        }
+
         // -------------------------------------------------------------
         // STRATEGY 1: PINCODE-FIRST MATCHING
         // -------------------------------------------------------------
@@ -172,6 +291,7 @@ public class BookingAssignmentService {
             List<Worker> pincodeWorkers = workerRepository.findByIsOnlineTrueAndIsVerifiedTrue();
             List<Worker> samePincodeWorkers = pincodeWorkers.stream()
                     .filter(w -> matchesWorkingPincode(w, servicePincode))
+                    .filter(w -> !alreadyOffered.contains(w.getWorkerId()))
                     .filter(w -> {
                         boolean eligible = isCandidateEligible(w, serviceId, targetSubServiceId, servicePincode, rejectionReasons);
                         double dist = calculateHaversineDistance(booking.getUserLat(), booking.getUserLng(),
@@ -210,7 +330,7 @@ public class BookingAssignmentService {
         if (eligibleCandidates.isEmpty()) {
             for (double tier : RADIUS_EXPANSION_TIERS) {
                 rejectionReasons.clear();
-                eligibleCandidates = findEligibleCandidateWorkers(
+                eligibleCandidates = new ArrayList<>(findEligibleCandidateWorkers(
                         serviceId,
                         targetSubServiceId,
                         booking.getUserLat(),
@@ -218,7 +338,7 @@ public class BookingAssignmentService {
                         tier,
                         servicePincode,
                         rejectionReasons
-                );
+                ).stream().filter(w -> !alreadyOffered.contains(w.getWorkerId())).toList());
                 usedRadius = tier;
                 if (!eligibleCandidates.isEmpty()) {
                     logger.info("Found {} eligible workers within {} m for booking {}", eligibleCandidates.size(), tier, booking.getBookingId());
@@ -233,6 +353,20 @@ public class BookingAssignmentService {
 
         for (Worker worker : eligibleCandidates) {
             logger.info("[WORKER_SELECTED] bookingId={}, workerId={}", booking.getBookingId(), worker.getWorkerId());
+        }
+
+        // Nobody NEW to ask, but an earlier offer is still alive (a retry of a booking that is already being offered):
+        // the search is not exhausted. Declaring WORKER_NOT_FOUND here would tell the customer nobody is available and
+        // make the status check in acceptance reject the worker who is holding a live offer. Leave it SEARCHING; the
+        // offer sweeper moves the booking on when those offers expire.
+        if (eligibleCandidates.isEmpty() && hasLiveOffer(booking.getBookingId())) {
+            logger.info("[DISPATCH_SKIPPED] bookingId={} reason=LIVE_OFFER_OUTSTANDING nobody new to offer, keeping SEARCHING",
+                    booking.getBookingId());
+            if (booking.getStatus() != BookingStage.SEARCHING) {
+                booking.setStatus(BookingStage.SEARCHING);
+                bookingRepository.save(booking);
+            }
+            return;
         }
 
         // Record Dispatch Audit Log
@@ -271,6 +405,13 @@ public class BookingAssignmentService {
 
         // Dispatch to first batch of size dispatchBatchSize
         dispatchToBatch(booking, eligibleCandidates, 1);
+    }
+
+    /** True while at least one worker holds an unanswered offer for the booking that has not yet expired. */
+    private boolean hasLiveOffer(UUID bookingId) {
+        Instant now = Instant.now();
+        return assignmentRepository.findByBooking_BookingIdAndStatus(bookingId, AssignmentStatus.PENDING).stream()
+                .anyMatch(a -> a.getExpiresAt() == null || a.getExpiresAt().isAfter(now));
     }
 
     /**
@@ -316,8 +457,10 @@ public class BookingAssignmentService {
             assignmentRepository.save(assignment);
             batchCount++;
 
-            // Alert worker via WebSocket & FCM
-            sendWorkerJobAlert(worker, booking);
+            // Alert the worker via WebSocket & FCM, but only AFTER this transaction has committed the offer: the
+            // worker's app may call GET /workers/me/requests the instant the push arrives, and a rolled-back offer
+            // must never have been announced.
+            queueWorkerJobAlert(worker, booking);
         }
 
         logger.info("Dispatched booking {} to {} candidate workers (batch {})",
@@ -329,7 +472,7 @@ public class BookingAssignmentService {
      */
     @Transactional
     public Booking handleWorkerAcceptance(UUID bookingId, UUID workerUserId) {
-        Booking booking = bookingRepository.findByIdForUpdate(bookingId)
+        Booking booking = lockBooking(bookingId)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
 
         if (booking.getStatus() != BookingStage.SEARCHING &&
@@ -430,7 +573,10 @@ public class BookingAssignmentService {
      */
     @Transactional
     public void handleWorkerRejection(UUID bookingId, UUID workerUserId, UUID targetSubServiceId) {
-        Booking booking = bookingRepository.findById(bookingId)
+        // Lock the booking row (same lock order as acceptance: booking first). Without it, two workers rejecting at
+        // the same moment each see the other's offer still PENDING, neither cascades, and the booking is stranded in
+        // SEARCHING with every offer rejected.
+        Booking booking = lockBooking(bookingId)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
 
         Worker worker = workerRepository.findByUser_UserId(workerUserId)
@@ -572,62 +718,94 @@ public class BookingAssignmentService {
      * Periodic scheduled poller (every 10 seconds): checks expired pending assignments and cascades.
      */
     @Scheduled(fixedDelay = 10000)
-    @Transactional
     public void processExpiredAssignments() {
         Instant now = Instant.now();
-        List<BookingAssignment> expiredList = assignmentRepository.findByStatusAndExpiresAtBefore(AssignmentStatus.PENDING, now);
-
-        if (expiredList.isEmpty()) {
+        // Offers made by the wave engine carry a score and are advanced round by round by
+        // WaveDispatchService.scanAndAdvanceRounds. This sweeper owns the unscored offers created by dispatchToBatch.
+        // Both schedulers used to claim every expired PENDING offer, so whichever ran first cascaded it with a
+        // different matching engine and the other one found nothing left to do.
+        List<UUID> bookingIds = assignmentRepository.findBookingIdsWithExpiredStandardOffers(now);
+        if (bookingIds == null || bookingIds.isEmpty()) {
             return;
         }
 
-        Set<UUID> affectedBookings = new HashSet<>();
-        for (BookingAssignment assignment : expiredList) {
+        // One short transaction per booking. A failure rolls back only that booking (it is simply picked up again on
+        // the next run) instead of discarding the work done for every other booking in the batch.
+        for (UUID bookingId : bookingIds) {
+            try {
+                inOwnTransaction(() -> expireOffersAndCascade(bookingId, now));
+            } catch (Exception e) {
+                logger.error("[OFFER_EXPIRY_FAILED] bookingId={}: {}", bookingId, e.getMessage(), e);
+            }
+        }
+    }
+
+    /**
+     * Times out one booking's expired offers and, if nobody holds an offer any more, offers the booking to the next
+     * batch.
+     *
+     * <p>LOCK ORDER: the booking row first, then its offers. That is the order acceptance and rejection use. The
+     * sweeper used to update the offers first and take the booking afterwards, so a worker accepting at the very
+     * moment their offer expired made the two wait for each other's row and PostgreSQL aborted one of them with
+     * "deadlock detected". Under the lock the offers are read afresh, so an offer that was accepted a moment ago is
+     * never overwritten with TIMEOUT.
+     */
+    private void expireOffersAndCascade(UUID bookingId, Instant now) {
+        Booking booking = lockBooking(bookingId).orElse(null);
+        if (booking == null) {
+            return;
+        }
+        List<BookingAssignment> expired = assignmentRepository
+                .findByBooking_BookingIdAndStatus(bookingId, AssignmentStatus.PENDING).stream()
+                .filter(a -> a.getScore() == null && a.getExpiresAt() != null && a.getExpiresAt().isBefore(now))
+                .toList();
+        if (expired.isEmpty()) {
+            return; // answered or already handled since the list of bookings was read
+        }
+        for (BookingAssignment assignment : expired) {
             assignment.setStatus(AssignmentStatus.TIMEOUT);
             assignment.setRespondedAt(now);
             assignmentRepository.save(assignment);
-            if (assignment.getBooking() != null) {
-                affectedBookings.add(assignment.getBooking().getBookingId());
-            }
         }
-
-        for (UUID bookingId : affectedBookings) {
-            bookingRepository.findById(bookingId).ifPresent(booking -> {
-                if (booking.getStatus() == BookingStage.SEARCHING || booking.getStatus() == BookingStage.REQUESTED) {
-                    List<BookingAssignment> remainingPending = assignmentRepository
-                            .findByBooking_BookingIdAndStatus(bookingId, AssignmentStatus.PENDING);
-                    if (remainingPending.isEmpty()) {
-                        cascadeToNextBatch(booking, null);
-                    }
-                }
-            });
+        if (booking.getStatus() == BookingStage.SEARCHING || booking.getStatus() == BookingStage.REQUESTED) {
+            List<BookingAssignment> remainingPending = assignmentRepository
+                    .findByBooking_BookingIdAndStatus(bookingId, AssignmentStatus.PENDING);
+            if (remainingPending.isEmpty()) {
+                cascadeToNextBatch(booking, null);
+            }
         }
     }
 
     private void cascadeToNextBatch(Booking booking, UUID targetSubServiceId) {
         UUID serviceId = booking.getService() != null ? booking.getService().getServiceId() : null;
-        List<Worker> allCandidates = new ArrayList<>();
-        for (double tier : RADIUS_EXPANSION_TIERS) {
-            allCandidates = findEligibleCandidateWorkers(
-                    serviceId,
-                    targetSubServiceId,
-                    booking.getUserLat(),
-                    booking.getUserLng(),
-                    tier
-            );
-            if (!allCandidates.isEmpty()) break;
-        }
+        String servicePincode = booking.getServicePincode();
 
-        // Filter out workers who already received an assignment for this booking
+        // Workers who already received an offer for this booking (whatever the outcome) are never offered it again
         List<BookingAssignment> pastAssignments = assignmentRepository.findByBooking_BookingId(booking.getBookingId());
         Set<UUID> attemptedWorkerIds = new HashSet<>();
         for (BookingAssignment a : pastAssignments) {
             attemptedWorkerIds.add(a.getWorker().getWorkerId());
         }
 
-        List<Worker> nextCandidates = allCandidates.stream()
-                .filter(w -> !attemptedWorkerIds.contains(w.getWorkerId()))
-                .toList();
+        // Widen the radius until a tier yields at least one worker who has NOT been offered the job yet. Stopping at
+        // the first non-empty tier would declare the booking exhausted while wider tiers still hold untried workers.
+        // The booking's pincode is passed so the same rules as the first dispatch apply (working pincodes, location
+        // freshness for same-pincode workers); without it the cascade silently skipped them.
+        List<Worker> nextCandidates = Collections.emptyList();
+        for (double tier : RADIUS_EXPANSION_TIERS) {
+            nextCandidates = findEligibleCandidateWorkers(
+                    serviceId,
+                    targetSubServiceId,
+                    booking.getUserLat(),
+                    booking.getUserLng(),
+                    tier,
+                    servicePincode,
+                    new LinkedHashMap<>()
+            ).stream()
+                    .filter(w -> !attemptedWorkerIds.contains(w.getWorkerId()))
+                    .toList();
+            if (!nextCandidates.isEmpty()) break;
+        }
 
         if (nextCandidates.isEmpty()) {
             logger.warn("Exhausted all eligible worker batches for booking {}", booking.getBookingId());
@@ -1010,7 +1188,15 @@ public class BookingAssignmentService {
         return requests;
     }
 
-    private void sendWorkerJobAlert(Worker worker, Booking booking) {
+    /**
+     * Everything one worker alert needs, read while the transaction (and its persistence context) is still open.
+     * It is delivered only after that transaction has committed, so nothing lazy is touched afterwards.
+     */
+    private record WorkerJobAlert(UUID bookingId, UUID workerId, UUID workerUserId, String serviceName,
+                                  Map<String, Object> payload) { }
+
+    /** Builds the alert now and delivers it (STOMP + FCM) only once the current transaction has committed. */
+    private void queueWorkerJobAlert(Worker worker, Booking booking) {
         String serviceName = booking.getService() != null ? booking.getService().getName() : "Home Service";
         String customerName = booking.getRecipientName() != null && !booking.getRecipientName().isBlank()
                 ? booking.getRecipientName()
@@ -1041,29 +1227,36 @@ public class BookingAssignmentService {
         payload.put("status", booking.getStatus() != null ? booking.getStatus().name() : "SEARCHING");
         payload.put("createdAt", booking.getCreatedAt() != null ? booking.getCreatedAt().toString() : Instant.now().toString());
 
-        logger.info("[WORKER_NOTIFICATION_SENT] bookingId={}, workerId={}, channel=WS_AND_FCM", booking.getBookingId(), worker.getWorkerId());
-        logger.info("PARTNER_OFFERED: bookingId={}, partnerId={}", booking.getBookingId(), worker.getWorkerId());
+        WorkerJobAlert alert = new WorkerJobAlert(booking.getBookingId(), worker.getWorkerId(),
+                worker.getUser() != null ? worker.getUser().getUserId() : null, serviceName, payload);
+        AfterCommit.run(transactionManager, "worker job alert for booking " + booking.getBookingId(),
+                () -> deliverWorkerJobAlert(alert, booking, worker));
+    }
+
+    private void deliverWorkerJobAlert(WorkerJobAlert alert, Booking booking, Worker worker) {
+        logger.info("[WORKER_NOTIFICATION_SENT] bookingId={}, workerId={}, channel=WS_AND_FCM", alert.bookingId(), alert.workerId());
+        logger.info("PARTNER_OFFERED: bookingId={}, partnerId={}", alert.bookingId(), alert.workerId());
 
         // 1. WebSocket topic dispatch
         try {
-            messagingTemplate.convertAndSend("/topic/worker/" + worker.getWorkerId() + "/requests", payload);
-            messagingTemplate.convertAndSend("/topic/worker/" + worker.getWorkerId() + "/stream", payload);
-            if (worker.getUser() != null) {
-                messagingTemplate.convertAndSend("/topic/worker/" + worker.getUser().getUserId() + "/requests", payload);
-                messagingTemplate.convertAndSend("/topic/worker/" + worker.getUser().getUserId() + "/stream", payload);
+            messagingTemplate.convertAndSend("/topic/worker/" + alert.workerId() + "/requests", alert.payload());
+            messagingTemplate.convertAndSend("/topic/worker/" + alert.workerId() + "/stream", alert.payload());
+            if (alert.workerUserId() != null) {
+                messagingTemplate.convertAndSend("/topic/worker/" + alert.workerUserId() + "/requests", alert.payload());
+                messagingTemplate.convertAndSend("/topic/worker/" + alert.workerUserId() + "/stream", alert.payload());
             }
-            recordNotificationDelivery(booking, null, worker, DeliveryChannel.WS, "/topic/worker/" + worker.getWorkerId() + "/requests", DeliveryStatus.SENT);
+            recordNotificationDelivery(booking, null, worker, DeliveryChannel.WS, "/topic/worker/" + alert.workerId() + "/requests", DeliveryStatus.SENT);
         } catch (Exception e) {
             logger.debug("WebSocket alert dispatch failed: {}", e.getMessage());
         }
 
         // 2. FCM Push Notification
-        if (worker.getUser() != null) {
+        if (alert.workerUserId() != null) {
             try {
                 fcmNotificationService.sendPushNotification(
-                        worker.getUser().getUserId(),
+                        alert.workerUserId(),
                         "New Nearby Job Request!",
-                        "A customer requested " + serviceName + " near your location. Tap to accept!"
+                        "A customer requested " + alert.serviceName() + " near your location. Tap to accept!"
                 );
                 recordNotificationDelivery(booking, null, worker, DeliveryChannel.FCM, "FCM_PUSH", DeliveryStatus.SENT);
             } catch (Exception e) {
@@ -1072,64 +1265,73 @@ public class BookingAssignmentService {
         }
     }
 
+    /** Tells the customer a partner accepted. Delivered only after the acceptance has been committed. */
     private void notifyCustomerWorkerAssigned(Booking booking, Worker worker, String pinCode) {
         if (booking.getUser() == null) return;
-        UUID customerId = booking.getUser().getUserId();
+        UUID bookingId = booking.getBookingId();
+        User customer = booking.getUser();
+        UUID customerId = customer.getUserId();
         String workerName = worker.getUser() != null ? worker.getUser().getFullName() : "HomeEase Partner";
 
-        // WebSocket
-        try {
-            Map<String, Object> payload = new HashMap<>();
-            payload.put("type", "WORKER_ASSIGNED");
-            payload.put("bookingId", booking.getBookingId().toString());
-            payload.put("workerId", worker.getWorkerId().toString());
-            payload.put("workerName", workerName);
-            payload.put("workerPhone", worker.getUser() != null ? worker.getUser().getPhoneNumber() : "");
-            payload.put("status", "ACCEPTED");
-            payload.put("pinCode", pinCode);
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("type", "WORKER_ASSIGNED");
+        payload.put("bookingId", bookingId.toString());
+        payload.put("workerId", worker.getWorkerId().toString());
+        payload.put("workerName", workerName);
+        payload.put("workerPhone", worker.getUser() != null ? worker.getUser().getPhoneNumber() : "");
+        payload.put("status", "ACCEPTED");
+        payload.put("pinCode", pinCode);
 
-            messagingTemplate.convertAndSend("/topic/booking/" + booking.getBookingId(), payload);
-            messagingTemplate.convertAndSend("/topic/customer/" + customerId + "/booking", payload);
-            recordNotificationDelivery(booking, booking.getUser(), worker, DeliveryChannel.WS, "/topic/booking/" + booking.getBookingId(), DeliveryStatus.SENT);
-        } catch (Exception e) {
-            logger.debug("WebSocket notify error: {}", e.getMessage());
-        }
+        AfterCommit.run(transactionManager, "worker-assigned notification for booking " + bookingId, () -> {
+            // WebSocket
+            try {
+                messagingTemplate.convertAndSend("/topic/booking/" + bookingId, payload);
+                messagingTemplate.convertAndSend("/topic/customer/" + customerId + "/booking", payload);
+                recordNotificationDelivery(booking, customer, worker, DeliveryChannel.WS, "/topic/booking/" + bookingId, DeliveryStatus.SENT);
+            } catch (Exception e) {
+                logger.debug("WebSocket notify error: {}", e.getMessage());
+            }
 
-        // FCM
-        try {
-            fcmNotificationService.sendPushNotification(
-                    customerId,
-                    "Partner Assigned!",
-                    workerName + " has accepted your booking and is preparing for your service."
-            );
-            recordNotificationDelivery(booking, booking.getUser(), worker, DeliveryChannel.FCM, "FCM_PUSH", DeliveryStatus.SENT);
-        } catch (Exception e) {
-            logger.debug("FCM notify error: {}", e.getMessage());
-        }
+            // FCM
+            try {
+                fcmNotificationService.sendPushNotification(
+                        customerId,
+                        "Partner Assigned!",
+                        workerName + " has accepted your booking and is preparing for your service."
+                );
+                recordNotificationDelivery(booking, customer, worker, DeliveryChannel.FCM, "FCM_PUSH", DeliveryStatus.SENT);
+            } catch (Exception e) {
+                logger.debug("FCM notify error: {}", e.getMessage());
+            }
+        });
     }
 
+    /** Tells the customer no partner could be found. Delivered only after that outcome has been committed. */
     private void notifyCustomerWorkerNotFound(Booking booking) {
         if (booking.getUser() == null) return;
         UUID customerId = booking.getUser().getUserId();
+        UUID bookingId = booking.getBookingId();
 
-        try {
-            Map<String, Object> payload = new HashMap<>();
-            payload.put("type", "WORKER_NOT_FOUND");
-            payload.put("bookingId", booking.getBookingId().toString());
-            payload.put("status", "WORKER_NOT_FOUND");
-            payload.put("message", "No partner is currently available in your area. Please try again shortly.");
+        AfterCommit.run(transactionManager, "worker-not-found notification for booking " + bookingId, () -> {
+            try {
+                Map<String, Object> payload = new HashMap<>();
+                payload.put("type", "WORKER_NOT_FOUND");
+                payload.put("bookingId", bookingId.toString());
+                payload.put("status", "WORKER_NOT_FOUND");
+                payload.put("message", "No partner is currently available in your area. Please try again shortly.");
 
-            messagingTemplate.convertAndSend("/topic/booking/" + booking.getBookingId(), payload);
-            messagingTemplate.convertAndSend("/topic/customer/" + customerId + "/booking", payload);
-        } catch (Exception ignored) {}
+                messagingTemplate.convertAndSend("/topic/booking/" + bookingId, payload);
+                messagingTemplate.convertAndSend("/topic/customer/" + customerId + "/booking", payload);
+            } catch (Exception ignored) {}
 
-        try {
-            fcmNotificationService.sendPushNotification(
-                    customerId,
-                    "Booking Update",
-                    "We are sorry, all partners in your area are currently occupied. Please try again shortly."
-            );
-        } catch (Exception ignored) {}
+            try {
+                fcmNotificationService.sendPushNotification(
+                        customerId,
+                        "Booking Update",
+                        "We are sorry, all partners in your area are currently occupied. Please try again shortly."
+                );
+            } catch (Exception ignored) {}
+        });
     }
 
     private void broadcastBookingUpdate(Booking booking, String eventType) {

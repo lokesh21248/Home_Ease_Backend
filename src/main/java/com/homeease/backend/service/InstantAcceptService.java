@@ -16,6 +16,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -48,6 +49,14 @@ public class InstantAcceptService {
 
     public void setAcceptanceGuard(WorkerAcceptanceGuard acceptanceGuard) {
         this.acceptanceGuard = acceptanceGuard;
+    }
+
+    /** Gives the post-commit customer notification its own transaction (FCM writes a row). Optional, like the guard. */
+    @Autowired(required = false)
+    private PlatformTransactionManager transactionManager;
+
+    public void setTransactionManager(PlatformTransactionManager transactionManager) {
+        this.transactionManager = transactionManager;
     }
 
     @Autowired
@@ -239,19 +248,24 @@ public class InstantAcceptService {
         payload.put("status", "ACCEPTED");
         payload.put("pinCode", pinCode);
 
-        try {
-            messagingTemplate.convertAndSend("/topic/booking/" + booking.getBookingId(), payload);
-            if (customerId != null) {
-                messagingTemplate.convertAndSend("/topic/customer/" + customerId + "/booking", payload);
-                fcmNotificationService.sendPushNotification(
-                        customerId,
-                        "Partner Assigned!",
-                        workerName + " has accepted your booking."
-                );
+        // Only after the acceptance has committed: if the commit fails (for example the booking changed underneath),
+        // the customer must not have been told a partner is on the way.
+        UUID bookingId = booking.getBookingId();
+        AfterCommit.run(transactionManager, "worker-assigned notification for booking " + bookingId, () -> {
+            try {
+                messagingTemplate.convertAndSend("/topic/booking/" + bookingId, payload);
+                if (customerId != null) {
+                    messagingTemplate.convertAndSend("/topic/customer/" + customerId + "/booking", payload);
+                    fcmNotificationService.sendPushNotification(
+                            customerId,
+                            "Partner Assigned!",
+                            workerName + " has accepted your booking."
+                    );
+                }
+            } catch (Exception e) {
+                logger.debug("Customer assignment notification skipped: {}", e.getMessage());
             }
-        } catch (Exception e) {
-            logger.debug("Customer assignment notification skipped: {}", e.getMessage());
-        }
+        });
     }
 }
 

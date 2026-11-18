@@ -62,6 +62,22 @@ public interface BookingRepository extends JpaRepository<Booking, UUID>, JpaSpec
     Optional<Booking> findByIdempotencyKey(String idempotencyKey);
 
     /**
+     * Dispatch recovery: instant bookings that were saved but never offered to anyone (the process stopped, or the
+     * dispatch transaction failed, between the booking commit and the offers). They are still REQUESTED and have no
+     * assignment rows at all. Bounded on both sides: not younger than {@code olderThan} (the normal dispatch is still
+     * running) and not older than {@code newerThan} (never resurrect long-stale bookings).
+     */
+    @Query("SELECT b.bookingId FROM Booking b " +
+           "WHERE b.bookingType = com.homeease.backend.model.enums.BookingType.INSTANT " +
+           "  AND b.status = com.homeease.backend.model.enums.BookingStage.REQUESTED " +
+           "  AND b.createdAt < :olderThan AND b.createdAt > :newerThan " +
+           "  AND NOT EXISTS (SELECT 1 FROM BookingAssignment a WHERE a.booking = b) " +
+           "ORDER BY b.createdAt ASC")
+    List<UUID> findUndispatchedInstantBookingIds(@Param("olderThan") Instant olderThan,
+                                                 @Param("newerThan") Instant newerThan,
+                                                 org.springframework.data.domain.Pageable pageable);
+
+    /**
      * Phase 2 Assignment Engine: Counts completed jobs since a given timestamp for fairness scoring.
      */
     @Query("SELECT COUNT(b) FROM Booking b " +

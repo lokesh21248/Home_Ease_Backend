@@ -625,7 +625,8 @@ public class BookingController {
         if (!items.isEmpty() && items.get(0).getSubService() != null) {
             targetSubServiceId = items.get(0).getSubService().getSubServiceId();
         }
-        assignmentService.dispatchInstantBooking(booking, targetSubServiceId);
+        // The reset to REQUESTED above is already committed; dispatch loads and locks the booking in its own transaction.
+        assignmentService.dispatchInstantBookingById(bookingId, targetSubServiceId);
 
         Map<String, String> resp = new LinkedHashMap<>();
         resp.put("status", "CANDIDATES_ALERTED");

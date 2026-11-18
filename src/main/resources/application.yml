@@ -51,6 +51,8 @@ spring:
       password: ${REDIS_PASSWORD:}
       timeout: ${REDIS_COMMAND_TIMEOUT:2000ms}
       connect-timeout: ${REDIS_CONNECT_TIMEOUT:5000ms}
+      ssl:
+        enabled: ${REDIS_SSL_ENABLED:false}
 
   servlet:
     multipart:
@@ -107,6 +109,17 @@ homeease:
     response-timeout-seconds: 180 # 3 minutes timeout for candidate acceptance
     worker-accept-guard:
       enabled: ${WORKER_ACCEPT_GUARD_ENABLED:false} # OPT-IN: one in-flight instant job per worker; off = previous behaviour
+    # Safety net for the booking -> dispatch hand-off (InstantDispatchRecoveryJob). A booking is committed first and
+    # dispatched afterwards; if the process stops in between, or the dispatch transaction fails, the booking stays
+    # REQUESTED with no offers. This job re-dispatches exactly those (instant, REQUESTED, zero assignment rows),
+    # within an age window so old bookings are never resurrected. Set DISPATCH_RECOVERY_ENABLED=false to switch it off.
+    recovery:
+      enabled: ${DISPATCH_RECOVERY_ENABLED:true}
+      interval-ms: 30000
+      initial-delay-ms: 60000
+      min-age-seconds: 45     # younger bookings are still being dispatched normally
+      max-age-minutes: 15     # older ones are left alone (use POST /bookings/{id}/retry-dispatch for those)
+      batch-size: 20
   billing:
     platform-commission-percent: 2.00 # 2% platform commission
   worker:

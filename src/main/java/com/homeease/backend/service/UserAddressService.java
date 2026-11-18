@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
@@ -71,7 +72,7 @@ public class UserAddressService {
         addressFallbackStore.put(userId, addresses);
         try {
             String json = objectMapper.writeValueAsString(addresses);
-            redisTemplate.opsForValue().set(ADDRESS_KEY_PREFIX + userId, json);
+            redisTemplate.opsForValue().set(ADDRESS_KEY_PREFIX + userId, json, Duration.ofDays(30));
         } catch (Exception e) {
             logger.warn("Redis address persist warning: {}", e.getMessage());
         }
