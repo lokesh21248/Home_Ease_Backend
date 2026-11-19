@@ -145,6 +145,22 @@ public class TrackingController {
     }
 
     /**
+     * Explicit stop/close live tracking for a booking.
+     */
+    @PostMapping({"/stop/{bookingId}", "/close/{bookingId}"})
+    public ResponseEntity<?> stopTracking(
+            @PathVariable("bookingId") String bookingId,
+            @RequestParam(value = "reason", defaultValue = "COMPLETED") String reason) {
+        trackingService.stopTracking(bookingId, reason);
+        return ResponseEntity.ok(Map.of(
+                "status", "SUCCESS",
+                "bookingId", bookingId,
+                "trackingActive", false,
+                "message", "Live tracking stopped for booking " + bookingId
+        ));
+    }
+
+    /**
      * Calculate live distance and ETA between worker and customer.
      */
     @GetMapping("/distance")

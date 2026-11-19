@@ -357,12 +357,12 @@ public class LiveTrackingService {
                     "Invalid GPS coordinates: lat=%s, lng=%s (Must be between -90..90 and -180..180)", lat, lng));
         }
 
-        // 1b. Validate GPS accuracy – reject fixes with excessive positional uncertainty
-        if (payload.getAccuracy() != null && payload.getAccuracy() > maxAccuracyMeters) {
-            logger.warn("[tracking] Rejected poor-accuracy GPS fix for booking {}: accuracy={}m > threshold={}m",
+        // 1b. Validate GPS accuracy – reject fixes with excessive positional uncertainty or negative values
+        if (payload.getAccuracy() != null && (payload.getAccuracy() < 0.0 || payload.getAccuracy() > maxAccuracyMeters)) {
+            logger.warn("[tracking] Rejected invalid/poor-accuracy GPS fix for booking {}: accuracy={}m (threshold={}m)",
                     bookingId, payload.getAccuracy(), maxAccuracyMeters);
             throw new IllegalArgumentException(String.format(
-                    "GPS accuracy %.1fm exceeds maximum allowed %.1fm — fix rejected",
+                    "GPS accuracy %.1fm is invalid or exceeds maximum allowed %.1fm — fix rejected",
                     payload.getAccuracy(), maxAccuracyMeters));
         }
 
@@ -398,19 +398,35 @@ public class LiveTrackingService {
             if (assignmentJson != null && !assignmentJson.isBlank()) {
                 JsonNode assignmentNode = objectMapper.readTree(assignmentJson);
                 String bookingStatus = assignmentNode.path("status").asText("");
-                if ("COMPLETED".equalsIgnoreCase(bookingStatus) || "CANCELLED".equalsIgnoreCase(bookingStatus)) {
+                boolean trackingActiveFlag = assignmentNode.has("trackingActive")
+                        ? assignmentNode.path("trackingActive").asBoolean(true)
+                        : true;
+
+                boolean isClosed = "COMPLETED".equalsIgnoreCase(bookingStatus) ||
+                        "CANCELLED".equalsIgnoreCase(bookingStatus) ||
+                        "ARRIVED".equalsIgnoreCase(bookingStatus) ||
+                        "IN_PROGRESS".equalsIgnoreCase(bookingStatus) ||
+                        !trackingActiveFlag;
+
+                if (isClosed) {
                     // Evict from active locations & history
                     activeLocationsMap.remove(bookingId);
                     locationLastAccessMap.remove(bookingId);
                     locationHistoryMap.remove(bookingId);
                     sequenceCounters.remove(bookingId);
-                    throw new IllegalStateException("Live tracking has ended: booking " + bookingId + " is " + bookingStatus);
+                    throw new IllegalStateException("Live tracking has ended: booking " + bookingId + " is " +
+                            (bookingStatus.isBlank() ? "INACTIVE" : bookingStatus));
                 }
 
-                // If authenticated worker provided, verify against assigned worker
-                if (authenticatedUserId != null && !authenticatedUserId.isBlank()) {
-                    String assignedUserId = assignmentNode.path("userId").asText("");
-                    String assignedWorkerId = assignmentNode.path("workerId").asText("");
+                // If assignment has an assigned worker, verify caller identity strictly
+                String assignedUserId = assignmentNode.path("userId").asText("");
+                String assignedWorkerId = assignmentNode.path("workerId").asText("");
+                boolean hasAssignedWorker = !assignedUserId.isBlank() || !assignedWorkerId.isBlank();
+
+                if (hasAssignedWorker) {
+                    if (authenticatedUserId == null || authenticatedUserId.isBlank()) {
+                        throw new SecurityException("Authentication required: unauthenticated location update rejected for assigned booking " + bookingId);
+                    }
                     if (!assignedUserId.isBlank() && !assignedUserId.equalsIgnoreCase(authenticatedUserId) &&
                             !assignedWorkerId.isBlank() && !assignedWorkerId.equalsIgnoreCase(authenticatedUserId)) {
                         throw new SecurityException("Authenticated user " + authenticatedUserId + " is not assigned to booking " + bookingId);
@@ -631,6 +647,35 @@ public class LiveTrackingService {
             return null;
         }
 
+        // 0. Proactively verify against Redis assignment to prevent stale L1 cache after completion/arrival
+        String assignmentKey = "tracking:assignment:" + bookingId;
+        try {
+            String assignmentJson = redisTemplate.opsForValue().get(assignmentKey);
+            if (assignmentJson != null && !assignmentJson.isBlank()) {
+                JsonNode assignmentNode = objectMapper.readTree(assignmentJson);
+                String status = assignmentNode.path("status").asText("");
+                boolean trackingActive = assignmentNode.has("trackingActive")
+                        ? assignmentNode.path("trackingActive").asBoolean(true)
+                        : true;
+                if ("COMPLETED".equalsIgnoreCase(status) || "CANCELLED".equalsIgnoreCase(status) ||
+                        "ARRIVED".equalsIgnoreCase(status) || "IN_PROGRESS".equalsIgnoreCase(status) || !trackingActive) {
+                    activeLocationsMap.remove(bookingId);
+                    locationLastAccessMap.remove(bookingId);
+                    locationHistoryMap.remove(bookingId);
+                    sequenceCounters.remove(bookingId);
+
+                    return LocationPayload.builder()
+                            .bookingId(bookingId)
+                            .trackingActive(false)
+                            .status(status != null && !status.isBlank() ? status : "CLOSED")
+                            .message("Tracking ended: booking status is " + status)
+                            .build();
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("Could not check assignment state in getLatestLocation for booking {}: {}", bookingId, e.getMessage());
+        }
+
         // 1. Check in-memory L1 cache (DSA 1)
         LocationPayload cached = activeLocationsMap.get(bookingId);
         if (cached != null) {
@@ -671,24 +716,6 @@ public class LiveTrackingService {
                     activeLocationsMap.put(bookingId, payload);
                     locationLastAccessMap.put(bookingId, System.currentTimeMillis());
                     return payload;
-                }
-            }
-
-            // Check if booking was marked completed or cancelled
-            String assignmentKey = "tracking:assignment:" + bookingId;
-            String assignmentJson = redisTemplate.opsForValue().get(assignmentKey);
-            if (assignmentJson != null && !assignmentJson.isBlank()) {
-                JsonNode assignmentNode = objectMapper.readTree(assignmentJson);
-                String status = assignmentNode.path("status").asText("");
-                if ("COMPLETED".equalsIgnoreCase(status) || "CANCELLED".equalsIgnoreCase(status)) {
-                    LocationPayload closed = LocationPayload.builder()
-                            .bookingId(bookingId)
-                            .trackingActive(false)
-                            .status(status)
-                            .message("Tracking ended: booking status is " + status)
-                            .build();
-                    activeLocationsMap.put(bookingId, closed);
-                    return closed;
                 }
             }
         } catch (Exception e) {
@@ -793,6 +820,10 @@ public class LiveTrackingService {
         double distanceKm = haversine(workerLoc.getLat(), workerLoc.getLng(), customerLat, customerLng);
         int etaMinutes = Math.max(1, (int) Math.round((distanceKm / 25.0) * 60.0) + 2);
 
+        long now = System.currentTimeMillis();
+        long ageMs = now - (workerLoc.getTimestamp() != null ? workerLoc.getTimestamp() : now);
+        boolean isStale = ageMs > 45_000;
+
         response.put("found", true);
         response.put("bookingId", bookingId);
         response.put("workerId", workerLoc.getWorkerId());
@@ -805,8 +836,36 @@ public class LiveTrackingService {
         response.put("etaMinutes", etaMinutes);
         response.put("lastUpdated", workerLoc.getTimestamp());
         response.put("trackingActive", true);
+        response.put("isStale", isStale);
+        response.put("ageSeconds", Math.max(0, ageMs / 1000));
+        if (isStale) {
+            response.put("staleNotice", "Location signal may be delayed");
+        }
 
         return response;
+    }
+
+    /**
+     * Explicitly stops tracking for a booking and evicts cached entries.
+     */
+    public void stopTracking(String bookingId, String reason) {
+        if (bookingId == null || bookingId.isBlank()) return;
+        activeLocationsMap.remove(bookingId);
+        locationLastAccessMap.remove(bookingId);
+        locationHistoryMap.remove(bookingId);
+        sequenceCounters.remove(bookingId);
+
+        LocationPayload closed = LocationPayload.builder()
+                .bookingId(bookingId)
+                .trackingActive(false)
+                .status(reason != null ? reason : "STOPPED")
+                .message("Live tracking stopped: " + reason)
+                .build();
+
+        try {
+            messagingTemplate.convertAndSend("/topic/tracking/" + bookingId, closed);
+            messagingTemplate.convertAndSend("/topic/track/" + bookingId, closed);
+        } catch (Exception ignored) {}
     }
 
     /**

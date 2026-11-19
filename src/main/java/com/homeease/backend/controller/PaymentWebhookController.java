@@ -114,6 +114,9 @@ public class PaymentWebhookController {
             }
 
             payment.setStatus(TransactionState.SUCCESS);
+            if (payment.getBooking() != null) {
+                payment.getBooking().setPaymentStatus(TransactionState.SUCCESS);
+            }
             paymentRepository.save(payment);
 
             logger.info("WEBHOOK_PAYMENT_CAPTURED paymentId={} orderId={} razorpayPaymentId={} bookingId={}",
@@ -143,6 +146,9 @@ public class PaymentWebhookController {
                 return; // idempotent
             }
             payment.setStatus(TransactionState.FAILED);
+            if (payment.getBooking() != null) {
+                payment.getBooking().setPaymentStatus(TransactionState.FAILED);
+            }
             paymentRepository.save(payment);
 
             logger.info("WEBHOOK_PAYMENT_FAILED paymentId={} ref={} reason={} bookingId={}",

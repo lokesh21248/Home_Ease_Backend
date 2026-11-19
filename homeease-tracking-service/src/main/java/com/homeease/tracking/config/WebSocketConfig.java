@@ -66,9 +66,21 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                         authenticateConnection(accessor);
                     } else if (StompCommand.SUBSCRIBE.equals(accessor.getCommand())) {
                         String destination = accessor.getDestination();
-                        if (destination != null && (destination.startsWith("/topic/tracking/") || destination.startsWith("/topic/track/"))) {
-                            String bookingId = destination.substring(destination.lastIndexOf('/') + 1).trim();
-                            authorizeSubscription(accessor, bookingId);
+                        if (destination != null) {
+                            String bookingId = null;
+                            if (destination.startsWith("/topic/tracking/")) {
+                                bookingId = destination.substring("/topic/tracking/".length()).trim();
+                            } else if (destination.startsWith("/topic/track/")) {
+                                bookingId = destination.substring("/topic/track/".length()).trim();
+                            } else if (destination.startsWith("/topic/tracking.")) {
+                                bookingId = destination.substring("/topic/tracking.".length()).trim();
+                            } else if (destination.startsWith("/topic/track.")) {
+                                bookingId = destination.substring("/topic/track.".length()).trim();
+                            }
+
+                            if (bookingId != null && !bookingId.isBlank() && !bookingId.equalsIgnoreCase("update")) {
+                                authorizeSubscription(accessor, bookingId);
+                            }
                         }
                     }
                 }

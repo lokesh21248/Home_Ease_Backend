@@ -323,11 +323,11 @@ public class WorkerPresenceService {
      * a Redis outage neither dispatches to long-gone workers nor blocks everyone permanently.
      */
     public boolean isDispatchable(Worker worker) {
-        if (!enforce) {
-            return true;
-        }
         if (worker == null || worker.getWorkerId() == null) {
             return false;
+        }
+        if (!enforce) {
+            return true;
         }
         try {
             return isAlive(worker.getWorkerId());

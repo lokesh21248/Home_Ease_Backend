@@ -592,7 +592,11 @@ public class TrackingService {
 
     private void updateAssignmentKey(UUID bookingId, String status, boolean trackingActive) {
         try {
+            String existingJson = redisTemplate.opsForValue().get(REDIS_ASSIGNMENT_PREFIX + bookingId);
             Map<String, Object> map = new HashMap<>();
+            if (existingJson != null && !existingJson.isBlank()) {
+                map = objectMapper.readValue(existingJson, new TypeReference<Map<String, Object>>() {});
+            }
             map.put("bookingId", bookingId.toString());
             map.put("status", status);
             map.put("trackingActive", trackingActive);

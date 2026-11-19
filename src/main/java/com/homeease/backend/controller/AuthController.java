@@ -137,7 +137,7 @@ public class AuthController {
         return ResponseEntity.ok(userRepository.save(user));
     }
 
-    @PostMapping({"/user/fcm-token", "/users/fcm-token"})
+    @PostMapping({"/user/fcm-token", "/users/fcm-token", "/worker/fcm-token", "/workers/fcm-token"})
     public ResponseEntity<Map<String, String>> registerFcmToken(
             @RequestHeader(value = "Authorization", required = false) String authHeader,
             @RequestHeader(value = "X-User-Id", required = false) UUID headerUserId,
@@ -149,6 +149,19 @@ public class AuthController {
             try {
                 redisTemplate.opsForValue().set("fcm_token:" + userId, fcmToken, Duration.ofDays(30));
             } catch (Exception ignored) {}
+
+            // Auto-subscribe registered device token to Firebase topic user_{userId}
+            if (!com.google.firebase.FirebaseApp.getApps().isEmpty() && !fcmToken.startsWith("fcm_mock_token_")) {
+                try {
+                    com.google.firebase.messaging.FirebaseMessaging.getInstance().subscribeToTopic(
+                            java.util.List.of(fcmToken), "user_" + userId
+                    );
+                    logger.info("Subscribed FCM device token to topic user_{}", userId);
+                } catch (Exception e) {
+                    logger.warn("Could not subscribe FCM token to topic user_{}: {}", userId, e.getMessage());
+                }
+            }
+
             // The device push token is a bearer-style identifier; never write its value to logs.
             logger.info("Registered FCM token for user {} (length {})", userId, fcmToken.length());
         }

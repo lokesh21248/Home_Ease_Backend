@@ -267,6 +267,99 @@ public class LiveTrackingServiceTest {
     }
 
     @Test
+    void testProcessLocationUpdate_ArrivedBooking_ThrowsIllegalStateException() throws Exception {
+        String bookingId = "BK-ARRIVED";
+        Map<String, Object> assignment = Map.of(
+                "bookingId", bookingId,
+                "status", "ARRIVED",
+                "trackingActive", false
+        );
+        when(valueOperations.get("tracking:assignment:" + bookingId))
+                .thenReturn(objectMapper.writeValueAsString(assignment));
+
+        LocationPayload p = LocationPayload.builder()
+                .bookingId(bookingId)
+                .lat(17.4485)
+                .lng(78.3748)
+                .build();
+
+        assertThrows(IllegalStateException.class, () ->
+                trackingService.processLocationUpdate(bookingId, p, null));
+    }
+
+    @Test
+    void testProcessLocationUpdate_AssignedWorker_NullAuthUser_ThrowsSecurityException() throws Exception {
+        String bookingId = "BK-ASSIGNED-NO-AUTH";
+        Map<String, Object> assignment = Map.of(
+                "bookingId", bookingId,
+                "userId", "REAL-WORKER-ID",
+                "workerId", "REAL-WORKER-ID",
+                "status", "ACCEPTED"
+        );
+        when(valueOperations.get("tracking:assignment:" + bookingId))
+                .thenReturn(objectMapper.writeValueAsString(assignment));
+
+        LocationPayload p = LocationPayload.builder()
+                .bookingId(bookingId)
+                .lat(17.4485)
+                .lng(78.3748)
+                .build();
+
+        assertThrows(SecurityException.class, () ->
+                trackingService.processLocationUpdate(bookingId, p, null));
+    }
+
+    @Test
+    void testGetLatestLocation_ClosedInRedis_EvictsL1AndReturnsClosed() throws Exception {
+        String bookingId = "BK-CLOSE-L1";
+        LocationPayload p = LocationPayload.builder()
+                .bookingId(bookingId)
+                .lat(17.4485)
+                .lng(78.3748)
+                .timestamp(System.currentTimeMillis())
+                .build();
+        trackingService.processLocationUpdate(bookingId, p, null);
+
+        // Verify it is in L1
+        LocationPayload cached = trackingService.getLatestLocation(bookingId);
+        assertNotNull(cached);
+        assertTrue(cached.getTrackingActive());
+
+        // Now core marks it ARRIVED in Redis
+        Map<String, Object> assignment = Map.of(
+                "bookingId", bookingId,
+                "status", "ARRIVED",
+                "trackingActive", false
+        );
+        when(valueOperations.get("tracking:assignment:" + bookingId))
+                .thenReturn(objectMapper.writeValueAsString(assignment));
+
+        LocationPayload closed = trackingService.getLatestLocation(bookingId);
+        assertNotNull(closed);
+        assertFalse(closed.getTrackingActive());
+        assertEquals("ARRIVED", closed.getStatus());
+    }
+
+    @Test
+    void testStopTracking_EvictsCacheAndMarksClosed() {
+        String bookingId = "BK-STOP";
+        LocationPayload p = LocationPayload.builder()
+                .bookingId(bookingId)
+                .lat(17.4485)
+                .lng(78.3748)
+                .timestamp(System.currentTimeMillis())
+                .build();
+        trackingService.processLocationUpdate(bookingId, p, null);
+
+        assertNotNull(trackingService.getLatestLocation(bookingId));
+
+        trackingService.stopTracking(bookingId, "CANCELLED");
+
+        // getLatestLocation with no Redis data returns null after L1 eviction
+        assertNull(trackingService.getLatestLocation(bookingId));
+    }
+
+    @Test
     void testCalculateDistanceAndEta() {
         String bookingId = "BK-ETA";
         LocationPayload p = LocationPayload.builder()
@@ -300,6 +393,22 @@ public class LiveTrackingServiceTest {
                 .lat(17.4485)
                 .lng(78.3748)
                 .accuracy(100.0)  // Exceeds maxAccuracyMeters=50m
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+                trackingService.processLocationUpdate(bookingId, payload, null));
+        assertTrue(ex.getMessage().contains("accuracy"), "Exception should mention accuracy");
+    }
+
+    @Test
+    void testProcessLocationUpdate_NegativeAccuracy_Rejected() {
+        String bookingId = "BK-ACC-NEG";
+        LocationPayload payload = LocationPayload.builder()
+                .bookingId(bookingId)
+                .lat(17.4485)
+                .lng(78.3748)
+                .accuracy(-5.0)  // Negative accuracy from invalid GPS fix
                 .timestamp(System.currentTimeMillis())
                 .build();
 

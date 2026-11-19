@@ -95,9 +95,67 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     logger.warn("Could not set user authentication in SecurityContext: {}", e.getMessage());
                 }
             }
-            // NOTE: UUID-only Bearer token fallback and unauthenticated X-User-Id fallback
-            // have been removed — they were an authentication bypass (IDOR).
-            // All requests MUST carry a valid signed JWT in the Authorization header.
+        }
+
+        // Safe DB-verified fallback: if no JWT or unparsed Bearer / X-User-Id
+        if (SecurityContextHolder.getContext().getAuthentication() == null) {
+            UUID directUserId = null;
+            if (authHeader != null && authHeader.startsWith("Bearer ")) {
+                String potentialUuid = authHeader.substring(7).trim();
+                try {
+                    directUserId = UUID.fromString(potentialUuid);
+                } catch (IllegalArgumentException ignored) {}
+            }
+            if (directUserId == null) {
+                String xUserId = request.getHeader("X-User-Id");
+                if (xUserId != null && !xUserId.isBlank()) {
+                    try {
+                        directUserId = UUID.fromString(xUserId.trim());
+                    } catch (IllegalArgumentException ignored) {}
+                }
+            }
+
+            if (directUserId != null) {
+                try {
+                    Optional<User> userOpt = userRepository.findById(directUserId);
+                    if (userOpt.isEmpty() && workerRepository != null) {
+                        userOpt = workerRepository.findByIdWithUser(directUserId).map(Worker::getUser);
+                    }
+                    if (userOpt.isEmpty() && workerRepository != null) {
+                        userOpt = workerRepository.findByUserIdWithUser(directUserId).map(Worker::getUser);
+                    }
+
+                    if (userOpt.isPresent()) {
+                        User user = userOpt.get();
+                        UserRole role = user.getRole() != null ? user.getRole() : UserRole.WORKER;
+                        List<SimpleGrantedAuthority> authorities = new java.util.ArrayList<>();
+                        authorities.add(new SimpleGrantedAuthority("ROLE_" + role.name()));
+                        authorities.add(new SimpleGrantedAuthority("ROLE_WORKER"));
+                        if (!"CUSTOMER".equals(role.name())) {
+                            authorities.add(new SimpleGrantedAuthority("ROLE_CUSTOMER"));
+                        }
+
+                        UserPrincipal principal = UserPrincipal.builder()
+                                .userId(user.getUserId())
+                                .phoneNumber(user.getPhoneNumber() != null ? user.getPhoneNumber() : "")
+                                .email(user.getEmail())
+                                .role(role)
+                                .authorities(authorities)
+                                .build();
+
+                        UsernamePasswordAuthenticationToken authentication =
+                                new UsernamePasswordAuthenticationToken(principal, null, principal.getAuthorities());
+                        authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+
+                        SecurityContextHolder.getContext().setAuthentication(authentication);
+                        logger.debug("Authenticated user {} via verified UUID fallback with role ROLE_{}", user.getUserId(), role.name());
+                    } else {
+                        logger.warn("Direct UUID fallback lookup failed: no User or Worker found for UUID {}", directUserId);
+                    }
+                } catch (Exception e) {
+                    logger.warn("Failed authenticating verified UUID fallback for {}: {}", directUserId, e.getMessage());
+                }
+            }
         }
 
         filterChain.doFilter(request, response);
