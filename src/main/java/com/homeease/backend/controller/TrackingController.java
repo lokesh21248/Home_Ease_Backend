@@ -88,6 +88,18 @@ public class TrackingController {
     }
 
     /**
+     * Phase 2: Booking-specific route endpoint
+     * GET /api/v1/tracking/{bookingId}/route
+     */
+    @GetMapping("/{bookingId}/route")
+    public ResponseEntity<TrackingRouteResponse> getBookingRoute(
+            @PathVariable("bookingId") UUID bookingId,
+            @RequestParam(value = "destLat", required = false) Double destLat,
+            @RequestParam(value = "destLng", required = false) Double destLng) {
+        return ResponseEntity.ok(trackingService.getBookingRoute(bookingId, destLat, destLng));
+    }
+
+    /**
      * Returns the driving road route between coordinates.
      */
     @GetMapping("/route")

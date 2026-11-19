@@ -542,6 +542,43 @@ public class TrackingService {
     /**
      * Generates driving route coordinates between origin and destination.
      */
+    public TrackingRouteResponse getBookingRoute(UUID bookingId, Double queryDestLat, Double queryDestLng) {
+        if (bookingId == null) {
+            return TrackingRouteResponse.builder()
+                    .found(false)
+                    .message("bookingId is required")
+                    .build();
+        }
+
+        TrackingLocationResponse workerLoc = getLatestLocation(bookingId);
+        if (workerLoc == null || workerLoc.getLatitude() == null || workerLoc.getLongitude() == null) {
+            return TrackingRouteResponse.builder()
+                    .found(false)
+                    .message("Worker location not yet recorded for booking " + bookingId)
+                    .build();
+        }
+
+        Double destLat = queryDestLat;
+        Double destLng = queryDestLng;
+
+        if (destLat == null || destLng == null) {
+            Booking booking = bookingRepository.findById(bookingId).orElse(null);
+            if (booking != null && booking.getUserLat() != null && booking.getUserLng() != null) {
+                destLat = booking.getUserLat();
+                destLng = booking.getUserLng();
+            }
+        }
+
+        if (destLat == null || destLng == null) {
+            return TrackingRouteResponse.builder()
+                    .found(false)
+                    .message("Destination coordinates could not be resolved for booking " + bookingId)
+                    .build();
+        }
+
+        return getDrivingRoute(workerLoc.getLatitude(), workerLoc.getLongitude(), destLat, destLng);
+    }
+
     public TrackingRouteResponse getDrivingRoute(double startLat, double startLng, double destLat, double destLng) {
         double distKm = Math.round(haversineKm(startLat, startLng, destLat, destLng) * 1.3 * 10.0) / 10.0;
         int durationMin = Math.max(1, (int) Math.ceil((distKm / 22.0) * 60.0));

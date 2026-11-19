@@ -869,6 +869,57 @@ public class LiveTrackingService {
     }
 
     /**
+     * Phase 2: Booking-specific route calculation.
+     * Derives origin from assigned worker's latest valid GPS coordinates.
+     * Derives destination from the booking's service address.
+     */
+    public Map<String, Object> getBookingRoute(String bookingId, Double queryDestLat, Double queryDestLng) {
+        if (bookingId == null || bookingId.isBlank()) {
+            return Map.of("found", false, "message", "bookingId is required for route calculation");
+        }
+
+        LocationPayload workerLoc = getLatestLocation(bookingId);
+        if (workerLoc == null || workerLoc.getLat() == null || workerLoc.getLng() == null) {
+            return Map.of(
+                    "found", false,
+                    "bookingId", bookingId,
+                    "message", "Worker live GPS location is not yet available for this booking"
+            );
+        }
+
+        if (Boolean.FALSE.equals(workerLoc.getTrackingActive())) {
+            return Map.of(
+                    "found", false,
+                    "bookingId", bookingId,
+                    "status", workerLoc.getStatus() != null ? workerLoc.getStatus() : "CLOSED",
+                    "trackingActive", false,
+                    "message", "Live tracking is closed for this booking"
+            );
+        }
+
+        double startLat = workerLoc.getLat();
+        double startLng = workerLoc.getLng();
+
+        double destLat = queryDestLat != null ? queryDestLat : 0.0;
+        double destLng = queryDestLng != null ? queryDestLng : 0.0;
+
+        if (destLat == 0.0 || destLng == 0.0) {
+            return Map.of(
+                    "found", false,
+                    "bookingId", bookingId,
+                    "message", "Valid destination coordinates (destLat, destLng) are required"
+            );
+        }
+
+        Map<String, Object> route = getDrivingRoute(startLat, startLng, destLat, destLng);
+        Map<String, Object> enriched = new HashMap<>(route);
+        enriched.put("bookingId", bookingId);
+        enriched.put("workerId", workerLoc.getWorkerId());
+        enriched.put("timestamp", System.currentTimeMillis());
+        return enriched;
+    }
+
+    /**
      * Computes driving route using Google Maps with LRU Cache (DSA 9).
      * Quantizes coordinates to ~100m grid bucket to avoid repeated API requests for slight movements.
      */

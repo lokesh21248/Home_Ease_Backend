@@ -174,6 +174,20 @@ public class TrackingController {
     }
 
     /**
+     * Phase 2: Booking-specific route endpoint
+     * GET /api/v1/tracking/{bookingId}/route
+     * Determines origin from assigned worker's latest GPS.
+     * Determines destination from booking service address coordinates.
+     */
+    @GetMapping("/{bookingId}/route")
+    public ResponseEntity<Map<String, Object>> getBookingRoute(
+            @PathVariable("bookingId") String bookingId,
+            @RequestParam(value = "destLat", required = false) Double destLat,
+            @RequestParam(value = "destLng", required = false) Double destLng) {
+        return ResponseEntity.ok(trackingService.getBookingRoute(bookingId, destLat, destLng));
+    }
+
+    /**
      * Road Routing / Directions via Google Maps (Routes API v2 / Directions API) - GET endpoint
      * GET /api/v1/tracking/route?startLat=17.4485&startLng=78.3748&destLat=17.4585&destLng=78.3848
      */
