@@ -412,6 +412,18 @@ public class BookingController {
             @RequestBody(required = false) CancelBookingRequest body) {
         UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
         String finalReason = (body != null && body.getReason() != null) ? body.getReason() : reason;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                return ResponseEntity.ok(cancellationService.cancelBooking(bookingId, userId, finalReason));
+            } catch (Exception e) {
+                if (attempt == 3 || !(e instanceof org.springframework.dao.OptimisticLockingFailureException || e.getCause() instanceof org.hibernate.StaleObjectStateException)) {
+                    throw e;
+                }
+                try {
+                    Thread.sleep(150L * attempt);
+                } catch (InterruptedException ignored) {}
+            }
+        }
         return ResponseEntity.ok(cancellationService.cancelBooking(bookingId, userId, finalReason));
     }
 

@@ -46,6 +46,14 @@ public class LiveTrackingService {
     @Value("${homeease.google.maps.api-key:}")
     private String googleMapsApiKey;
 
+    /**
+     * When true (default) a GPS update is only accepted for a booking that has an assignment record
+     * (tracking:assignment:{id}, written by the core on acceptance). Set TRACKING_REQUIRE_ASSIGNMENT=false only as
+     * an emergency rollback or for local simulator testing against unassigned booking ids.
+     */
+    @Value("${homeease.tracking.require-assignment:true}")
+    private boolean requireAssignment = true;
+
     /** Same switch as the core and dispatch services (WORKER_PRESENCE_ENFORCE). */
     @Value("${homeease.worker.presence.enforce:false}")
     private boolean enforcePresence = false;
@@ -437,6 +445,11 @@ public class LiveTrackingService {
                     customerLat = assignmentNode.path("customerLat").asDouble();
                     customerLng = assignmentNode.path("customerLng").asDouble();
                 }
+            } else if (requireAssignment) {
+                // Fail closed. Without an assignment record nobody can be verified as the booking's worker, so
+                // anyone who knew a bookingId could publish fake positions that are broadcast to the customer.
+                throw new SecurityException("No active assignment for booking " + bookingId
+                        + ": location update rejected");
             }
         } catch (IllegalArgumentException | IllegalStateException | SecurityException e) {
             throw e;
@@ -560,6 +573,7 @@ public class LiveTrackingService {
         try {
             messagingTemplate.convertAndSend("/topic/tracking/" + bookingId, payload);
             messagingTemplate.convertAndSend("/topic/track/" + bookingId, payload);
+            messagingTemplate.convertAndSend("/topic/tracking/booking/" + bookingId, payload);
 
             // Distributed WebSocket Relay: publish to Redis pub/sub channel
             // so homeease-core (port 8080) can forward to clients connected to its STOMP broker
@@ -865,59 +879,12 @@ public class LiveTrackingService {
         try {
             messagingTemplate.convertAndSend("/topic/tracking/" + bookingId, closed);
             messagingTemplate.convertAndSend("/topic/track/" + bookingId, closed);
+            messagingTemplate.convertAndSend("/topic/tracking/booking/" + bookingId, closed);
         } catch (Exception ignored) {}
     }
 
-    /**
-     * Phase 2: Booking-specific route calculation.
-     * Derives origin from assigned worker's latest valid GPS coordinates.
-     * Derives destination from the booking's service address.
-     */
-    public Map<String, Object> getBookingRoute(String bookingId, Double queryDestLat, Double queryDestLng) {
-        if (bookingId == null || bookingId.isBlank()) {
-            return Map.of("found", false, "message", "bookingId is required for route calculation");
-        }
-
-        LocationPayload workerLoc = getLatestLocation(bookingId);
-        if (workerLoc == null || workerLoc.getLat() == null || workerLoc.getLng() == null) {
-            return Map.of(
-                    "found", false,
-                    "bookingId", bookingId,
-                    "message", "Worker live GPS location is not yet available for this booking"
-            );
-        }
-
-        if (Boolean.FALSE.equals(workerLoc.getTrackingActive())) {
-            return Map.of(
-                    "found", false,
-                    "bookingId", bookingId,
-                    "status", workerLoc.getStatus() != null ? workerLoc.getStatus() : "CLOSED",
-                    "trackingActive", false,
-                    "message", "Live tracking is closed for this booking"
-            );
-        }
-
-        double startLat = workerLoc.getLat();
-        double startLng = workerLoc.getLng();
-
-        double destLat = queryDestLat != null ? queryDestLat : 0.0;
-        double destLng = queryDestLng != null ? queryDestLng : 0.0;
-
-        if (destLat == 0.0 || destLng == 0.0) {
-            return Map.of(
-                    "found", false,
-                    "bookingId", bookingId,
-                    "message", "Valid destination coordinates (destLat, destLng) are required"
-            );
-        }
-
-        Map<String, Object> route = getDrivingRoute(startLat, startLng, destLat, destLng);
-        Map<String, Object> enriched = new HashMap<>(route);
-        enriched.put("bookingId", bookingId);
-        enriched.put("workerId", workerLoc.getWorkerId());
-        enriched.put("timestamp", System.currentTimeMillis());
-        return enriched;
-    }
+    // REMOVED getBookingRoute(): it accepted the destination from the client and had no booking authorization.
+    // The authoritative booking route is served by the core service (BookingRouteService).
 
     /**
      * Computes driving route using Google Maps with LRU Cache (DSA 9).
