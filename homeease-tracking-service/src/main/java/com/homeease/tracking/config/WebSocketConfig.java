@@ -1,42 +1,24 @@
 package com.homeease.tracking.config;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.homeease.tracking.security.JwtTokenValidator;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.homeease.tracking.security.TrackingAccessGuard;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.messaging.Message;
-import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.simp.config.ChannelRegistration;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
-import org.springframework.messaging.simp.stomp.StompCommand;
-import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
-import org.springframework.messaging.support.ChannelInterceptor;
-import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
 import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
-
-import java.util.UUID;
 
 @Configuration
 @EnableWebSocketMessageBroker
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
-    private static final Logger logger = LoggerFactory.getLogger(WebSocketConfig.class);
-
     private final JwtTokenValidator jwtValidator;
-    private final StringRedisTemplate redisTemplate;
-    private final ObjectMapper objectMapper;
+    private final TrackingAccessGuard accessGuard;
 
-    public WebSocketConfig(JwtTokenValidator jwtValidator,
-                           StringRedisTemplate redisTemplate,
-                           ObjectMapper objectMapper) {
+    public WebSocketConfig(JwtTokenValidator jwtValidator, TrackingAccessGuard accessGuard) {
         this.jwtValidator = jwtValidator;
-        this.redisTemplate = redisTemplate;
-        this.objectMapper = objectMapper;
+        this.accessGuard = accessGuard;
     }
 
     @Override
@@ -57,122 +39,6 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
-        registration.interceptors(new ChannelInterceptor() {
-            @Override
-            public Message<?> preSend(Message<?> message, MessageChannel channel) {
-                StompHeaderAccessor accessor = MessageHeaderAccessor.getAccessor(message, StompHeaderAccessor.class);
-                if (accessor != null) {
-                    if (StompCommand.CONNECT.equals(accessor.getCommand())) {
-                        authenticateConnection(accessor);
-                    } else if (StompCommand.SUBSCRIBE.equals(accessor.getCommand())) {
-                        String destination = accessor.getDestination();
-                        if (destination != null) {
-                            String bookingId = null;
-                            if (destination.startsWith("/topic/tracking/")) {
-                                bookingId = destination.substring("/topic/tracking/".length()).trim();
-                            } else if (destination.startsWith("/topic/track/")) {
-                                bookingId = destination.substring("/topic/track/".length()).trim();
-                            } else if (destination.startsWith("/topic/tracking.")) {
-                                bookingId = destination.substring("/topic/tracking.".length()).trim();
-                            } else if (destination.startsWith("/topic/track.")) {
-                                bookingId = destination.substring("/topic/track.".length()).trim();
-                            }
-
-                            if (bookingId != null && !bookingId.isBlank() && !bookingId.equalsIgnoreCase("update")) {
-                                authorizeSubscription(accessor, bookingId);
-                            }
-                        }
-                    }
-                }
-                return message;
-            }
-        });
-    }
-
-    private void authenticateConnection(StompHeaderAccessor accessor) {
-        String authHeader = accessor.getFirstNativeHeader("Authorization");
-        if (authHeader == null) {
-            authHeader = accessor.getFirstNativeHeader("token");
-        }
-        String userIdHeader = accessor.getFirstNativeHeader("X-User-Id");
-
-        String principalName = null;
-        if (authHeader != null && !authHeader.isBlank()) {
-            UUID fromJwt = jwtValidator.extractUserId(authHeader);
-            if (fromJwt != null) {
-                principalName = fromJwt.toString();
-            }
-        }
-        if (principalName == null && userIdHeader != null && !userIdHeader.isBlank()) {
-            principalName = userIdHeader.trim();
-        }
-
-        if (principalName != null) {
-            final String finalName = principalName;
-            accessor.setUser(() -> finalName);
-            logger.info("STOMP WebSocket client authenticated as: {}", finalName);
-        }
-    }
-
-    private void authorizeSubscription(StompHeaderAccessor accessor, String bookingId) {
-        // 1. Resolve subscriber identity from session or native STOMP headers
-        String subscriberId = accessor.getUser() != null ? accessor.getUser().getName() : null;
-        if (subscriberId == null) {
-            String authHeader = accessor.getFirstNativeHeader("Authorization");
-            if (authHeader == null) authHeader = accessor.getFirstNativeHeader("token");
-            if (authHeader != null && !authHeader.isBlank()) {
-                UUID fromJwt = jwtValidator.extractUserId(authHeader);
-                if (fromJwt != null) subscriberId = fromJwt.toString();
-            }
-            if (subscriberId == null) {
-                String h = accessor.getFirstNativeHeader("X-User-Id");
-                if (h != null && !h.isBlank()) subscriberId = h.trim();
-            }
-        }
-
-        // Security: Unauthenticated subscribers are strictly rejected regardless of cache state
-        if (subscriberId == null || subscriberId.isBlank()) {
-            logger.warn("Unauthenticated client attempted subscription to /topic/tracking/{}", bookingId);
-            throw new SecurityException("Authentication required to subscribe to tracking for booking " + bookingId);
-        }
-
-        // 2. Check assignment metadata in Redis
-        String assignmentKey = "tracking:assignment:" + bookingId;
-        String assignmentJson = null;
-        try {
-            assignmentJson = redisTemplate.opsForValue().get(assignmentKey);
-        } catch (Exception e) {
-            logger.warn("Could not query assignment for subscription authorization on booking {}: {}", bookingId, e.getMessage());
-        }
-
-        // If no assignment exists in Redis (e.g. simulator testing BK-TEST-1001), permit only authenticated subscribers
-        if (assignmentJson == null || assignmentJson.isBlank()) {
-            logger.debug("No assignment metadata found for booking {}. Permitting authenticated subscriber {} (simulator mode).",
-                    bookingId, subscriberId);
-            return;
-        }
-
-        try {
-            JsonNode node = objectMapper.readTree(assignmentJson);
-            String customerId = node.path("customerId").asText("");
-            String workerId = node.path("workerId").asText("");
-            String userId = node.path("userId").asText("");
-
-            boolean isAuthorized = (!customerId.isBlank() && customerId.equalsIgnoreCase(subscriberId)) ||
-                    (!workerId.isBlank() && workerId.equalsIgnoreCase(subscriberId)) ||
-                    (!userId.isBlank() && userId.equalsIgnoreCase(subscriberId));
-
-            if (!isAuthorized) {
-                logger.warn("Security violation: user {} is not authorized to subscribe to booking {}", subscriberId, bookingId);
-                throw new SecurityException("User " + subscriberId + " is not authorized to subscribe to booking " + bookingId);
-            }
-
-            logger.info("Authorized subscriber {} for tracking topic on booking {}", subscriberId, bookingId);
-
-        } catch (SecurityException se) {
-            throw se;
-        } catch (Exception e) {
-            logger.warn("Error verifying subscription authorization: {}", e.getMessage());
-        }
+        registration.interceptors(new TrackingStompSecurityInterceptor(jwtValidator, accessGuard));
     }
 }

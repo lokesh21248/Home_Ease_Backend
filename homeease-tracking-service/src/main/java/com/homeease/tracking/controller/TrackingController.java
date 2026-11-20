@@ -3,6 +3,7 @@ package com.homeease.tracking.controller;
 import com.homeease.tracking.dto.LocationPayload;
 import com.homeease.tracking.exception.RateLimitExceededException;
 import com.homeease.tracking.security.JwtTokenValidator;
+import com.homeease.tracking.security.TrackingAccessGuard;
 import com.homeease.tracking.service.LiveTrackingService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,11 +23,14 @@ public class TrackingController {
 
     private final LiveTrackingService trackingService;
     private final JwtTokenValidator jwtValidator;
+    private final TrackingAccessGuard accessGuard;
 
     public TrackingController(LiveTrackingService trackingService,
-                              JwtTokenValidator jwtValidator) {
+                              JwtTokenValidator jwtValidator,
+                              TrackingAccessGuard accessGuard) {
         this.trackingService = trackingService;
         this.jwtValidator = jwtValidator;
+        this.accessGuard = accessGuard;
     }
 
     /**
@@ -119,9 +123,13 @@ public class TrackingController {
 
     /**
      * Fetch latest known worker location for a booking.
+     * Requires a verified JWT belonging to the booking's customer, its assigned worker, or an admin.
      */
     @GetMapping("/latest/{bookingId}")
-    public ResponseEntity<?> getLatestLocation(@PathVariable("bookingId") String bookingId) {
+    public ResponseEntity<?> getLatestLocation(
+            @PathVariable("bookingId") String bookingId,
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        accessGuard.requireParticipant(authHeader, bookingId);
         LocationPayload payload = trackingService.getLatestLocation(bookingId);
         if (payload == null) {
             return ResponseEntity.ok(Map.of(
@@ -150,7 +158,10 @@ public class TrackingController {
     @PostMapping({"/stop/{bookingId}", "/close/{bookingId}"})
     public ResponseEntity<?> stopTracking(
             @PathVariable("bookingId") String bookingId,
-            @RequestParam(value = "reason", defaultValue = "COMPLETED") String reason) {
+            @RequestParam(value = "reason", defaultValue = "COMPLETED") String reason,
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        // Operational endpoint: previously unauthenticated, so anyone could end any booking's tracking.
+        accessGuard.requireAdmin(authHeader);
         trackingService.stopTracking(bookingId, reason);
         return ResponseEntity.ok(Map.of(
                 "status", "SUCCESS",
@@ -167,50 +178,61 @@ public class TrackingController {
     public ResponseEntity<Map<String, Object>> getDistanceAndEta(
             @RequestParam("bookingId") String bookingId,
             @RequestParam("customerLat") double customerLat,
-            @RequestParam("customerLng") double customerLng) {
+            @RequestParam("customerLng") double customerLng,
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
 
+        accessGuard.requireParticipant(authHeader, bookingId);
+        // NOTE: distance/ETA here are straight-line (haversine) estimates, not road data. Deprecated for display:
+        // the customer app shows only provider route distance/duration from GET /tracking/{bookingId}/route.
         Map<String, Object> distanceInfo = trackingService.calculateDistanceAndEta(bookingId, customerLat, customerLng);
         return ResponseEntity.ok(distanceInfo);
     }
 
-    /**
-     * Phase 2: Booking-specific route endpoint
-     * GET /api/v1/tracking/{bookingId}/route
-     * Determines origin from assigned worker's latest GPS.
-     * Determines destination from booking service address coordinates.
-     */
-    @GetMapping("/{bookingId}/route")
-    public ResponseEntity<Map<String, Object>> getBookingRoute(
-            @PathVariable("bookingId") String bookingId,
-            @RequestParam(value = "destLat", required = false) Double destLat,
-            @RequestParam(value = "destLng", required = false) Double destLng) {
-        return ResponseEntity.ok(trackingService.getBookingRoute(bookingId, destLat, destLng));
-    }
+    // REMOVED: GET /api/v1/tracking/{bookingId}/route. It took the destination from client query parameters,
+    // had no authorization, and read no persisted booking data. The authoritative endpoint of the same path now
+    // lives in the core service (booking-authorized, persisted destination) and Nginx routes it there.
 
     /**
-     * Road Routing / Directions via Google Maps (Routes API v2 / Directions API) - GET endpoint
-     * GET /api/v1/tracking/route?startLat=17.4485&startLng=78.3748&destLat=17.4585&destLng=78.3848
+     * Coordinate-based road routing used by the WORKER app's own navigation screen.
+     * GET /api/v1/tracking/route?startLat=..&startLng=..&destLat=..&destLng=..
+     *
+     * <p>This proxies a paid provider call for arbitrary coordinates, so it is no longer anonymous: a caller
+     * identity is required and usage is capped per identity and globally. Customer tracking must NOT use it.</p>
      */
     @GetMapping({"/route", "/directions"})
     public ResponseEntity<Map<String, Object>> getDirections(
             @RequestParam("startLat") double startLat,
             @RequestParam("startLng") double startLng,
             @RequestParam("destLat") double destLat,
-            @RequestParam("destLng") double destLng) {
+            @RequestParam("destLng") double destLng,
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestHeader(value = "X-User-Id", required = false) String headerUserId) {
+        accessGuard.checkRoutePermit(accessGuard.requireRouteIdentity(authHeader, headerUserId));
         return ResponseEntity.ok(trackingService.getDrivingRoute(startLat, startLng, destLat, destLng));
     }
 
     /**
-     * Road Routing / Directions via Google Maps (Routes API v2 / Directions API) - POST endpoint
-     * POST /api/v1/tracking/route
+     * POST variant of the worker-navigation coordinate route. Same protections as the GET variant.
      */
     @PostMapping({"/route", "/directions"})
-    public ResponseEntity<Map<String, Object>> getDirectionsPost(@RequestBody Map<String, Object> body) {
-        double startLat = ((Number) body.getOrDefault("startLat", 0.0)).doubleValue();
-        double startLng = ((Number) body.getOrDefault("startLng", 0.0)).doubleValue();
-        double destLat = ((Number) body.getOrDefault("destLat", 0.0)).doubleValue();
-        double destLng = ((Number) body.getOrDefault("destLng", 0.0)).doubleValue();
+    public ResponseEntity<Map<String, Object>> getDirectionsPost(
+            @RequestBody Map<String, Object> body,
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestHeader(value = "X-User-Id", required = false) String headerUserId) {
+        accessGuard.checkRoutePermit(accessGuard.requireRouteIdentity(authHeader, headerUserId));
+        double startLat = requiredNumber(body, "startLat");
+        double startLng = requiredNumber(body, "startLng");
+        double destLat = requiredNumber(body, "destLat");
+        double destLng = requiredNumber(body, "destLng");
         return ResponseEntity.ok(trackingService.getDrivingRoute(startLat, startLng, destLat, destLng));
+    }
+
+    private static double requiredNumber(Map<String, Object> body, String key) {
+        Object v = body.get(key);
+        if (!(v instanceof Number n) || !Double.isFinite(n.doubleValue())) {
+            throw new IllegalArgumentException(key + " is required and must be a number");
+        }
+        return n.doubleValue();
     }
 
     /**
@@ -218,7 +240,10 @@ public class TrackingController {
      * GET /api/v1/tracking/history/{bookingId}
      */
     @GetMapping("/history/{bookingId}")
-    public ResponseEntity<?> getTrackingHistory(@PathVariable("bookingId") String bookingId) {
+    public ResponseEntity<?> getTrackingHistory(
+            @PathVariable("bookingId") String bookingId,
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        accessGuard.requireParticipant(authHeader, bookingId);
         var history = trackingService.getRecentHistory(bookingId);
         return ResponseEntity.ok(Map.of(
                 "bookingId", bookingId,
@@ -236,7 +261,10 @@ public class TrackingController {
             @RequestParam("lat") double lat,
             @RequestParam("lng") double lng,
             @RequestParam(value = "radiusKm", defaultValue = "5.0") double radiusKm,
-            @RequestParam(value = "limit", defaultValue = "10") int limit) {
+            @RequestParam(value = "limit", defaultValue = "10") int limit,
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        // Exposes every online worker's coordinates; was unauthenticated.
+        accessGuard.requireAdmin(authHeader);
         var workers = trackingService.findNearestWorkers(lat, lng, radiusKm, limit);
         return ResponseEntity.ok(Map.of(
                 "centerLat", lat,
@@ -252,7 +280,9 @@ public class TrackingController {
      * GET /api/v1/tracking/stats
      */
     @GetMapping("/stats")
-    public ResponseEntity<?> getTrackingStats() {
+    public ResponseEntity<?> getTrackingStats(
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        accessGuard.requireAdmin(authHeader);
         return ResponseEntity.ok(Map.of(
                 "activeSessions", trackingService.getActiveSessionsCount(),
                 "queueSize", trackingService.getEventQueueSize(),

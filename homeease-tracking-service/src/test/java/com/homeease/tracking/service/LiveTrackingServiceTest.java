@@ -51,6 +51,9 @@ public class LiveTrackingServiceTest {
         ReflectionTestUtils.setField(trackingService, "maxUpdates", 5);
         ReflectionTestUtils.setField(trackingService, "movementThresholdMeters", 15.0);
         ReflectionTestUtils.setField(trackingService, "maxAccuracyMeters", 50.0);
+        // These tests exercise ingest mechanics with simulator-style booking ids and no core-written assignment
+        // record. Strict (production default) enforcement is covered by LiveTrackingAssignmentEnforcementTest.
+        ReflectionTestUtils.setField(trackingService, "requireAssignment", false);
 
         trackingService.init();
     }

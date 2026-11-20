@@ -120,6 +120,10 @@ public class TrackingService {
 
         validateWorkerOwnership(session, workerUserId);
 
+        // Scheduled bookings can be accepted days ahead; the 24h assignment record may have expired by now.
+        // The tracking service authorizes WebSocket/REST access from this record, so restore participant ids.
+        ensureAssignmentIdentity(bookingId);
+
         session.setStatus(TrackingSessionStatus.ACTIVE);
         session.setTrackingActive(true);
         session.setStartedAt(Instant.now());
@@ -539,67 +543,10 @@ public class TrackingService {
                 .build();
     }
 
-    /**
-     * Generates driving route coordinates between origin and destination.
-     */
-    public TrackingRouteResponse getBookingRoute(UUID bookingId, Double queryDestLat, Double queryDestLng) {
-        if (bookingId == null) {
-            return TrackingRouteResponse.builder()
-                    .found(false)
-                    .message("bookingId is required")
-                    .build();
-        }
-
-        TrackingLocationResponse workerLoc = getLatestLocation(bookingId);
-        if (workerLoc == null || workerLoc.getLatitude() == null || workerLoc.getLongitude() == null) {
-            return TrackingRouteResponse.builder()
-                    .found(false)
-                    .message("Worker location not yet recorded for booking " + bookingId)
-                    .build();
-        }
-
-        Double destLat = queryDestLat;
-        Double destLng = queryDestLng;
-
-        if (destLat == null || destLng == null) {
-            Booking booking = bookingRepository.findById(bookingId).orElse(null);
-            if (booking != null && booking.getUserLat() != null && booking.getUserLng() != null) {
-                destLat = booking.getUserLat();
-                destLng = booking.getUserLng();
-            }
-        }
-
-        if (destLat == null || destLng == null) {
-            return TrackingRouteResponse.builder()
-                    .found(false)
-                    .message("Destination coordinates could not be resolved for booking " + bookingId)
-                    .build();
-        }
-
-        return getDrivingRoute(workerLoc.getLatitude(), workerLoc.getLongitude(), destLat, destLng);
-    }
-
-    public TrackingRouteResponse getDrivingRoute(double startLat, double startLng, double destLat, double destLng) {
-        double distKm = Math.round(haversineKm(startLat, startLng, destLat, destLng) * 1.3 * 10.0) / 10.0;
-        int durationMin = Math.max(1, (int) Math.ceil((distKm / 22.0) * 60.0));
-
-        // Generate interpolated waypoint polyline
-        List<double[]> points = new ArrayList<>();
-        int steps = 10;
-        for (int i = 0; i <= steps; i++) {
-            double fraction = (double) i / steps;
-            double lat = startLat + (destLat - startLat) * fraction;
-            double lng = startLng + (destLng - startLng) * fraction;
-            points.add(new double[]{lat, lng});
-        }
-
-        return TrackingRouteResponse.builder()
-                .coordinates(points)
-                .distanceKm(distKm)
-                .durationMin(durationMin)
-                .found(true)
-                .build();
-    }
+    // NOTE: the previous getBookingRoute()/getDrivingRoute() here returned a 10-point straight line with
+    // distance = haversine x 1.3 and duration = distance / 22 km/h. That is not a road route and the numbers
+    // were invented, so it was removed. Road routes now come exclusively from
+    // com.homeease.backend.routing.BookingRouteService (Google Routes API, persisted destination, authorized).
 
     /**
      * Retrieves the tracking session from Redis.
@@ -624,6 +571,48 @@ public class TrackingService {
             redisTemplate.opsForValue().set(REDIS_SESSION_PREFIX + session.getBookingId(), json, ttl);
         } catch (Exception e) {
             logger.warn("Error saving tracking session for booking {}: {}", session.getBookingId(), e.getMessage());
+        }
+    }
+
+    /**
+     * Ensures {@code tracking:assignment:{bookingId}} carries the participant identities
+     * ({@code customerId}, worker {@code userId}/{@code workerId}) read from the persisted booking. No-op when
+     * they are already present. Failures are logged, never thrown: tracking must not break on a cache repair.
+     */
+    void ensureAssignmentIdentity(UUID bookingId) {
+        try {
+            String existingJson = redisTemplate.opsForValue().get(REDIS_ASSIGNMENT_PREFIX + bookingId);
+            Map<String, Object> map = new HashMap<>();
+            if (existingJson != null && !existingJson.isBlank()) {
+                map = objectMapper.readValue(existingJson, new TypeReference<Map<String, Object>>() {});
+            }
+            boolean hasCustomer = !String.valueOf(map.getOrDefault("customerId", "")).isBlank();
+            boolean hasWorker = !String.valueOf(map.getOrDefault("userId", "")).isBlank()
+                    || !String.valueOf(map.getOrDefault("workerId", "")).isBlank();
+            if (hasCustomer && hasWorker) {
+                return;
+            }
+            Booking booking = bookingRepository.findById(bookingId).orElse(null);
+            if (booking == null) {
+                return;
+            }
+            if (!hasCustomer && booking.getUser() != null) {
+                map.put("customerId", booking.getUser().getUserId().toString());
+            }
+            if (!hasWorker && booking.getWorker() != null) {
+                map.put("workerId", booking.getWorker().getWorkerId().toString());
+                if (booking.getWorker().getUser() != null) {
+                    map.put("userId", booking.getWorker().getUser().getUserId().toString());
+                }
+            }
+            map.put("bookingId", bookingId.toString());
+            redisTemplate.opsForValue().set(
+                    REDIS_ASSIGNMENT_PREFIX + bookingId,
+                    objectMapper.writeValueAsString(map),
+                    SESSION_TTL);
+            logger.info("Restored participant identity in tracking assignment for booking {}", bookingId);
+        } catch (Exception e) {
+            logger.warn("Could not restore tracking assignment identity for booking {}: {}", bookingId, e.getMessage());
         }
     }
 

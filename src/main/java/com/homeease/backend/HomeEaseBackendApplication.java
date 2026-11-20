@@ -20,6 +20,9 @@ public class HomeEaseBackendApplication {
     private static void loadDotenv() {
         File envFile = new File(".env");
         if (!envFile.exists()) {
+            envFile = new File("../.env");
+        }
+        if (!envFile.exists()) {
             return;
         }
         try {

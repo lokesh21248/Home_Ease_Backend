@@ -967,7 +967,7 @@ public class BookingAssignmentService {
             return false;
         }
 
-        // 4. Active job check
+        // 4. Active job check (guarding against stale/abandoned bookings > 12h)
         List<BookingStage> activeStages = List.of(
                 BookingStage.ACCEPTED,
                 BookingStage.CONFIRMED,
@@ -975,9 +975,14 @@ public class BookingAssignmentService {
                 BookingStage.ARRIVED,
                 BookingStage.IN_PROGRESS
         );
+        Instant staleThreshold = Instant.now().minus(12, ChronoUnit.HOURS);
         List<Booking> activeBookings = bookingRepository.findByWorker_WorkerIdAndStatusInOrderByScheduledAtAsc(
                 worker.getWorkerId(), activeStages);
-        if (!activeBookings.isEmpty()) {
+        boolean hasGenuineActiveJob = activeBookings.stream().anyMatch(b -> {
+            Instant jobTime = b.getScheduledAt() != null ? b.getScheduledAt() : b.getCreatedAt();
+            return jobTime == null || jobTime.isAfter(staleThreshold);
+        });
+        if (hasGenuineActiveJob) {
             if (rejectionReasons != null) rejectionReasons.put(wId, "WORKER_BUSY");
             return false;
         }
@@ -985,7 +990,11 @@ public class BookingAssignmentService {
         List<BookingAssignment> activeAssignments = assignmentRepository.findByWorker_WorkerIdAndStatus(
                 worker.getWorkerId(), AssignmentStatus.ACCEPTED);
         boolean hasActiveAcceptedJob = activeAssignments.stream()
-                .anyMatch(a -> a.getBooking() != null && activeStages.contains(a.getBooking().getStatus()));
+                .anyMatch(a -> {
+                    if (a.getBooking() == null || !activeStages.contains(a.getBooking().getStatus())) return false;
+                    Instant jobTime = a.getBooking().getScheduledAt() != null ? a.getBooking().getScheduledAt() : a.getBooking().getCreatedAt();
+                    return jobTime == null || jobTime.isAfter(staleThreshold);
+                });
         if (hasActiveAcceptedJob) {
             if (rejectionReasons != null) rejectionReasons.put(wId, "WORKER_BUSY");
             return false;
@@ -1021,6 +1030,11 @@ public class BookingAssignmentService {
 
             if (!qualified && serviceId != null) {
                 qualified = workerServiceLinkRepository.existsByWorkerIdAndServiceId(worker.getWorkerId(), serviceId);
+            }
+
+            if (!qualified && workerServiceLinkRepository.findById_WorkerId(worker.getWorkerId()).isEmpty()) {
+                logger.info("[WORKER_DEFAULT_QUALIFIED] Worker {} has no specific service restrictions; eligible for general services", worker.getWorkerId());
+                qualified = true;
             }
 
             if (!qualified) {

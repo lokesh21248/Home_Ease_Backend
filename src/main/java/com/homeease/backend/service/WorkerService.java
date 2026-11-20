@@ -271,8 +271,8 @@ public class WorkerService {
             workerRepository.save(worker);
         }
 
-        workerServiceLinkRepository.deleteByWorkerId(worker.getWorkerId());
         if (serviceOrSubServiceIds != null && !serviceOrSubServiceIds.isEmpty()) {
+            workerServiceLinkRepository.deleteByWorkerId(worker.getWorkerId());
             Set<UUID> subServiceIdsToLink = new LinkedHashSet<>();
             for (String idStr : serviceOrSubServiceIds) {
                 if (idStr == null || idStr.isBlank()) continue;

@@ -1,16 +1,22 @@
 package com.homeease.backend.controller;
 
+import com.homeease.backend.dto.BookingRouteResponse;
 import com.homeease.backend.dto.TrackingDto.*;
 import com.homeease.backend.dto.WorkerDto.LocationUpdateRequest;
+import com.homeease.backend.exception.RoutingException;
+import com.homeease.backend.routing.BookingRouteService;
+import com.homeease.backend.routing.RouteRefreshReason;
 import com.homeease.backend.security.JwtService;
 import com.homeease.backend.service.TrackingService;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Map;
 import java.util.UUID;
 
 @RestController
@@ -22,11 +28,14 @@ public class TrackingController {
 
     private final TrackingService trackingService;
     private final JwtService jwtService;
+    private final BookingRouteService bookingRouteService;
 
     @Autowired
-    public TrackingController(TrackingService trackingService, JwtService jwtService) {
+    public TrackingController(TrackingService trackingService, JwtService jwtService,
+                              BookingRouteService bookingRouteService) {
         this.trackingService = trackingService;
         this.jwtService = jwtService;
+        this.bookingRouteService = bookingRouteService;
     }
 
     /**
@@ -88,27 +97,44 @@ public class TrackingController {
     }
 
     /**
-     * Phase 2: Booking-specific route endpoint
-     * GET /api/v1/tracking/{bookingId}/route
+     * Road route from the assigned worker's latest GPS fix to the booking's persisted service address.
+     *
+     * <p>GET /api/v1/tracking/{bookingId}/route[?reason=INITIAL|PERIODIC|OFF_ROUTE]</p>
+     *
+     * <p>The request deliberately carries no coordinates. Identity comes from a cryptographically verified
+     * JWT only - the legacy "Bearer &lt;uuid&gt; / X-User-Id" fallback in {@code JwtAuthenticationFilter} is
+     * NOT honoured here, so knowing a participant's UUID is never enough to read a route.</p>
      */
     @GetMapping("/{bookingId}/route")
-    public ResponseEntity<TrackingRouteResponse> getBookingRoute(
+    public ResponseEntity<BookingRouteResponse> getBookingRoute(
             @PathVariable("bookingId") UUID bookingId,
-            @RequestParam(value = "destLat", required = false) Double destLat,
-            @RequestParam(value = "destLng", required = false) Double destLng) {
-        return ResponseEntity.ok(trackingService.getBookingRoute(bookingId, destLat, destLng));
+            @RequestParam(value = "reason", required = false) String reason,
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+
+        Map<String, Object> claims = jwtService.validateAndExtractClaims(authHeader);
+        UUID callerId = claims == null ? null : verifiedUserId(claims);
+        if (callerId == null) {
+            throw new RoutingException(RoutingException.Code.JWT_REQUIRED, "A valid sign-in is required.");
+        }
+        boolean admin = "ADMIN".equalsIgnoreCase(String.valueOf(claims.get("role")));
+
+        BookingRouteResponse response = bookingRouteService.getRoute(
+                bookingId, callerId, admin, RouteRefreshReason.parse(reason));
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(response);
     }
 
-    /**
-     * Returns the driving road route between coordinates.
-     */
-    @GetMapping("/route")
-    public ResponseEntity<TrackingRouteResponse> getRoute(
-            @RequestParam("startLat") double startLat,
-            @RequestParam("startLng") double startLng,
-            @RequestParam("destLat") double destLat,
-            @RequestParam("destLng") double destLng) {
-        return ResponseEntity.ok(trackingService.getDrivingRoute(startLat, startLng, destLat, destLng));
+    private static UUID verifiedUserId(Map<String, Object> claims) {
+        Object raw = claims.get("userId") != null ? claims.get("userId") : claims.get("sub");
+        if (raw == null) {
+            return null;
+        }
+        try {
+            return UUID.fromString(raw.toString());
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     /**

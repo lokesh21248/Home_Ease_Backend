@@ -42,3 +42,10 @@ homeease:
       movement-threshold-meters: ${TRACKING_MOVEMENT_THRESHOLD:15.0}
     # Maximum GPS accuracy (HDOP) in metres. Updates with worse accuracy are rejected.
     max-accuracy-meters: ${TRACKING_MAX_ACCURACY_METERS:50.0}
+    # Fail closed: only accept GPS for bookings that have a core-written assignment record. Set to false ONLY as an
+    # emergency rollback or for local simulator testing with unassigned booking ids.
+    require-assignment: ${TRACKING_REQUIRE_ASSIGNMENT:true}
+    # Cost cap for the coordinate-based /tracking/route proxy used by the worker navigation screen.
+    route-proxy:
+      per-identity-per-minute: ${TRACKING_ROUTE_PROXY_PER_IDENTITY_PER_MINUTE:12}
+      global-per-minute: ${TRACKING_ROUTE_PROXY_GLOBAL_PER_MINUTE:300}

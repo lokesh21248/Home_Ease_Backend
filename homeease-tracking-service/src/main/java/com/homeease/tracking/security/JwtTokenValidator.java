@@ -53,7 +53,9 @@ public class JwtTokenValidator {
             // Verify signature
             String content = parts[0] + "." + parts[1];
             String expectedSignature = hmacSha256(content, secretKey);
-            if (!expectedSignature.equals(parts[2])) {
+            // Constant-time comparison so signature bytes cannot be recovered through response timing.
+            if (!java.security.MessageDigest.isEqual(
+                    expectedSignature.getBytes(StandardCharsets.UTF_8), parts[2].getBytes(StandardCharsets.UTF_8))) {
                 logger.warn("Invalid JWT signature received in tracking service");
                 return null;
             }

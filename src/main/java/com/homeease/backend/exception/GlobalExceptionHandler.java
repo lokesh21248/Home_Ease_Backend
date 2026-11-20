@@ -57,6 +57,28 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Booking road-route failures. Every error carries a stable {@code code} the mobile apps branch on, a
+     * user-safe message, and whether a retry can help. Provider bodies and credentials are never included.
+     */
+    @ExceptionHandler(RoutingException.class)
+    public ResponseEntity<Map<String, Object>> handleRouting(RoutingException ex) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("timestamp", Instant.now().toString());
+        body.put("status", ex.getCode().status().value());
+        body.put("error", ex.getCode().name());
+        body.put("code", ex.getCode().name());
+        body.put("message", ex.getMessage());
+        body.put("retryable", ex.isRetryable());
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(ex.getCode().status())
+                .cacheControl(org.springframework.http.CacheControl.noStore());
+        if (ex.getRetryAfterSeconds() != null) {
+            body.put("retryAfterSeconds", ex.getRetryAfterSeconds());
+            builder.header("Retry-After", String.valueOf(ex.getRetryAfterSeconds()));
+        }
+        return builder.body(body);
+    }
+
+    /**
      * The worker already holds an in-flight instant job (see WorkerAcceptanceGuard): 409 Conflict.
      */
     @ExceptionHandler(WorkerBusyException.class)

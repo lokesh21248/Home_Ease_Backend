@@ -25,6 +25,17 @@ public class GlobalExceptionHandler {
         ));
     }
 
+    @ExceptionHandler(AuthenticationRequiredException.class)
+    public ResponseEntity<Map<String, Object>> handleUnauthenticated(AuthenticationRequiredException ex) {
+        logger.warn("Unauthenticated tracking request: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of(
+                "status", "ERROR",
+                "code", "JWT_REQUIRED",
+                "timestamp", Instant.now().toString(),
+                "error", ex.getMessage()
+        ));
+    }
+
     @ExceptionHandler(SecurityException.class)
     public ResponseEntity<Map<String, Object>> handleForbidden(SecurityException ex) {
         logger.warn("Security error in tracking service: {}", ex.getMessage());
@@ -53,6 +64,19 @@ public class GlobalExceptionHandler {
                 "status", "RATE_LIMITED",
                 "timestamp", Instant.now().toString(),
                 "error", ex.getMessage()
+        ));
+    }
+
+    /** Unknown paths (e.g. endpoints that were removed) are a 404, not a server fault. */
+    @ExceptionHandler({
+            org.springframework.web.servlet.resource.NoResourceFoundException.class,
+            org.springframework.web.servlet.NoHandlerFoundException.class})
+    public ResponseEntity<Map<String, Object>> handleNotFound(Exception ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of(
+                "status", "ERROR",
+                "code", "NOT_FOUND",
+                "timestamp", Instant.now().toString(),
+                "error", "No such tracking endpoint"
         ));
     }
 

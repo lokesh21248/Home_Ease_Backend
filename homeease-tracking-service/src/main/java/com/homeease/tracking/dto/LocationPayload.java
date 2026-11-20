@@ -30,7 +30,9 @@ public class LocationPayload {
     private String partnerId;
     private String workerId;
     private String bookingId;
+    @JsonAlias({"latitude", "lat"})
     private Double lat;
+    @JsonAlias({"longitude", "lng"})
     private Double lng;
     private Double bearing;         // Heading in degrees (0–360) for marker rotation
     @JsonAlias({"speedMetersPerSecond", "speed"})
