@@ -1032,11 +1032,6 @@ public class BookingAssignmentService {
                 qualified = workerServiceLinkRepository.existsByWorkerIdAndServiceId(worker.getWorkerId(), serviceId);
             }
 
-            if (!qualified && workerServiceLinkRepository.findById_WorkerId(worker.getWorkerId()).isEmpty()) {
-                logger.info("[WORKER_DEFAULT_QUALIFIED] Worker {} has no specific service restrictions; eligible for general services", worker.getWorkerId());
-                qualified = true;
-            }
-
             if (!qualified) {
                 if (rejectionReasons != null) rejectionReasons.put(wId, "SERVICE_NOT_SUPPORTED");
                 return false;
