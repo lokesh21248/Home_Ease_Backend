@@ -63,7 +63,7 @@ public class WorkerController {
                 .build());
     }
 
-    @PostMapping("/status")
+    @RequestMapping(value = "/status", method = {RequestMethod.POST, RequestMethod.PUT})
     public ResponseEntity<ApiResponse<WorkerProfileResponse>> toggleOnlineStatus(
             @RequestParam(value = "userId", required = false) UUID queryUserId,
             @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
@@ -78,7 +78,7 @@ public class WorkerController {
                 .build());
     }
 
-    @PostMapping({"/services", "/profile/services"})
+    @RequestMapping(value = {"/services", "/profile/services"}, method = {RequestMethod.POST, RequestMethod.PUT})
     public ResponseEntity<ApiResponse<WorkerProfileResponse>> updateWorkerServices(
             @RequestParam(value = "userId", required = false) UUID queryUserId,
             @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
