@@ -56,6 +56,20 @@ public interface BookingRepository extends JpaRepository<Booking, UUID>, JpaSpec
     Optional<Booking> findByIdForUpdate(@Param("id") UUID id);
 
     /**
+     * Direct atomic update to cancel a booking.
+     * Prevents optimistic locking failure (row count 0) when the booking version has been
+     * modified concurrently during an active live tracking session.
+     */
+    @org.springframework.data.jpa.repository.Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE Booking b SET b.status = com.homeease.backend.model.enums.BookingStage.CANCELLED, " +
+           "b.cancellationReason = :reason, b.cancelledBy = :cancelledBy, b.cancelledAt = :cancelledAt, " +
+           "b.version = COALESCE(b.version, 0) + 1 WHERE b.bookingId = :bookingId")
+    int directCancelBooking(@Param("bookingId") UUID bookingId,
+                            @Param("reason") String reason,
+                            @Param("cancelledBy") com.homeease.backend.model.entity.User cancelledBy,
+                            @Param("cancelledAt") Instant cancelledAt);
+
+    /**
      * P0-2 — Idempotency check: returns an existing booking that was created
      * with the same client-supplied key, if any.
      */

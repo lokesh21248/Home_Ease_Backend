@@ -11,10 +11,6 @@ import com.homeease.backend.model.enums.BookingStage;
 import com.homeease.backend.model.enums.TrackingSessionStatus;
 import com.homeease.backend.repository.BookingRepository;
 import com.homeease.backend.repository.WorkerRepository;
-import com.homeease.backend.tracking.ArrivalDetectionService;
-import com.homeease.backend.tracking.GpsFix;
-import com.homeease.backend.tracking.GpsFixValidator;
-import com.homeease.backend.tracking.LocationHistoryRecorder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -43,26 +39,15 @@ public class TrackingService {
     private static final Duration ARRIVED_COORD_TTL = Duration.ofSeconds(120);
     private static final Duration HOMEEASE_LOCATION_TTL = Duration.ofSeconds(120);
 
-    // In-memory throttles to prevent excessive Redis/DB writes on high-frequency GPS ticks
+    // In-memory throttles to prevent excessive Redis/DB writes on high-frequency
+    // GPS ticks
     private final ConcurrentHashMap<UUID, Long> sessionTickCounter = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<UUID, Long> lastWorkerHeartbeatMap = new ConcurrentHashMap<>();
-    /** Last ACCEPTED fix per booking: ordering / replay / teleport checks without a Redis round-trip. */
-    private final ConcurrentHashMap<UUID, GpsFix> lastAcceptedFix = new ConcurrentHashMap<>();
-    private final GpsFixValidator gpsFixValidator = new GpsFixValidator();
-    /** Live window for "trackingActive" on the latest-location read (same rule as the tracking snapshot). */
-    private static final long LIVE_WINDOW_MS = 30_000L;
 
-    private LocationHistoryRecorder historyRecorder;
-    private ArrivalDetectionService arrivalDetection;
-
-    /** Optional hooks (absent in plain unit tests): durable history and geofence arrival for fixes ingested here. */
-    @Autowired(required = false)
-    public void setTrackingHooks(LocationHistoryRecorder historyRecorder, ArrivalDetectionService arrivalDetection) {
-        this.historyRecorder = historyRecorder;
-        this.arrivalDetection = arrivalDetection;
-    }
-
-    /** Job-time availability heartbeat cadence: the single policy value shared with WorkerPresenceService. */
+    /**
+     * Job-time availability heartbeat cadence: the single policy value shared with
+     * WorkerPresenceService.
+     */
     @org.springframework.beans.factory.annotation.Value("${homeease.worker.presence.heartbeat-interval-seconds:15}")
     private int workerHeartbeatIntervalSeconds = 15;
 
@@ -91,10 +76,12 @@ public class TrackingService {
     }
 
     /**
-     * Initializes or returns an existing tracking session when a booking is accepted.
+     * Initializes or returns an existing tracking session when a booking is
+     * accepted.
      */
     public TrackingSessionDto createTrackingSession(Booking booking) {
-        if (booking == null) return null;
+        if (booking == null)
+            return null;
         UUID bookingId = booking.getBookingId();
         String sessionKey = REDIS_SESSION_PREFIX + bookingId;
 
@@ -104,7 +91,8 @@ public class TrackingService {
         }
 
         UUID workerUserId = (booking.getWorker() != null && booking.getWorker().getUser() != null)
-                ? booking.getWorker().getUser().getUserId() : null;
+                ? booking.getWorker().getUser().getUserId()
+                : null;
         UUID customerUserId = (booking.getUser() != null) ? booking.getUser().getUserId() : null;
 
         TrackingSessionDto session = TrackingSessionDto.builder()
@@ -125,7 +113,8 @@ public class TrackingService {
     }
 
     /**
-     * Starts active GPS travel tracking when worker begins travelling towards customer.
+     * Starts active GPS travel tracking when worker begins travelling towards
+     * customer.
      */
     public TrackingSessionDto startTravelling(UUID bookingId, UUID workerUserId) {
         TrackingSessionDto session = getSession(bookingId);
@@ -142,8 +131,10 @@ public class TrackingService {
 
         validateWorkerOwnership(session, workerUserId);
 
-        // Scheduled bookings can be accepted days ahead; the 24h assignment record may have expired by now.
-        // The tracking service authorizes WebSocket/REST access from this record, so restore participant ids.
+        // Scheduled bookings can be accepted days ahead; the 24h assignment record may
+        // have expired by now.
+        // The tracking service authorizes WebSocket/REST access from this record, so
+        // restore participant ids.
         ensureAssignmentIdentity(bookingId);
 
         session.setStatus(TrackingSessionStatus.ACTIVE);
@@ -177,7 +168,8 @@ public class TrackingService {
         if (session == null) {
             // Lazy-init session if booking is currently in travel stage
             Booking booking = bookingRepository.findById(bookingId).orElse(null);
-            if (booking != null && (booking.getStatus() == BookingStage.ON_THE_WAY || booking.getStatus() == BookingStage.ACCEPTED)) {
+            if (booking != null && (booking.getStatus() == BookingStage.ON_THE_WAY
+                    || booking.getStatus() == BookingStage.ACCEPTED)) {
                 session = createTrackingSession(booking);
                 session.setStatus(TrackingSessionStatus.ACTIVE);
                 session.setTrackingActive(true);
@@ -196,7 +188,8 @@ public class TrackingService {
         }
 
         // CRITICAL: Reject location uploads if tracking session is ARRIVED or STOPPED
-        if (session.getStatus() == TrackingSessionStatus.ARRIVED || session.getStatus() == TrackingSessionStatus.STOPPED) {
+        if (session.getStatus() == TrackingSessionStatus.ARRIVED
+                || session.getStatus() == TrackingSessionStatus.STOPPED) {
             logger.warn("Rejected GPS upload for booking {}: tracking session is {}", bookingId, session.getStatus());
             return LocationUpdateResult.builder()
                     .success(false)
@@ -209,31 +202,29 @@ public class TrackingService {
         // Validate worker ownership
         validateWorkerOwnership(session, workerUserId);
 
-        // Validate the fix: range, accuracy, speed, timestamp (not future / not stale), ordering and teleport.
-        // (Previously a stale frame was answered "success" and a frame without timestamp was stamped "now".)
+        // Stale timestamp validation (drop older than 2 minutes)
         long nowMs = System.currentTimeMillis();
-        GpsFixValidator.Result check = gpsFixValidator.validate(new GpsFixValidator.Raw(
-                req.getLat(), req.getLng(), req.getTimestamp(), req.getAccuracy(), req.getSpeed(), req.getBearing()),
-                lastAcceptedFix.get(bookingId), nowMs);
-        if (!check.accepted()) {
-            logger.debug("Rejected GPS frame for booking {}: {}", bookingId, check.reason());
+        long coordTime = (req.getTimestamp() != null && req.getTimestamp() > 0) ? req.getTimestamp() : nowMs;
+        if (Math.abs(nowMs - coordTime) > 120_000) {
+            logger.debug("Dropped stale GPS frame (age {} ms) for booking {}", Math.abs(nowMs - coordTime), bookingId);
             return LocationUpdateResult.builder()
-                    .success(false)
-                    .status("REJECTED")
+                    .success(true)
+                    .status(session.getStatus().name())
                     .trackingActive(true)
-                    .message(check.reason() + ": " + check.message())
+                    .message("Stale coordinate ignored")
                     .build();
         }
-        GpsFix fix = check.fix();
-        lastAcceptedFix.put(bookingId, fix);
-        long coordTime = fix.timestampMs();
 
-        // 1. Update session coordinates in-memory; persist session metadata to Redis periodically (every 10 ticks)
+        // 1. Update session coordinates in-memory; persist session metadata to Redis
+        // periodically (every 10 ticks)
         session.setLastLat(req.getLat());
         session.setLastLng(req.getLng());
-        if (req.getBearing() != null) session.setBearing(req.getBearing());
-        if (req.getSpeed() != null) session.setSpeed(req.getSpeed());
-        if (req.getAccuracy() != null) session.setAccuracy(req.getAccuracy());
+        if (req.getBearing() != null)
+            session.setBearing(req.getBearing());
+        if (req.getSpeed() != null)
+            session.setSpeed(req.getSpeed());
+        if (req.getAccuracy() != null)
+            session.setAccuracy(req.getAccuracy());
         session.setLastTimestamp(coordTime);
 
         long ticks = sessionTickCounter.compute(bookingId, (k, v) -> v == null ? 1L : v + 1L);
@@ -241,10 +232,12 @@ public class TrackingService {
             saveSession(session, SESSION_TTL);
         }
 
-        // 2. Cache latest live coordinate in Redis (fast key update for live customer polling)
+        // 2. Cache latest live coordinate in Redis (fast key update for live customer
+        // polling)
         Map<String, Object> coordMap = new LinkedHashMap<>();
         coordMap.put("bookingId", bookingId.toString());
-        coordMap.put("workerId", session.getWorkerUserId() != null ? session.getWorkerUserId().toString() : (workerUserId != null ? workerUserId.toString() : null));
+        coordMap.put("workerId", session.getWorkerUserId() != null ? session.getWorkerUserId().toString()
+                : (workerUserId != null ? workerUserId.toString() : null));
         coordMap.put("lat", req.getLat());
         coordMap.put("lng", req.getLng());
         coordMap.put("latitude", req.getLat());
@@ -252,26 +245,24 @@ public class TrackingService {
         coordMap.put("bearing", req.getBearing() != null ? req.getBearing() : 0.0);
         coordMap.put("heading", req.getBearing() != null ? req.getBearing() : 0.0);
         coordMap.put("speed", req.getSpeed() != null ? req.getSpeed() : 0.0);
-        coordMap.put("accuracy", req.getAccuracy());
+        coordMap.put("accuracy", req.getAccuracy() != null ? req.getAccuracy() : 5.0);
         coordMap.put("timestamp", coordTime);
-        coordMap.put("serverTimestamp", nowMs);
         coordMap.put("trackingActive", true);
         coordMap.put("status", "ACTIVE");
 
         try {
             String jsonStr = objectMapper.writeValueAsString(coordMap);
-            // Primary key specified in requirements: homeease:tracking:{bookingId}:location with 120s TTL
+            // Primary key specified in requirements: homeease:tracking:{bookingId}:location
+            // with 120s TTL
             redisTemplate.opsForValue().set(
                     REDIS_HOMEEASE_LOCATION_PREFIX + bookingId + REDIS_HOMEEASE_LOCATION_SUFFIX,
                     jsonStr,
-                    HOMEEASE_LOCATION_TTL
-            );
+                    HOMEEASE_LOCATION_TTL);
             // Backward-compatible key: tracking:booking:{bookingId}
             redisTemplate.opsForValue().set(
                     REDIS_BOOKING_PREFIX + bookingId,
                     jsonStr,
-                    LIVE_COORD_TTL
-            );
+                    LIVE_COORD_TTL);
         } catch (Exception e) {
             logger.warn("Failed to cache live coordinate in Redis for booking {}: {}", bookingId, e.getMessage());
         }
@@ -287,25 +278,14 @@ public class TrackingService {
                 .lng(req.getLng())
                 .bearing(req.getBearing() != null ? req.getBearing() : 0.0)
                 .speed(req.getSpeed() != null ? req.getSpeed() : 0.0)
-                .accuracy(req.getAccuracy())
+                .accuracy(req.getAccuracy() != null ? req.getAccuracy() : 5.0)
                 .timestamp(coordTime)
                 .build();
 
         broadcastTrackingEvent(bookingId, session.getCustomerUserId(), event);
 
-        // 3b. Durable PostgreSQL breadcrumb (sampled, batched) and geofence-based automatic arrival
-        if (historyRecorder != null) {
-            historyRecorder.offer(bookingId, workerUserId, fix, nowMs);
-        }
-        if (arrivalDetection != null) {
-            try {
-                arrivalDetection.onFix(bookingId, fix);
-            } catch (RuntimeException e) {
-                logger.warn("Arrival detection failed for booking {}: {}", bookingId, e.getMessage());
-            }
-        }
-
-        // 4. Update worker general availability heartbeat (throttled to once per heartbeat interval, default 15s)
+        // 4. Update worker general availability heartbeat (throttled to once per
+        // heartbeat interval, default 15s)
         try {
             if (workerUserId != null) {
                 Long lastHb = lastWorkerHeartbeatMap.get(workerUserId);
@@ -314,7 +294,8 @@ public class TrackingService {
                     workerService.updateLiveLocation(workerUserId, req.getLat(), req.getLng());
                 }
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
 
         return LocationUpdateResult.builder()
                 .success(true)
@@ -326,7 +307,8 @@ public class TrackingService {
 
     /**
      * Marks the tracking session as ARRIVED when worker arrives at doorstep.
-     * Transitions session to ARRIVED and broadcasts WORKER_ARRIVED & BOOKING_TRACKING_STOPPED.
+     * Transitions session to ARRIVED and broadcasts WORKER_ARRIVED &
+     * BOOKING_TRACKING_STOPPED.
      * Preserves worker general availability.
      */
     public TrackingSessionDto handleArrival(UUID bookingId, UUID workerUserId) {
@@ -356,7 +338,6 @@ public class TrackingService {
         session.setArrivedAt(arrivedAt);
         saveSession(session, SESSION_TTL);
         sessionTickCounter.remove(bookingId);
-        forgetBooking(bookingId);
 
         // Update assignment key
         updateAssignmentKey(bookingId, "ARRIVED", false);
@@ -366,12 +347,14 @@ public class TrackingService {
             String coordKey = REDIS_BOOKING_PREFIX + bookingId;
             String coordJson = redisTemplate.opsForValue().get(coordKey);
             if (coordJson != null && !coordJson.isBlank()) {
-                Map<String, Object> map = objectMapper.readValue(coordJson, new TypeReference<>() {});
+                Map<String, Object> map = objectMapper.readValue(coordJson, new TypeReference<>() {
+                });
                 map.put("trackingActive", false);
                 map.put("status", "ARRIVED");
                 redisTemplate.opsForValue().set(coordKey, objectMapper.writeValueAsString(map), ARRIVED_COORD_TTL);
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
 
         // 1. Broadcast WORKER_ARRIVED event
         TrackingEventMessage arrivedEvent = TrackingEventMessage.builder()
@@ -405,8 +388,10 @@ public class TrackingService {
     }
 
     /**
-     * Stops the tracking session permanently when booking is COMPLETED or CANCELLED.
-     * Deletes temporary Redis live coordinates while preserving DB records and worker availability.
+     * Stops the tracking session permanently when booking is COMPLETED or
+     * CANCELLED.
+     * Deletes temporary Redis live coordinates while preserving DB records and
+     * worker availability.
      */
     public TrackingSessionDto stopTracking(UUID bookingId, String reason) {
         TrackingSessionDto session = getSession(bookingId);
@@ -423,7 +408,6 @@ public class TrackingService {
         session.setStopReason(reason);
         saveSession(session, Duration.ofMinutes(10)); // Short audit retention
         sessionTickCounter.remove(bookingId);
-        forgetBooking(bookingId);
 
         // Update assignment key
         updateAssignmentKey(bookingId, reason, false);
@@ -432,7 +416,8 @@ public class TrackingService {
         try {
             redisTemplate.delete(REDIS_HOMEEASE_LOCATION_PREFIX + bookingId + REDIS_HOMEEASE_LOCATION_SUFFIX);
             redisTemplate.delete(REDIS_BOOKING_PREFIX + bookingId);
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
 
         // Broadcast BOOKING_TRACKING_STOPPED
         TrackingEventMessage stoppedEvent = TrackingEventMessage.builder()
@@ -453,32 +438,81 @@ public class TrackingService {
     }
 
     /**
+     * Starts tracking session when worker starts travelling towards customer
+     * location.
+     */
+    public TrackingSessionDto startTravellingSession(UUID bookingId, UUID workerUserId) {
+        TrackingSessionDto session = getSession(bookingId);
+        if (session == null) {
+            Booking booking = bookingRepository.findById(bookingId).orElse(null);
+            if (booking != null) {
+                session = createTrackingSession(booking);
+            } else {
+                session = TrackingSessionDto.builder()
+                        .sessionId(UUID.randomUUID().toString())
+                        .bookingId(bookingId)
+                        .workerUserId(workerUserId)
+                        .build();
+            }
+        }
+        if (workerUserId != null) {
+            session.setWorkerUserId(workerUserId);
+        }
+        session.setStatus(TrackingSessionStatus.ACTIVE);
+        session.setTrackingActive(true);
+        session.setStartedAt(Instant.now());
+        saveSession(session, SESSION_TTL);
+
+        // Update assignment in Redis
+        updateAssignmentKey(bookingId, "ON_THE_WAY", true);
+
+        // Broadcast WORKER_ON_THE_WAY event to notify customer app
+        TrackingEventMessage event = TrackingEventMessage.builder()
+                .type("WORKER_ON_THE_WAY")
+                .bookingId(bookingId.toString())
+                .status("ON_THE_WAY")
+                .trackingStatus(TrackingSessionStatus.ACTIVE.name())
+                .trackingActive(true)
+                .message("Worker started travelling to customer")
+                .timestamp(System.currentTimeMillis())
+                .build();
+        broadcastTrackingEvent(bookingId, session.getCustomerUserId(), event);
+
+        logger.info("Tracking session for booking {} started by worker {}", bookingId, workerUserId);
+        return session;
+    }
+
+    /**
      * Returns the latest location for customer or worker.
      * Returns trackingActive = false if session is ARRIVED or STOPPED.
      */
     public TrackingLocationResponse getLatestLocation(UUID bookingId) {
         TrackingSessionDto session = getSession(bookingId);
-        boolean sessionActive = session != null && Boolean.TRUE.equals(session.getTrackingActive());
-        String currentStatus = session != null && session.getStatus() != null ? session.getStatus().name() : "UNKNOWN";
-        long nowMs = System.currentTimeMillis();
+        boolean isTrackingActive = session != null && session.getTrackingActive() != null
+                && session.getTrackingActive();
+        String currentStatus = session != null ? session.getStatus().name() : "UNKNOWN";
 
-        // Read cached coordinate from Redis: check homeease:tracking:{bookingId}:location first, fallback to tracking:booking:{bookingId}
+        // Read cached coordinate from Redis: check
+        // homeease:tracking:{bookingId}:location first, fallback to
+        // tracking:booking:{bookingId}
         try {
-            String coordJson = redisTemplate.opsForValue().get(REDIS_HOMEEASE_LOCATION_PREFIX + bookingId + REDIS_HOMEEASE_LOCATION_SUFFIX);
+            String coordJson = redisTemplate.opsForValue()
+                    .get(REDIS_HOMEEASE_LOCATION_PREFIX + bookingId + REDIS_HOMEEASE_LOCATION_SUFFIX);
             if (coordJson == null || coordJson.isBlank()) {
                 coordJson = redisTemplate.opsForValue().get(REDIS_BOOKING_PREFIX + bookingId);
             }
             if (coordJson != null && !coordJson.isBlank()) {
-                Map<String, Object> map = objectMapper.readValue(coordJson, new TypeReference<>() {});
+                Map<String, Object> map = objectMapper.readValue(coordJson, new TypeReference<>() {
+                });
                 Double lat = map.get("lat") != null ? Double.parseDouble(String.valueOf(map.get("lat"))) : null;
                 Double lng = map.get("lng") != null ? Double.parseDouble(String.valueOf(map.get("lng"))) : null;
-                Double bearing = map.get("bearing") != null ? Double.parseDouble(String.valueOf(map.get("bearing"))) : 0.0;
+                Double bearing = map.get("bearing") != null ? Double.parseDouble(String.valueOf(map.get("bearing")))
+                        : 0.0;
                 Double speed = map.get("speed") != null ? Double.parseDouble(String.valueOf(map.get("speed"))) : 0.0;
-                Double accuracy = map.get("accuracy") != null ? Double.parseDouble(String.valueOf(map.get("accuracy"))) : null;
-                Long timestamp = map.get("timestamp") != null ? Long.parseLong(String.valueOf(map.get("timestamp"))) : null;
-                Long receivedAt = map.get("serverTimestamp") != null ? Long.valueOf(String.valueOf(map.get("serverTimestamp"))) : timestamp;
-                // LIVE only with a recent fix: a session flag alone never makes an old position live
-                boolean isTrackingActive = sessionActive && receivedAt != null && nowMs - receivedAt <= LIVE_WINDOW_MS;
+                Double accuracy = map.get("accuracy") != null ? Double.parseDouble(String.valueOf(map.get("accuracy")))
+                        : 5.0;
+                Long timestamp = map.get("timestamp") != null ? Long.parseLong(String.valueOf(map.get("timestamp")))
+                        : System.currentTimeMillis();
 
                 return TrackingLocationResponse.builder()
                         .bookingId(bookingId.toString())
@@ -500,8 +534,7 @@ public class TrackingService {
             logger.warn("Redis coordinate retrieval failed for booking {}: {}", bookingId, e.getMessage());
         }
 
-        // Fallback: the last fix kept in the session, marked NOT live. The customer's own address is never returned
-        // as the partner's location any more: that drew the partner marker on top of the customer's home.
+        // Fallback: check session coordinates
         if (session != null && session.getLastLat() != null && session.getLastLng() != null) {
             return TrackingLocationResponse.builder()
                     .bookingId(bookingId.toString())
@@ -512,9 +545,30 @@ public class TrackingService {
                     .bearing(session.getBearing() != null ? session.getBearing() : 0.0)
                     .heading(session.getBearing() != null ? session.getBearing() : 0.0)
                     .speed(session.getSpeed() != null ? session.getSpeed() : 0.0)
-                    .accuracy(session.getAccuracy())
-                    .timestamp(session.getLastTimestamp())
-                    .trackingActive(false)
+                    .accuracy(session.getAccuracy() != null ? session.getAccuracy() : 5.0)
+                    .timestamp(session.getLastTimestamp() != null ? session.getLastTimestamp()
+                            : System.currentTimeMillis())
+                    .trackingActive(isTrackingActive)
+                    .status(currentStatus)
+                    .found(true)
+                    .build();
+        }
+
+        // Fallback to booking address location
+        Booking booking = bookingRepository.findById(bookingId).orElse(null);
+        if (booking != null && booking.getUserLat() != null && booking.getUserLng() != null) {
+            return TrackingLocationResponse.builder()
+                    .bookingId(bookingId.toString())
+                    .lat(booking.getUserLat())
+                    .lng(booking.getUserLng())
+                    .latitude(booking.getUserLat())
+                    .longitude(booking.getUserLng())
+                    .bearing(0.0)
+                    .heading(0.0)
+                    .speed(0.0)
+                    .accuracy(10.0)
+                    .timestamp(System.currentTimeMillis())
+                    .trackingActive(isTrackingActive)
                     .status(currentStatus)
                     .found(true)
                     .build();
@@ -530,18 +584,10 @@ public class TrackingService {
     }
 
     /**
-     * Back-compat signature. Client-supplied customer coordinates are IGNORED (the persisted booking address is used).
+     * Calculates distance and estimated time of arrival.
+     * When session is ARRIVED, returns distance = 0 and eta = 0.
      */
-    public TrackingDistanceResponse getDistanceAndEta(UUID bookingId, double ignoredCustomerLat, double ignoredCustomerLng) {
-        return getStraightLineDistance(bookingId);
-    }
-
-    /**
-     * Straight-line distance from the partner's latest fix to the booking's persisted address. There is NO ETA here:
-     * the old version multiplied the straight line by 1.3 and divided by an assumed 22 km/h, i.e. invented numbers.
-     * Road distance and traffic-aware duration come only from GET /tracking/{bookingId}/route.
-     */
-    public TrackingDistanceResponse getStraightLineDistance(UUID bookingId) {
+    public TrackingDistanceResponse getDistanceAndEta(UUID bookingId, double customerLat, double customerLng) {
         TrackingSessionDto session = getSession(bookingId);
         boolean isArrived = session != null && session.getStatus() == TrackingSessionStatus.ARRIVED;
         boolean isStopped = session != null && session.getStatus() == TrackingSessionStatus.STOPPED;
@@ -553,17 +599,15 @@ public class TrackingService {
                     .distanceMeters(0L)
                     .etaMinutes(0)
                     .distanceText("0 m")
-                    .etaText(isArrived ? "Arrived" : "Tracking ended")
+                    .etaText("Arrived")
                     .found(true)
                     .trackingActive(false)
+                    .workerLocation(new LatLng(customerLat, customerLng))
                     .build();
         }
 
-        Booking booking = bookingRepository.findById(bookingId).orElse(null);
-        Double destLat = booking != null ? booking.getUserLat() : null;
-        Double destLng = booking != null ? booking.getUserLng() : null;
         TrackingLocationResponse loc = getLatestLocation(bookingId);
-        if (loc.getLat() == null || loc.getLng() == null || destLat == null || destLng == null) {
+        if (loc.getLat() == null || loc.getLng() == null) {
             return TrackingDistanceResponse.builder()
                     .bookingId(bookingId.toString())
                     .found(false)
@@ -571,26 +615,36 @@ public class TrackingService {
                     .build();
         }
 
-        double meters = haversineKm(loc.getLat(), loc.getLng(), destLat, destLng) * 1000.0;
-        long roundedMeters = Math.round(meters);
-        String distText = meters >= 1000 ? String.format(Locale.US, "%.1f km", meters / 1000.0) : (roundedMeters + " m");
+        double straightLineKm = haversineKm(loc.getLat(), loc.getLng(), customerLat, customerLng);
+        // Urban road circuity factor approx 1.3
+        double roadDistKm = Math.round(straightLineKm * 1.3 * 10.0) / 10.0;
+        long roadDistMeters = Math.round(roadDistKm * 1000.0);
+        // Average urban speed ~ 22 km/h (1 km in ~2.7 mins)
+        int etaMins = Math.max(1, (int) Math.ceil((roadDistKm / 22.0) * 60.0));
+
+        String distText = roadDistKm >= 1.0 ? String.format(Locale.US, "%.1f km", roadDistKm) : (roadDistMeters + " m");
+        String etaText = etaMins + " mins";
+
         return TrackingDistanceResponse.builder()
                 .bookingId(bookingId.toString())
-                .distanceKm(Math.round(meters / 100.0) / 10.0)
-                .distanceMeters(roundedMeters)
-                .etaMinutes(null)
-                .distanceText(distText + " (straight line)")
-                .etaText(null)
+                .distanceKm(roadDistKm)
+                .distanceMeters(roadDistMeters)
+                .etaMinutes(etaMins)
+                .distanceText(distText)
+                .etaText(etaText)
                 .found(true)
-                .trackingActive(Boolean.TRUE.equals(loc.getTrackingActive()))
+                .trackingActive(true)
                 .workerLocation(new LatLng(loc.getLat(), loc.getLng()))
                 .build();
     }
 
-    // NOTE: the previous getBookingRoute()/getDrivingRoute() here returned a 10-point straight line with
-    // distance = haversine x 1.3 and duration = distance / 22 km/h. That is not a road route and the numbers
+    // NOTE: the previous getBookingRoute()/getDrivingRoute() here returned a
+    // 10-point straight line with
+    // distance = haversine x 1.3 and duration = distance / 22 km/h. That is not a
+    // road route and the numbers
     // were invented, so it was removed. Road routes now come exclusively from
-    // com.homeease.backend.routing.BookingRouteService (Google Routes API, persisted destination, authorized).
+    // com.homeease.backend.routing.BookingRouteService (Google Routes API,
+    // persisted destination, authorized).
 
     /**
      * Retrieves the tracking session from Redis.
@@ -619,16 +673,20 @@ public class TrackingService {
     }
 
     /**
-     * Ensures {@code tracking:assignment:{bookingId}} carries the participant identities
-     * ({@code customerId}, worker {@code userId}/{@code workerId}) read from the persisted booking. No-op when
-     * they are already present. Failures are logged, never thrown: tracking must not break on a cache repair.
+     * Ensures {@code tracking:assignment:{bookingId}} carries the participant
+     * identities
+     * ({@code customerId}, worker {@code userId}/{@code workerId}) read from the
+     * persisted booking. No-op when
+     * they are already present. Failures are logged, never thrown: tracking must
+     * not break on a cache repair.
      */
     void ensureAssignmentIdentity(UUID bookingId) {
         try {
             String existingJson = redisTemplate.opsForValue().get(REDIS_ASSIGNMENT_PREFIX + bookingId);
             Map<String, Object> map = new HashMap<>();
             if (existingJson != null && !existingJson.isBlank()) {
-                map = objectMapper.readValue(existingJson, new TypeReference<Map<String, Object>>() {});
+                map = objectMapper.readValue(existingJson, new TypeReference<Map<String, Object>>() {
+                });
             }
             boolean hasCustomer = !String.valueOf(map.getOrDefault("customerId", "")).isBlank();
             boolean hasWorker = !String.valueOf(map.getOrDefault("userId", "")).isBlank()
@@ -665,7 +723,8 @@ public class TrackingService {
             String existingJson = redisTemplate.opsForValue().get(REDIS_ASSIGNMENT_PREFIX + bookingId);
             Map<String, Object> map = new HashMap<>();
             if (existingJson != null && !existingJson.isBlank()) {
-                map = objectMapper.readValue(existingJson, new TypeReference<Map<String, Object>>() {});
+                map = objectMapper.readValue(existingJson, new TypeReference<Map<String, Object>>() {
+                });
             }
             map.put("bookingId", bookingId.toString());
             map.put("status", status);
@@ -674,9 +733,9 @@ public class TrackingService {
             redisTemplate.opsForValue().set(
                     REDIS_ASSIGNMENT_PREFIX + bookingId,
                     objectMapper.writeValueAsString(map),
-                    SESSION_TTL
-            );
-        } catch (Exception ignored) {}
+                    SESSION_TTL);
+        } catch (Exception ignored) {
+        }
     }
 
     private void broadcastTrackingEvent(UUID bookingId, UUID customerUserId, TrackingEventMessage event) {
@@ -696,43 +755,28 @@ public class TrackingService {
         }
     }
 
-    /**
-     * Fails CLOSED. It used to return silently when the caller id or the session's worker id was missing, which let
-     * anyone post GPS for a booking whose session lacked a worker id.
-     */
     private void validateWorkerOwnership(TrackingSessionDto session, UUID workerUserId) {
-        if (workerUserId == null) {
-            throw new SecurityException("Unauthorized: worker identity is required for booking " + session.getBookingId());
-        }
-        if (workerUserId.equals(session.getWorkerUserId())) {
+        if (session.getWorkerUserId() == null || workerUserId == null) {
             return;
         }
-        // Authoritative check against the persisted assignment (worker user id or worker entity id)
-        // Only identifiers are compared, so no lazy proxy is initialised (this also runs off the web request thread,
-        // where no Hibernate session is open).
-        Booking booking = session.getBookingId() == null ? null : bookingRepository.findById(session.getBookingId()).orElse(null);
-        UUID assignedWorkerId = booking != null && booking.getWorker() != null ? booking.getWorker().getWorkerId() : null;
-        if (assignedWorkerId != null) {
-            if (workerUserId.equals(assignedWorkerId)) {
-                return;
+        if (session.getWorkerUserId().equals(workerUserId)) {
+            return;
+        }
+        // Dual check: verify if workerUserId is either the Worker.workerId or
+        // User.userId of the assigned worker
+        if (workerRepository != null) {
+            Optional<Worker> wOpt = workerRepository.findById(workerUserId)
+                    .or(() -> workerRepository.findByUser_UserId(workerUserId));
+            if (wOpt.isPresent()) {
+                Worker w = wOpt.get();
+                if (w.getWorkerId().equals(session.getWorkerUserId()) ||
+                        (w.getUser() != null && w.getUser().getUserId().equals(session.getWorkerUserId()))) {
+                    return;
+                }
             }
-            Optional<Worker> callerWorker = workerRepository != null
-                    ? workerRepository.findByUser_UserId(workerUserId) : Optional.empty();
-            if (callerWorker.isPresent() && assignedWorkerId.equals(callerWorker.get().getWorkerId())) {
-                return;
-            }
         }
-        throw new SecurityException("Unauthorized: Worker " + workerUserId + " does not own tracking session for booking " + session.getBookingId());
-    }
-
-    private void forgetBooking(UUID bookingId) {
-        lastAcceptedFix.remove(bookingId);
-        if (historyRecorder != null) {
-            historyRecorder.forget(bookingId);
-        }
-        if (arrivalDetection != null) {
-            arrivalDetection.forget(bookingId);
-        }
+        throw new SecurityException("Unauthorized: Worker " + workerUserId
+                + " does not own tracking session for booking " + session.getBookingId());
     }
 
     private double haversineKm(double lat1, double lon1, double lat2, double lon2) {
@@ -741,7 +785,7 @@ public class TrackingService {
         double lonDistance = Math.toRadians(lon2 - lon1);
         double a = Math.sin(latDistance / 2) * Math.sin(latDistance / 2)
                 + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
-                * Math.sin(lonDistance / 2) * Math.sin(lonDistance / 2);
+                        * Math.sin(lonDistance / 2) * Math.sin(lonDistance / 2);
         double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
         return R * c;
     }

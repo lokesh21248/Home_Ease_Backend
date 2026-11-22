@@ -448,6 +448,11 @@ public class BookingController {
             try {
                 return ResponseEntity.ok(cancellationService.cancelBooking(bookingId, userId, finalReason));
             } catch (Exception e) {
+                // If the booking is already cancelled in the database, return idempotent 200 OK
+                Booking current = bookingRepository.findById(bookingId).orElse(null);
+                if (current != null && current.getStatus() == BookingStage.CANCELLED) {
+                    return ResponseEntity.ok(cancellationService.mapToResponse(current));
+                }
                 if (attempt == 3 || !isOptimisticLockException(e)) {
                     throw e;
                 }

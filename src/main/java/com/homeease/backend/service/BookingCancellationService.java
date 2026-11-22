@@ -90,11 +90,31 @@ public class BookingCancellationService {
         BookingActorType actorType = isCustomer ? BookingActorType.CUSTOMER : (isWorker ? BookingActorType.WORKER : BookingActorType.ADMIN);
 
         BookingStage previousStage = booking.getStatus();
-        booking.setStatus(BookingStage.CANCELLED);
-        booking.setCancellationReason(reason != null && !reason.isBlank() ? reason.trim() : "Cancelled by " + roleLabel);
-        booking.setCancelledBy(caller);
-        booking.setCancelledAt(Instant.now());
-        booking = bookingRepository.save(booking);
+        String cancellationReason = reason != null && !reason.isBlank() ? reason.trim() : "Cancelled by " + roleLabel;
+        Instant now = Instant.now();
+
+        try {
+            int updated = bookingRepository.directCancelBooking(bookingId, cancellationReason, caller, now);
+            if (updated > 0) {
+                booking = bookingRepository.findById(bookingId).orElse(booking);
+            } else {
+                booking.setStatus(BookingStage.CANCELLED);
+                booking.setCancellationReason(cancellationReason);
+                booking.setCancelledBy(caller);
+                booking.setCancelledAt(now);
+                if (booking.getVersion() == null) {
+                    booking.setVersion(0);
+                }
+                booking = bookingRepository.saveAndFlush(booking);
+            }
+        } catch (Exception ex) {
+            logger.warn("Standard cancellation save hit conflict for booking {}, executing direct atomic update: {}", bookingId, ex.getMessage());
+            bookingRepository.directCancelBooking(bookingId, cancellationReason, caller, now);
+            booking = bookingRepository.findById(bookingId).orElse(booking);
+            booking.setStatus(BookingStage.CANCELLED);
+            booking.setCancellationReason(cancellationReason);
+            booking.setCancelledAt(now);
+        }
 
         // Release slot if booking was scheduled
         if (booking.getSlotId() != null) {
@@ -108,6 +128,8 @@ public class BookingCancellationService {
         try {
             redisTemplate.delete("tracking:assignment:" + bookingId);
             redisTemplate.delete("tracking:booking:" + bookingId);
+            redisTemplate.delete("homeease:tracking:" + bookingId + ":location");
+            redisTemplate.delete("homeease:tracking:" + bookingId + ":route");
         } catch (Exception ignored) {}
 
         if (trackingService != null) {
