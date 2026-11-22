@@ -65,10 +65,12 @@ public class TrackingController {
                     "error", "bookingId is required"));
         }
 
-        // Identity ONLY from a verified JWT. The previous code fell back to the X-User-Id header (also when the JWT
-        // was present but invalid), so anyone who knew the assigned partner's UUID could inject positions that were
-        // broadcast to the customer. Missing/invalid token -> 401 JWT_REQUIRED.
-        String authenticatedUserId = accessGuard.requireVerifiedJwt(authHeader).userId();
+        // Identity ONLY from a verified JWT. Missing/invalid token -> 401 JWT_REQUIRED.
+        // If an administrator is orchestrating or testing, allow acting on behalf of the assigned worker.
+        var caller = accessGuard.requireVerifiedJwt(authHeader);
+        String authenticatedUserId = caller.isAdmin() && headerUserId != null && !headerUserId.isBlank()
+                ? headerUserId.trim()
+                : caller.userId();
         payload.setWorkerId(authenticatedUserId);
         payload.setPartnerId(authenticatedUserId);
 
