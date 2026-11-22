@@ -122,6 +122,56 @@ class TrackingControllerSecurityTest {
                 .andExpect(status().isForbidden());
     }
 
+    // ───────────────────────── GPS ingestion identity ─────────────────────────
+
+    @Test
+    void gpsIngestRequiresAVerifiedJwtAndNeverTrustsXUserId() throws Exception {
+        String body = "{\"lat\":17.45,\"lng\":78.38,\"accuracy\":5.0,\"timestamp\":" + System.currentTimeMillis() + "}";
+        org.springframework.http.MediaType json = org.springframework.http.MediaType.APPLICATION_JSON;
+
+        // the spoof: knowing the assigned partner's UUID is not an identity
+        mvc.perform(post("/api/v1/tracking/{id}/location", BOOKING).header("X-User-Id", WORKER)
+                .contentType(json).content(body)).andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/tracking/partner/location").header("X-User-Id", WORKER)
+                .contentType(json).content("{\"bookingId\":\"" + BOOKING + "\",\"lat\":17.45,\"lng\":78.38}"))
+                .andExpect(status().isUnauthorized());
+        // a forged / invalid token plus the header used to fall through to the header
+        mvc.perform(post("/api/v1/tracking/{id}/location", BOOKING).header("Authorization", "Bearer not.a.jwt")
+                .header("X-User-Id", WORKER).contentType(json).content(body)).andExpect(status().isUnauthorized());
+        // a bare-UUID bearer
+        mvc.perform(post("/api/v1/tracking/{id}/location", BOOKING).header("Authorization", "Bearer " + WORKER)
+                .contentType(json).content(body)).andExpect(status().isUnauthorized());
+        verify(service, never()).processLocationUpdate(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+
+        // a signed partner token is accepted and its identity (not any header) is what the service checks
+        when(service.processLocationUpdate(org.mockito.ArgumentMatchers.eq(BOOKING), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.eq(WORKER)))
+                .thenReturn(LocationPayload.builder().bookingId(BOOKING).lat(17.45).lng(78.38).build());
+        mvc.perform(post("/api/v1/tracking/{id}/location", BOOKING).header("Authorization", TestJwt.bearer(WORKER, "WORKER"))
+                .header("X-User-Id", STRANGER).contentType(json).content(body)).andExpect(status().isOk());
+        verify(service).processLocationUpdate(org.mockito.ArgumentMatchers.eq(BOOKING), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.eq(WORKER));
+    }
+
+    @Test
+    void onlyTheAssignedPartnerOrAnAdminCanStopTracking() throws Exception {
+        mvc.perform(post("/api/v1/tracking/{id}/stop", BOOKING).header("Authorization", TestJwt.bearer(CUSTOMER, "CUSTOMER")))
+                .andExpect(status().isForbidden());
+        mvc.perform(post("/api/v1/tracking/{id}/stop", BOOKING).header("Authorization", TestJwt.bearer(STRANGER, "WORKER")))
+                .andExpect(status().isForbidden());
+        verify(service, never()).stopTracking(anyString(), anyString());
+        mvc.perform(post("/api/v1/tracking/{id}/stop", BOOKING).param("reason", "ARRIVED")
+                        .header("Authorization", TestJwt.bearer(WORKER, "WORKER")))
+                .andExpect(status().isOk());
+        verify(service).stopTracking(BOOKING, "ARRIVED");
+    }
+
+    @Test
+    void noOpStartStubIsGone() throws Exception {
+        mvc.perform(post("/api/v1/tracking/{id}/start", BOOKING).header("Authorization", TestJwt.bearer(WORKER, "WORKER")))
+                .andExpect(status().is4xxClientError());
+    }
+
     // ───────────────────────── paid-API coordinate proxy ─────────────────────────
 
     @Test

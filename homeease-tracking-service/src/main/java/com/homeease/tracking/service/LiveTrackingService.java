@@ -67,6 +67,12 @@ public class LiveTrackingService {
     @Value("${homeease.tracking.rate-limit.movement-threshold-meters:15.0}")
     private double movementThresholdMeters;
 
+    /** Absolute per-partner ceiling, movement or not (default 60/min = one per second; the app sends every 3-10 s). */
+    @Value("${homeease.tracking.rate-limit.hard-max-updates-per-minute:60}")
+    private int hardMaxUpdatesPerMinute = 60;
+
+    private final ConcurrentMap<String, Deque<Long>> partnerHardWindows = new ConcurrentHashMap<>();
+
     /**
      * Maximum acceptable GPS horizontal accuracy in metres.
      * Updates with accuracy > this value are rejected to prevent noise injection.
@@ -518,13 +524,11 @@ public class LiveTrackingService {
         String rateLimitKey = effectiveWorkerId != null ? effectiveWorkerId : bookingId;
         checkSlidingWindowRateLimit(rateLimitKey, lat, lng, latestExisting);
 
-        // 5. Populate real-time distance and ETA if customer coordinates are known
-        if (customerLat != null && customerLng != null) {
-            double distanceKm = haversine(lat, lng, customerLat, customerLng);
-            int etaMinutes = Math.max(1, (int) Math.round((distanceKm / 25.0) * 60.0) + 2);
-            payload.setDistanceKm(Math.round(distanceKm * 100.0) / 100.0);
-            payload.setEtaMinutes(etaMinutes);
-        }
+        // 5. No distance/ETA is attached to a GPS frame. This used to broadcast a straight-line distance with an ETA
+        //    computed from an assumed 25 km/h plus 2 minutes: an invented number. Road distance and traffic-aware
+        //    duration come only from the provider-backed route (core: GET /api/v1/tracking/{bookingId}/route).
+        payload.setDistanceKm(null);
+        payload.setEtaMinutes(null);
 
         payload.setTrackingActive(true);
         payload.setStatus("TRACKING");
@@ -630,6 +634,22 @@ public class LiveTrackingService {
      * Sliding-Window Rate Limiter (DSA 8)
      */
     private void checkSlidingWindowRateLimit(String rateLimitKey, double lat, double lng, LocationPayload previous) {
+        // Hard ceiling that movement can NOT bypass. Before, any update that moved >= 15 m skipped the limiter
+        // entirely, so a client "moving" 20 m per message could post without limit.
+        long nowHard = System.currentTimeMillis();
+        Deque<Long> hard = partnerHardWindows.computeIfAbsent(rateLimitKey, k -> new ConcurrentLinkedDeque<>());
+        synchronized (hard) {
+            while (!hard.isEmpty() && hard.peekFirst() < nowHard - 60_000L) {
+                hard.pollFirst();
+            }
+            if (hard.size() >= hardMaxUpdatesPerMinute) {
+                throw new RateLimitExceededException(String.format(
+                        "GPS update hard limit exceeded for partner %s: %d updates per minute", rateLimitKey,
+                        hardMaxUpdatesPerMinute));
+            }
+            hard.addLast(nowHard);
+        }
+
         if (previous != null && previous.getLat() != null && previous.getLng() != null) {
             double distanceMovedMeters = haversine(previous.getLat(), previous.getLng(), lat, lng) * 1000.0;
             if (distanceMovedMeters >= movementThresholdMeters) {

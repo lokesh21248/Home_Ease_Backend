@@ -159,6 +159,29 @@ homeease:
     error-backoff-seconds: ${ROUTES_ERROR_BACKOFF_SECONDS:20}                # negative cache after provider failure
   jwt:
     secret: ${JWT_SECRET}
+  security:
+    # Tracking / arrival / PIN endpoints accept only identities from a VERIFIED JWT (not the legacy bare-UUID /
+    # X-User-Id fallback). Set STRICT_JWT_TRACKING=false only as an emergency rollback.
+    strict-jwt-tracking: ${STRICT_JWT_TRACKING:true}
+  arrival:
+    auto-detect:
+      enabled: ${ARRIVAL_AUTO_DETECT_ENABLED:true}          # geofence moves ON_THE_WAY -> ARRIVED automatically
+    radius-meters: ${ARRIVAL_RADIUS_METERS:75}
+    nearby-radius-meters: ${ARRIVAL_NEARBY_RADIUS_METERS:500}
+    max-accuracy-meters: ${ARRIVAL_MAX_ACCURACY_METERS:40}  # poorer fixes are ignored by the geofence
+    required-fixes: ${ARRIVAL_REQUIRED_FIXES:3}             # consecutive qualifying fixes
+    min-dwell-seconds: ${ARRIVAL_MIN_DWELL_SECONDS:6}
+    max-speed-mps: ${ARRIVAL_MAX_SPEED_MPS:4.0}             # faster = driving past, not arriving
+    require-proximity: ${ARRIVAL_REQUIRE_PROXIMITY:true}    # manual "Arrived" needs a fresh fix near the address
+    manual-radius-meters: ${ARRIVAL_MANUAL_RADIUS_METERS:200}
+    max-fix-age-seconds: ${ARRIVAL_MAX_FIX_AGE_SECONDS:120}
+  tracking:
+    live-window-seconds: ${TRACKING_LIVE_WINDOW_SECONDS:30}  # never "live" with an older fix
+    history:
+      enabled: ${TRACKING_HISTORY_ENABLED:true}
+      min-interval-seconds: ${TRACKING_HISTORY_MIN_INTERVAL_SECONDS:15}
+      min-distance-meters: ${TRACKING_HISTORY_MIN_DISTANCE_METERS:30}
+      retention-days: ${TRACKING_HISTORY_RETENTION_DAYS:30}
   kafka:
     topics:
       booking-events: ${KAFKA_TOPIC_BOOKING_EVENTS:firstdoor.booking.events.v1}

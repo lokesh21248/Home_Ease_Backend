@@ -124,6 +124,27 @@ public class TrackingAccessGuard {
     }
 
     /**
+     * Partner-only actions (ending live tracking): verified JWT + the booking's ASSIGNED partner, or an admin. A
+     * customer is a participant but must not be able to switch off the partner's live location.
+     */
+    public Caller requireAssignedWorker(String authHeader, String bookingId) {
+        Caller caller = requireVerifiedJwt(authHeader);
+        if (bookingId == null || !UUID_PATTERN.matcher(bookingId).matches()) {
+            throw new IllegalArgumentException("Invalid bookingId.");
+        }
+        if (caller.isAdmin()) {
+            return caller;
+        }
+        JsonNode assignment = readAssignment(bookingId);
+        boolean worker = assignment != null
+                && (matches(assignment, "userId", caller.userId()) || matches(assignment, "workerId", caller.userId()));
+        if (!worker) {
+            throw new SecurityException("Only the assigned service partner can do this.");
+        }
+        return caller;
+    }
+
+    /**
      * STOMP subscription access. {@code userId}/{@code role}/{@code verified} come from the CONNECT frame; only a
      * session established with a verified JWT may subscribe to booking-scoped topics.
      */

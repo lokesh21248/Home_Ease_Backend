@@ -15,7 +15,7 @@ import java.util.Map;
 import java.util.UUID;
 
 @RestController
-@RequestMapping({"/api/v1/tracking", "/api/tracking"})
+@RequestMapping({ "/api/v1/tracking", "/api/tracking" })
 @CrossOrigin(origins = "*")
 public class TrackingController {
 
@@ -26,36 +26,23 @@ public class TrackingController {
     private final TrackingAccessGuard accessGuard;
 
     public TrackingController(LiveTrackingService trackingService,
-                              JwtTokenValidator jwtValidator,
-                              TrackingAccessGuard accessGuard) {
+            JwtTokenValidator jwtValidator,
+            TrackingAccessGuard accessGuard) {
         this.trackingService = trackingService;
         this.jwtValidator = jwtValidator;
         this.accessGuard = accessGuard;
     }
 
-    /**
-     * Starts live tracking session when worker begins journey.
-     * POST /api/tracking/{bookingId}/start or POST /api/v1/tracking/{bookingId}/start
-     */
-    @PostMapping("/{bookingId}/start")
-    public ResponseEntity<?> startTrackingREST(
-            @PathVariable("bookingId") String bookingId,
-            @RequestHeader(value = "Authorization", required = false) String authHeader,
-            @RequestHeader(value = "X-User-Id", required = false) String headerUserId) {
-        accessGuard.requireParticipant(authHeader, bookingId);
-        return ResponseEntity.ok(Map.of(
-                "status", "SUCCESS",
-                "bookingId", bookingId,
-                "trackingActive", true,
-                "message", "Live tracking session started"
-        ));
-    }
+    // NOTE: POST /{bookingId}/start is NOT served here. Starting a trip is a booking state change (ACCEPTED ->
+    // ON_THE_WAY) owned by the core service (POST /api/v1/tracking/{bookingId}/start or /bookings/{id}/on-the-way);
+    // Nginx routes it there. The previous handler here returned "trackingActive: true" without doing anything.
 
     /**
      * REST Partner GPS Ingestion API (called by Partner App every 3-5 seconds):
-     * POST /api/v1/tracking/partner/location, POST /api/tracking/{bookingId}/location
+     * POST /api/v1/tracking/partner/location, POST
+     * /api/tracking/{bookingId}/location
      */
-    @PostMapping({"/partner/location", "/update-location", "/{bookingId}/location"})
+    @PostMapping({ "/partner/location", "/update-location", "/{bookingId}/location" })
     public ResponseEntity<?> updateLiveLocationREST(
             @PathVariable(value = "bookingId", required = false) String pathBookingId,
             @RequestHeader(value = "Authorization", required = false) String authHeader,
@@ -65,8 +52,7 @@ public class TrackingController {
         if (payload == null) {
             return ResponseEntity.badRequest().body(Map.of(
                     "status", "ERROR",
-                    "error", "Request body cannot be empty"
-            ));
+                    "error", "Request body cannot be empty"));
         }
 
         if (pathBookingId != null && !pathBookingId.isBlank()) {
@@ -76,27 +62,15 @@ public class TrackingController {
         if (payload.getBookingId() == null || payload.getBookingId().isBlank()) {
             return ResponseEntity.badRequest().body(Map.of(
                     "status", "ERROR",
-                    "error", "bookingId is required"
-            ));
+                    "error", "bookingId is required"));
         }
 
-        // Authenticate service person from JWT Bearer token or X-User-Id header
-        String authenticatedUserId = null;
-        if (authHeader != null && !authHeader.isBlank()) {
-            UUID fromJwt = jwtValidator.extractUserId(authHeader);
-            if (fromJwt != null) {
-                authenticatedUserId = fromJwt.toString();
-            }
-        }
-        if (authenticatedUserId == null && headerUserId != null && !headerUserId.isBlank()) {
-            authenticatedUserId = headerUserId.trim();
-        }
-
-        // Never trust client-supplied worker ID alone when authenticated principal is present
-        if (authenticatedUserId != null) {
-            payload.setWorkerId(authenticatedUserId);
-            payload.setPartnerId(authenticatedUserId);
-        }
+        // Identity ONLY from a verified JWT. The previous code fell back to the X-User-Id header (also when the JWT
+        // was present but invalid), so anyone who knew the assigned partner's UUID could inject positions that were
+        // broadcast to the customer. Missing/invalid token -> 401 JWT_REQUIRED.
+        String authenticatedUserId = accessGuard.requireVerifiedJwt(authHeader).userId();
+        payload.setWorkerId(authenticatedUserId);
+        payload.setPartnerId(authenticatedUserId);
 
         try {
             LocationPayload saved = trackingService.processLocationUpdate(
@@ -105,48 +79,44 @@ public class TrackingController {
             return ResponseEntity.ok(Map.of(
                     "status", "SUCCESS",
                     "message", "Live tracking location updated and broadcasted to WebSocket topic",
-                    "data", saved
-            ));
+                    "data", saved));
         } catch (IllegalArgumentException e) {
             logger.warn("Validation error in tracking update: {}", e.getMessage());
             return ResponseEntity.badRequest().body(Map.of(
                     "status", "ERROR",
-                    "error", e.getMessage()
-            ));
+                    "error", e.getMessage()));
         } catch (SecurityException e) {
             logger.warn("Security violation in tracking update: {}", e.getMessage());
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of(
                     "status", "ERROR",
-                    "error", e.getMessage()
-            ));
+                    "error", e.getMessage()));
         } catch (IllegalStateException e) {
             logger.info("Tracking closed for booking {}: {}", payload.getBookingId(), e.getMessage());
             return ResponseEntity.status(HttpStatus.GONE).body(Map.of(
                     "status", "INACTIVE",
                     "trackingActive", false,
-                    "message", e.getMessage()
-            ));
+                    "message", e.getMessage()));
         } catch (RateLimitExceededException e) {
             logger.warn("Rate limit throttled for booking {}: {}", payload.getBookingId(), e.getMessage());
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(Map.of(
                     "status", "RATE_LIMITED",
-                    "error", e.getMessage()
-            ));
+                    "error", e.getMessage()));
         } catch (Exception e) {
             logger.error("Unexpected error in tracking update: {}", e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
                     "status", "ERROR",
-                    "error", "Internal server error processing live tracking update"
-            ));
+                    "error", "Internal server error processing live tracking update"));
         }
     }
 
     /**
      * Fetch latest known worker location for a booking.
-     * Requires a verified JWT belonging to the booking's customer, its assigned worker, or an admin.
-     * GET /api/tracking/{bookingId}/location or GET /api/v1/tracking/latest/{bookingId}
+     * Requires a verified JWT belonging to the booking's customer, its assigned
+     * worker, or an admin.
+     * GET /api/tracking/{bookingId}/location or GET
+     * /api/v1/tracking/latest/{bookingId}
      */
-    @GetMapping({"/latest/{bookingId}", "/{bookingId}/location"})
+    @GetMapping({ "/latest/{bookingId}", "/{bookingId}/location" })
     public ResponseEntity<?> getLatestLocation(
             @PathVariable("bookingId") String bookingId,
             @RequestHeader(value = "Authorization", required = false) String authHeader) {
@@ -156,8 +126,7 @@ public class TrackingController {
             return ResponseEntity.ok(Map.of(
                     "found", false,
                     "bookingId", bookingId,
-                    "message", "No active location recorded yet for this booking"
-            ));
+                    "message", "No active location recorded yet for this booking"));
         }
 
         if (Boolean.FALSE.equals(payload.getTrackingActive())) {
@@ -166,8 +135,7 @@ public class TrackingController {
                     "bookingId", bookingId,
                     "status", payload.getStatus() != null ? payload.getStatus() : "CLOSED",
                     "trackingActive", false,
-                    "message", payload.getMessage() != null ? payload.getMessage() : "Live tracking is closed"
-            ));
+                    "message", payload.getMessage() != null ? payload.getMessage() : "Live tracking is closed"));
         }
 
         return ResponseEntity.ok(payload);
@@ -177,20 +145,18 @@ public class TrackingController {
      * Explicit stop/close live tracking for a booking.
      * POST /api/tracking/{bookingId}/stop or POST /api/v1/tracking/stop/{bookingId}
      */
-    @PostMapping({"/stop/{bookingId}", "/close/{bookingId}", "/{bookingId}/stop"})
+    @PostMapping({ "/stop/{bookingId}", "/close/{bookingId}", "/{bookingId}/stop" })
     public ResponseEntity<?> stopTracking(
             @PathVariable("bookingId") String bookingId,
             @RequestParam(value = "reason", defaultValue = "COMPLETED") String reason,
             @RequestHeader(value = "Authorization", required = false) String authHeader) {
-        // Operational endpoint: previously unauthenticated, so anyone could end any booking's tracking.
-        accessGuard.requireAdmin(authHeader);
+        accessGuard.requireAssignedWorker(authHeader, bookingId);
         trackingService.stopTracking(bookingId, reason);
         return ResponseEntity.ok(Map.of(
                 "status", "SUCCESS",
                 "bookingId", bookingId,
                 "trackingActive", false,
-                "message", "Live tracking stopped for booking " + bookingId
-        ));
+                "message", "Live tracking stopped for booking " + bookingId));
     }
 
     /**
@@ -204,24 +170,33 @@ public class TrackingController {
             @RequestHeader(value = "Authorization", required = false) String authHeader) {
 
         accessGuard.requireParticipant(authHeader, bookingId);
-        // NOTE: distance/ETA here are straight-line (haversine) estimates, not road data. Deprecated for display:
-        // the customer app shows only provider route distance/duration from GET /tracking/{bookingId}/route.
+        // NOTE: distance/ETA here are straight-line (haversine) estimates, not road
+        // data. Deprecated for display:
+        // the customer app shows only provider route distance/duration from GET
+        // /tracking/{bookingId}/route.
         Map<String, Object> distanceInfo = trackingService.calculateDistanceAndEta(bookingId, customerLat, customerLng);
         return ResponseEntity.ok(distanceInfo);
     }
 
-    // REMOVED: GET /api/v1/tracking/{bookingId}/route. It took the destination from client query parameters,
-    // had no authorization, and read no persisted booking data. The authoritative endpoint of the same path now
-    // lives in the core service (booking-authorized, persisted destination) and Nginx routes it there.
+    // REMOVED: GET /api/v1/tracking/{bookingId}/route. It took the destination from
+    // client query parameters,
+    // had no authorization, and read no persisted booking data. The authoritative
+    // endpoint of the same path now
+    // lives in the core service (booking-authorized, persisted destination) and
+    // Nginx routes it there.
 
     /**
      * Coordinate-based road routing used by the WORKER app's own navigation screen.
      * GET /api/v1/tracking/route?startLat=..&startLng=..&destLat=..&destLng=..
      *
-     * <p>This proxies a paid provider call for arbitrary coordinates, so it is no longer anonymous: a caller
-     * identity is required and usage is capped per identity and globally. Customer tracking must NOT use it.</p>
+     * <p>
+     * This proxies a paid provider call for arbitrary coordinates, so it is no
+     * longer anonymous: a caller
+     * identity is required and usage is capped per identity and globally. Customer
+     * tracking must NOT use it.
+     * </p>
      */
-    @GetMapping({"/route", "/directions"})
+    @GetMapping({ "/route", "/directions" })
     public ResponseEntity<Map<String, Object>> getDirections(
             @RequestParam("startLat") double startLat,
             @RequestParam("startLng") double startLng,
@@ -234,9 +209,10 @@ public class TrackingController {
     }
 
     /**
-     * POST variant of the worker-navigation coordinate route. Same protections as the GET variant.
+     * POST variant of the worker-navigation coordinate route. Same protections as
+     * the GET variant.
      */
-    @PostMapping({"/route", "/directions"})
+    @PostMapping({ "/route", "/directions" })
     public ResponseEntity<Map<String, Object>> getDirectionsPost(
             @RequestBody Map<String, Object> body,
             @RequestHeader(value = "Authorization", required = false) String authHeader,
@@ -270,8 +246,7 @@ public class TrackingController {
         return ResponseEntity.ok(Map.of(
                 "bookingId", bookingId,
                 "count", history.size(),
-                "history", history
-        ));
+                "history", history));
     }
 
     /**
@@ -293,8 +268,7 @@ public class TrackingController {
                 "centerLng", lng,
                 "radiusKm", radiusKm,
                 "count", workers.size(),
-                "workers", workers
-        ));
+                "workers", workers));
     }
 
     /**
@@ -309,7 +283,6 @@ public class TrackingController {
                 "activeSessions", trackingService.getActiveSessionsCount(),
                 "queueSize", trackingService.getEventQueueSize(),
                 "processedEvents", trackingService.getProcessedEventsCount(),
-                "droppedEvents", trackingService.getDroppedEventsCount()
-        ));
+                "droppedEvents", trackingService.getDroppedEventsCount()));
     }
 }

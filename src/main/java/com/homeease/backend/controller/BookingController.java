@@ -46,6 +46,12 @@ public class BookingController {
     private final JwtService jwtService;
     private final com.homeease.backend.service.LedgerService ledgerService;
     private final com.homeease.backend.service.FraudDetectionService fraudDetectionService;
+    private com.homeease.backend.tracking.ArrivalProximityGuard arrivalProximityGuard;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setArrivalProximityGuard(com.homeease.backend.tracking.ArrivalProximityGuard guard) {
+        this.arrivalProximityGuard = guard;
+    }
 
     public BookingController(BookingStateMachine bookingStateMachine,
                              DispatchEngine dispatchEngine,
@@ -163,7 +169,7 @@ public class BookingController {
         // Only the authenticated customer receives it when status is ARRIVED.
         String pinForCustomer = null;
         try {
-            UUID callerId = resolveUserId(authHeader, headerUserId, queryUserId);
+            UUID callerId = com.homeease.backend.security.VerifiedCaller.current().userId();
             Booking booking = bookingRepository.findById(bookingId).orElse(null);
             if (booking != null && booking.getUser() != null &&
                     booking.getUser().getUserId().equals(callerId) &&
@@ -196,7 +202,7 @@ public class BookingController {
             @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
             @RequestHeader(value = "Authorization", required = false) String authHeader,
             @RequestParam(value = "userId", required = false) UUID queryUserId) {
-        UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
+        UUID userId = com.homeease.backend.security.VerifiedCaller.current().userId();
 
         Booking booking = bookingRepository.findById(bookingId)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
@@ -214,6 +220,15 @@ public class BookingController {
             resp.put("status", booking.getStatus().name());
             resp.put("message", "Service Start PIN is only revealed once your service partner marks ARRIVED at your location.");
             return ResponseEntity.status(400).body(resp);
+        }
+
+        // Brute-force lockout: no PIN (and no fresh one) until it ends
+        java.util.Optional<java.time.Instant> pinLock = bookingOtpService.lockedUntil(bookingId);
+        if (pinLock.isPresent()) {
+            long wait = Math.max(1, java.time.Duration.between(java.time.Instant.now(), pinLock.get()).getSeconds());
+            throw new com.homeease.backend.exception.TrackingApiException(
+                    com.homeease.backend.exception.TrackingApiException.Code.PIN_LOCKED,
+                    "Too many wrong PIN attempts. PIN verification is paused; please wait or contact support.", (int) wait);
         }
 
         String pin = bookingOtpService.getCustomerPin(booking);
@@ -506,34 +521,45 @@ public class BookingController {
             @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
             @RequestHeader(value = "Authorization", required = false) String authHeader,
             @RequestParam(value = "userId", required = false) UUID queryUserId) {
-        UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
+        UUID userId = com.homeease.backend.security.VerifiedCaller.current().userId();
         var booking = assignmentService.handleWorkerStartTravel(bookingId, userId);
         BookingResponse resp = bookingStateMachine.mapToBookingResponse(booking);
         resp.setPinCode(null); // Never expose customer PIN to worker
         return ResponseEntity.ok(resp);
     }
 
-    @PostMapping({"/bookings/{id}/arrive", "/workers/bookings/{id}/arrive"})
+    @PostMapping({"/bookings/{id}/arrive", "/workers/bookings/{id}/arrive", "/tracking/{id}/arrived"})
     public ResponseEntity<BookingResponse> arriveAtCustomer(
             @PathVariable("id") UUID bookingId,
             @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
             @RequestHeader(value = "Authorization", required = false) String authHeader,
             @RequestParam(value = "userId", required = false) UUID queryUserId) {
-        UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
+        UUID userId = com.homeease.backend.security.VerifiedCaller.current().userId();
+        if (arrivalProximityGuard != null) {
+            Booking current = bookingRepository.findById(bookingId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
+            boolean assigned = current.getWorker() != null && (userId.equals(current.getWorker().getWorkerId())
+                    || (current.getWorker().getUser() != null && userId.equals(current.getWorker().getUser().getUserId())));
+            if (!assigned) {
+                throw new SecurityException("Unauthorized: Only the assigned worker can confirm arrival.");
+            }
+            // The partner must really be at the address (fresh GPS fix within the manual radius)
+            arrivalProximityGuard.checkManualArrival(current);
+        }
         var booking = assignmentService.handleWorkerArrival(bookingId, userId);
         BookingResponse resp = bookingStateMachine.mapToBookingResponse(booking);
         resp.setPinCode(null); // Never expose customer PIN to worker
         return ResponseEntity.ok(resp);
     }
 
-    @PostMapping({"/bookings/{id}/verify-otp", "/bookings/{id}/verify-pin", "/workers/bookings/{id}/verify-pin"})
+    @PostMapping({"/bookings/{id}/verify-otp", "/bookings/{id}/verify-pin", "/workers/bookings/{id}/verify-pin", "/tracking/{id}/verify-pin"})
     public ResponseEntity<Map<String, Object>> verifyOtpAndStartService(
             @PathVariable("id") UUID bookingId,
             @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
             @RequestHeader(value = "Authorization", required = false) String authHeader,
             @RequestParam(value = "userId", required = false) UUID queryUserId,
             @RequestBody(required = false) Map<String, Object> body) {
-        UUID userId = resolveUserId(authHeader, headerUserId, queryUserId);
+        UUID userId = com.homeease.backend.security.VerifiedCaller.current().userId();
 
         String otp = null;
         if (body != null) {
@@ -551,7 +577,17 @@ public class BookingController {
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
 
         // 1. Verify OTP
-        bookingOtpService.verifyOtp(booking, userId, otp.trim());
+        try {
+            bookingOtpService.verifyOtp(booking, userId, otp.trim());
+        } catch (IllegalStateException e) {
+            java.util.Optional<java.time.Instant> pinLock = bookingOtpService.lockedUntil(bookingId);
+            if (pinLock.isPresent()) {
+                long wait = Math.max(1, java.time.Duration.between(java.time.Instant.now(), pinLock.get()).getSeconds());
+                throw new com.homeease.backend.exception.TrackingApiException(
+                        com.homeease.backend.exception.TrackingApiException.Code.PIN_LOCKED, e.getMessage(), (int) wait);
+            }
+            throw e;
+        }
 
         // 2. Start Service Session
         Worker worker = workerRepository.findByUser_UserId(userId)
