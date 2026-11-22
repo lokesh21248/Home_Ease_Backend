@@ -402,6 +402,21 @@ public class BookingController {
         return ResponseEntity.ok(bookingStateMachine.getBookingById(bookingId));
     }
 
+    private boolean isOptimisticLockException(Throwable t) {
+        while (t != null) {
+            if (t instanceof org.springframework.dao.OptimisticLockingFailureException ||
+                t instanceof jakarta.persistence.OptimisticLockException ||
+                t instanceof org.hibernate.StaleObjectStateException ||
+                (t.getMessage() != null && (t.getMessage().contains("unexpected row count from update") ||
+                                            t.getMessage().contains("Row was updated or deleted") ||
+                                            t.getMessage().contains("optimistic")))) {
+                return true;
+            }
+            t = t.getCause();
+        }
+        return false;
+    }
+
     @PostMapping("/bookings/{id}/cancel")
     public ResponseEntity<BookingResponse> cancelBooking(
             @PathVariable("id") UUID bookingId,
@@ -416,9 +431,10 @@ public class BookingController {
             try {
                 return ResponseEntity.ok(cancellationService.cancelBooking(bookingId, userId, finalReason));
             } catch (Exception e) {
-                if (attempt == 3 || !(e instanceof org.springframework.dao.OptimisticLockingFailureException || e.getCause() instanceof org.hibernate.StaleObjectStateException)) {
+                if (attempt == 3 || !isOptimisticLockException(e)) {
                     throw e;
                 }
+                logger.warn("Optimistic lock conflict on cancel for booking {}, retry attempt {}", bookingId, attempt);
                 try {
                     Thread.sleep(150L * attempt);
                 } catch (InterruptedException ignored) {}

@@ -39,20 +39,37 @@ public class TrackingController {
     }
 
     /**
+     * Starts tracking session when worker begins travelling.
+     * POST /api/tracking/{bookingId}/start or POST /api/v1/tracking/{bookingId}/start
+     */
+    @PostMapping("/{bookingId}/start")
+    public ResponseEntity<TrackingSessionDto> startTracking(
+            @PathVariable("bookingId") UUID bookingId,
+            @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestParam(value = "userId", required = false) UUID queryUserId) {
+        UUID workerUserId = resolveUserId(authHeader, headerUserId, queryUserId);
+        TrackingSessionDto session = trackingService.startTravellingSession(bookingId, workerUserId);
+        return ResponseEntity.ok(session);
+    }
+
+    /**
      * Ingests high-frequency live GPS updates from worker during travel.
      * Rejects updates when session is ARRIVED or STOPPED.
+     * POST /api/tracking/{bookingId}/location or POST /api/v1/tracking/partner/location
      */
-    @PostMapping({"/partner/location", "/update-location"})
+    @PostMapping({"/partner/location", "/update-location", "/{bookingId}/location"})
     public ResponseEntity<LocationUpdateResult> updateLiveLocation(
+            @PathVariable(value = "bookingId", required = false) UUID pathBookingId,
             @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
             @RequestHeader(value = "Authorization", required = false) String authHeader,
             @RequestParam(value = "userId", required = false) UUID queryUserId,
             @Valid @RequestBody LocationUpdateRequest request) {
 
         UUID workerUserId = resolveUserId(authHeader, headerUserId, queryUserId);
-        UUID bookingId = null;
+        UUID bookingId = pathBookingId;
 
-        if (request.getBookingId() != null && !request.getBookingId().isBlank()) {
+        if (bookingId == null && request.getBookingId() != null && !request.getBookingId().isBlank()) {
             try {
                 bookingId = UUID.fromString(request.getBookingId().trim());
             } catch (Exception ignored) {}
@@ -77,11 +94,24 @@ public class TrackingController {
     /**
      * Returns the latest position for a given bookingId.
      * Returns trackingActive = false when session is ARRIVED or STOPPED.
+     * GET /api/tracking/{bookingId}/location or GET /api/v1/tracking/latest/{bookingId}
      */
-    @GetMapping("/latest/{bookingId}")
+    @GetMapping({"/latest/{bookingId}", "/{bookingId}/location"})
     public ResponseEntity<TrackingLocationResponse> getLatestLocation(
             @PathVariable("bookingId") UUID bookingId) {
         return ResponseEntity.ok(trackingService.getLatestLocation(bookingId));
+    }
+
+    /**
+     * Explicitly stops tracking for a booking (e.g. upon arrival or job completion).
+     * POST /api/tracking/{bookingId}/stop or POST /api/v1/tracking/{bookingId}/stop
+     */
+    @PostMapping({"/{bookingId}/stop", "/stop/{bookingId}"})
+    public ResponseEntity<TrackingSessionDto> stopTracking(
+            @PathVariable("bookingId") UUID bookingId,
+            @RequestParam(value = "reason", defaultValue = "STOPPED") String reason) {
+        TrackingSessionDto session = trackingService.stopTracking(bookingId, reason);
+        return ResponseEntity.ok(session);
     }
 
     /**

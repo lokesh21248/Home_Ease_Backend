@@ -26,6 +26,28 @@ public interface BookingOtpRepository extends JpaRepository<BookingOtp, UUID> {
 
     Optional<BookingOtp> findFirstByBooking_BookingIdAndStatus(UUID bookingId, OtpStatus status);
 
+    /**
+     * Atomically spends one verification attempt. Returns 1 only if the OTP is still ACTIVE and had an attempt
+     * left, so N parallel guesses can never exceed {@code maxAttempts} (a read-modify-write on the entity could).
+     * Bulk JPQL on purpose: nothing here may be overwritten later by a stale in-memory copy of the entity.
+     */
+    @Modifying
+    @Query("UPDATE BookingOtp o SET o.attempts = o.attempts + 1 "
+            + "WHERE o.otpId = :otpId AND o.status = com.homeease.backend.model.enums.OtpStatus.ACTIVE "
+            + "AND o.attempts < o.maxAttempts")
+    int consumeAttempt(@Param("otpId") UUID otpId);
+
+    /** Moves an ACTIVE OTP to a terminal status; {@code lockedUntil} doubles as the lockout deadline for REVOKED. */
+    @Modifying
+    @Query("UPDATE BookingOtp o SET o.status = :status, o.resendCooldownUntil = :lockedUntil "
+            + "WHERE o.otpId = :otpId AND o.status = com.homeease.backend.model.enums.OtpStatus.ACTIVE")
+    int closeActive(@Param("otpId") UUID otpId, @Param("status") OtpStatus status,
+                    @Param("lockedUntil") Instant lockedUntil);
+
+    /** Fresh value straight from the database (a scalar projection is never served from the persistence context). */
+    @Query("SELECT o.attempts FROM BookingOtp o WHERE o.otpId = :otpId")
+    Integer currentAttempts(@Param("otpId") UUID otpId);
+
     @Modifying
     @Query("UPDATE BookingOtp o SET o.status = :status, o.updatedAt = :now WHERE o.booking.bookingId = :bookingId")
     int updateStatus(@Param("bookingId") UUID bookingId, @Param("status") OtpStatus status, @Param("now") Instant now);

@@ -46,8 +46,27 @@ public class BookingOtpService {
     @Value("${homeease.booking.otp.resend-cooldown-seconds:60}")
     private int resendCooldownSeconds = 60;
 
-    @Value("${homeease.booking.otp.hmac-secret:HomeEase-Secure-Doorstep-Pin-Secret-2026-X9A7}")
-    private String hmacSecret = "HomeEase-Secure-Doorstep-Pin-Secret-2026-X9A7";
+    /**
+     * How long PIN verification stays locked (and a fresh PIN is refused) after a booking's OTP was revoked for
+     * too many wrong guesses. Without this, a revoked OTP was replaced by a fresh one with 5 new guesses on the
+     * next customer refresh, so a 4-digit PIN could still be enumerated over time.
+     */
+    @Value("${homeease.booking.otp.lockout-seconds:900}")
+    private int lockoutSeconds = 900;
+
+    /**
+     * Optional dedicated PIN-hashing key. There is deliberately NO default: the previous built-in default was
+     * committed to a public repository, which let anyone with read access to {@code booking_otp.hashed_otp}
+     * recover a 4-digit PIN offline in at most 10,000 HMAC computations.
+     */
+    @Value("${homeease.booking.otp.hmac-secret:}")
+    private String configuredHmacSecret = "";
+
+    /** Falls back to a key derived from the (required, private) JWT signing secret when no dedicated key is set. */
+    @Value("${homeease.jwt.secret:}")
+    private String jwtSecret = "";
+
+    private volatile byte[] hmacKey;
 
     @Autowired
     public BookingOtpService(BookingOtpRepository otpRepository,
@@ -79,6 +98,14 @@ public class BookingOtpService {
         }
 
         Instant now = Instant.now();
+
+        // Brute-force lockout: after the OTP was revoked for too many wrong guesses, do NOT hand out a fresh one (with
+        // fresh guesses) until the lockout ends - otherwise a customer refresh restarts the guessing immediately.
+        Optional<Instant> locked = lockedUntil(booking.getBookingId());
+        if (locked.isPresent()) {
+            logger.warn("PIN issuance refused for booking {}: verification locked until {}", booking.getBookingId(), locked.get());
+            return otpRepository.findFirstByBooking_BookingIdOrderByCreatedAtDesc(booking.getBookingId()).orElse(null);
+        }
 
         // Check if active OTP already exists and cooldown has not elapsed
         Optional<BookingOtp> existing = otpRepository.findFirstByBooking_BookingIdAndStatus(
@@ -156,9 +183,17 @@ public class BookingOtpService {
 
     /**
      * Assigned worker submits the customer-provided 4-digit PIN.
-     * Enforces ARRIVED booking status, assigned worker ownership, attempt limits, and hash verification.
+     *
+     * <p>Enforces ARRIVED booking status, assigned-worker ownership, expiry, a hard attempt limit and a constant-time
+     * hash comparison.</p>
+     *
+     * <p><b>Brute-force protection.</b> Every guess first spends an attempt with one atomic conditional UPDATE, so
+     * concurrent guesses cannot exceed {@code max-attempts}, and the attempt is committed even though a wrong PIN is
+     * reported by an exception ({@code noRollbackFor}). Previously the counter was saved and then rolled back together
+     * with the failed transaction, so the limit never took effect. Exhausting the attempts revokes the OTP and starts
+     * a lockout during which no fresh PIN is issued ({@link #issueOtp}).</p>
      */
-    @Transactional
+    @Transactional(noRollbackFor = {IllegalArgumentException.class, IllegalStateException.class})
     public boolean verifyOtp(Booking booking, UUID workerUserId, String submittedOtp) {
         if (booking == null || submittedOtp == null || !isValidOtpFormat(submittedOtp)) {
             throw new IllegalArgumentException("Invalid PIN format. Must be exactly 4 numeric digits.");
@@ -191,25 +226,25 @@ public class BookingOtpService {
                 booking.getBookingId(), OtpStatus.ACTIVE);
 
         if (otpOpt.isEmpty()) {
+            if (lockedUntil(booking.getBookingId()).isPresent()) {
+                throw new IllegalStateException("Maximum verification attempts exceeded. PIN verification is locked.");
+            }
             throw new IllegalStateException("No active Service Start PIN found for this booking. Please ask customer to refresh.");
         }
 
         BookingOtp otp = otpOpt.get();
+        UUID otpId = otp.getOtpId();
 
         // 3. Check expiration
         if (otp.getExpiresAt().isBefore(now)) {
-            otp.setStatus(OtpStatus.EXPIRED);
-            otp.setUpdatedAt(now);
-            otpRepository.save(otp);
+            otpRepository.closeActive(otpId, OtpStatus.EXPIRED, null);
             evictCustomerPin(booking.getBookingId());
             throw new IllegalStateException("Service Start PIN has expired. Please ask customer to refresh their screen.");
         }
 
-        // 4. Check brute-force attempts
-        if (otp.getAttempts() >= otp.getMaxAttempts()) {
-            otp.setStatus(OtpStatus.REVOKED);
-            otp.setUpdatedAt(now);
-            otpRepository.save(otp);
+        // 4. Spend an attempt atomically BEFORE looking at the PIN (0 rows = none left, or closed concurrently)
+        if (otpRepository.consumeAttempt(otpId) == 0) {
+            otpRepository.closeActive(otpId, OtpStatus.REVOKED, now.plusSeconds(lockoutSeconds));
             evictCustomerPin(booking.getBookingId());
             throw new IllegalStateException("Maximum verification attempts exceeded. PIN verification is locked.");
         }
@@ -222,25 +257,39 @@ public class BookingOtpService {
         );
 
         if (!matchesHash) {
-            otp.setAttempts(otp.getAttempts() + 1);
-            otp.setUpdatedAt(now);
-            if (otp.getAttempts() >= otp.getMaxAttempts()) {
-                otp.setStatus(OtpStatus.REVOKED);
+            Integer used = otpRepository.currentAttempts(otpId);
+            int remaining = Math.max(0, otp.getMaxAttempts() - (used != null ? used : otp.getMaxAttempts()));
+            if (remaining == 0) {
+                otpRepository.closeActive(otpId, OtpStatus.REVOKED, now.plusSeconds(lockoutSeconds));
                 evictCustomerPin(booking.getBookingId());
             }
-            otpRepository.save(otp);
-            int remaining = Math.max(0, otp.getMaxAttempts() - otp.getAttempts());
             throw new IllegalArgumentException("Incorrect PIN. Attempts remaining: " + remaining);
         }
 
-        // 6. Verified successfully: mark OTP as USED and evict cached plaintext PIN
-        otp.setStatus(OtpStatus.USED);
-        otp.setUpdatedAt(now);
-        otpRepository.save(otp);
+        // 6. Verified: consume the OTP (a concurrent winner makes this 0 rows) and evict the cached plaintext PIN
+        if (otpRepository.closeActive(otpId, OtpStatus.USED, null) == 0) {
+            throw new IllegalStateException("This Service Start PIN was already used.");
+        }
         evictCustomerPin(booking.getBookingId());
 
         logger.info("Service Start PIN verified successfully for booking {} by worker {}", booking.getBookingId(), workerUserId);
         return true;
+    }
+
+    /**
+     * When the booking's PIN verification is locked because the latest OTP was revoked for too many wrong guesses,
+     * the instant the lockout ends; empty when verification is not locked.
+     */
+    public Optional<Instant> lockedUntil(UUID bookingId) {
+        if (bookingId == null) {
+            return Optional.empty();
+        }
+        return otpRepository.findFirstByBooking_BookingIdOrderByCreatedAtDesc(bookingId)
+                .filter(o -> o.getStatus() == OtpStatus.REVOKED)
+                .filter(o -> o.getAttempts() != null && o.getMaxAttempts() != null
+                        && o.getAttempts() >= o.getMaxAttempts())
+                .map(BookingOtp::getResendCooldownUntil)
+                .filter(until -> until != null && until.isAfter(Instant.now()));
     }
 
     public void evictCustomerPin(UUID bookingId) {
@@ -289,12 +338,7 @@ public class BookingOtpService {
         String input = otp + ":" + (bookingId != null ? bookingId.toString() : "");
         try {
             Mac mac = Mac.getInstance("HmacSHA256");
-            SecretKeySpec secretKey = new SecretKeySpec(
-                    (hmacSecret != null ? hmacSecret : "HomeEase-Secure-Doorstep-Pin-Secret-2026-X9A7")
-                            .getBytes(StandardCharsets.UTF_8),
-                    "HmacSHA256"
-            );
-            mac.init(secretKey);
+            mac.init(new SecretKeySpec(resolveHmacKey(), "HmacSHA256"));
             byte[] hmacBytes = mac.doFinal(input.getBytes(StandardCharsets.UTF_8));
             StringBuilder sb = new StringBuilder(hmacBytes.length * 2);
             for (byte b : hmacBytes) {
@@ -303,6 +347,41 @@ public class BookingOtpService {
             return sb.toString();
         } catch (NoSuchAlgorithmException | InvalidKeyException e) {
             throw new RuntimeException("Failed to calculate HMAC-SHA256 for OTP", e);
+        }
+    }
+
+    /**
+     * PIN-hashing key, resolved once: dedicated secret, else a domain-separated derivation of the JWT secret, else
+     * (misconfiguration only) a random per-process key. The random fallback is safe by construction - nothing public
+     * can reproduce it - but PINs then stop verifying after a restart or on another instance, so it is logged loudly.
+     */
+    private byte[] resolveHmacKey() {
+        byte[] key = hmacKey;
+        if (key != null) {
+            return key;
+        }
+        synchronized (this) {
+            if (hmacKey != null) {
+                return hmacKey;
+            }
+            if (configuredHmacSecret != null && !configuredHmacSecret.isBlank()) {
+                hmacKey = configuredHmacSecret.getBytes(StandardCharsets.UTF_8);
+            } else if (jwtSecret != null && !jwtSecret.isBlank()) {
+                try {
+                    Mac derive = Mac.getInstance("HmacSHA256");
+                    derive.init(new SecretKeySpec(jwtSecret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+                    hmacKey = derive.doFinal("homeease:doorstep-pin:v1".getBytes(StandardCharsets.UTF_8));
+                } catch (NoSuchAlgorithmException | InvalidKeyException e) {
+                    throw new IllegalStateException("Cannot derive PIN hashing key", e);
+                }
+            } else {
+                byte[] random = new byte[32];
+                SECURE_RANDOM.nextBytes(random);
+                hmacKey = random;
+                logger.error("No homeease.booking.otp.hmac-secret and no homeease.jwt.secret configured: using a random "
+                        + "per-process PIN hashing key. Service-start PINs will not verify after a restart.");
+            }
+            return hmacKey;
         }
     }
 

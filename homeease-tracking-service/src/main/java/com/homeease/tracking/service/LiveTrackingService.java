@@ -280,6 +280,11 @@ public class LiveTrackingService {
             String trackingKey = "tracking:booking:" + task.bookingId();
             redisTemplate.opsForValue().set(trackingKey, json, TRACKING_TTL);
 
+            // Requirement 3: Explicit key homeease:tracking:{bookingId}:location with 120s TTL
+            try {
+                redisTemplate.opsForValue().set("homeease:tracking:" + task.bookingId() + ":location", json, Duration.ofSeconds(120));
+            } catch (Exception ignored) {}
+
             // Synchronize distributed sequence counter in Redis
             if (task.payload().getSequenceNumber() != null) {
                 redisTemplate.opsForValue().set("tracking:seq:" + task.bookingId(),
@@ -703,10 +708,13 @@ public class LiveTrackingService {
             }
         }
 
-        // 2. Check Redis L2 storage
+        // 2. Check Redis L2 storage: check homeease:tracking:{bookingId}:location first, fallback to tracking:booking:{bookingId}
         try {
-            String trackingKey = "tracking:booking:" + bookingId;
-            String raw = redisTemplate.opsForValue().get(trackingKey);
+            String raw = redisTemplate.opsForValue().get("homeease:tracking:" + bookingId + ":location");
+            if (raw == null || raw.isBlank()) {
+                String trackingKey = "tracking:booking:" + bookingId;
+                raw = redisTemplate.opsForValue().get(trackingKey);
+            }
             if (raw != null && !raw.isBlank()) {
                 String trimmed = raw.trim();
                 LocationPayload payload = null;
@@ -868,6 +876,11 @@ public class LiveTrackingService {
         locationLastAccessMap.remove(bookingId);
         locationHistoryMap.remove(bookingId);
         sequenceCounters.remove(bookingId);
+
+        try {
+            redisTemplate.delete("homeease:tracking:" + bookingId + ":location");
+            redisTemplate.delete("tracking:booking:" + bookingId);
+        } catch (Exception ignored) {}
 
         LocationPayload closed = LocationPayload.builder()
                 .bookingId(bookingId)

@@ -63,9 +63,8 @@ public class BookingCancellationService {
 
     @Transactional
     public BookingResponse cancelBooking(UUID bookingId, UUID callerUserId, String reason) {
-        Booking booking = bookingRepository.findByIdForUpdate(bookingId)
-                .orElseGet(() -> bookingRepository.findById(bookingId)
-                        .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId)));
+        Booking booking = bookingRepository.findById(bookingId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
 
         if (booking.getStatus() == BookingStage.COMPLETED) {
             throw new IllegalStateException("Completed bookings cannot be cancelled.");

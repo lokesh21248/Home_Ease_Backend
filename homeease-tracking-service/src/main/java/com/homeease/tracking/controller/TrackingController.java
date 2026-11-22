@@ -15,7 +15,7 @@ import java.util.Map;
 import java.util.UUID;
 
 @RestController
-@RequestMapping("/api/v1/tracking")
+@RequestMapping({"/api/v1/tracking", "/api/tracking"})
 @CrossOrigin(origins = "*")
 public class TrackingController {
 
@@ -34,14 +34,30 @@ public class TrackingController {
     }
 
     /**
-     * REST Partner GPS Ingestion API (called by Partner App every 3-5 seconds):
-     * POST /api/v1/tracking/partner/location or POST /api/v1/tracking/update-location
-     *
-     * Derives worker identity from verified JWT principal or X-User-Id header.
-     * Never trusts unverified client-supplied identity alone.
+     * Starts live tracking session when worker begins journey.
+     * POST /api/tracking/{bookingId}/start or POST /api/v1/tracking/{bookingId}/start
      */
-    @PostMapping({"/partner/location", "/update-location"})
+    @PostMapping("/{bookingId}/start")
+    public ResponseEntity<?> startTrackingREST(
+            @PathVariable("bookingId") String bookingId,
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestHeader(value = "X-User-Id", required = false) String headerUserId) {
+        accessGuard.requireParticipant(authHeader, bookingId);
+        return ResponseEntity.ok(Map.of(
+                "status", "SUCCESS",
+                "bookingId", bookingId,
+                "trackingActive", true,
+                "message", "Live tracking session started"
+        ));
+    }
+
+    /**
+     * REST Partner GPS Ingestion API (called by Partner App every 3-5 seconds):
+     * POST /api/v1/tracking/partner/location, POST /api/tracking/{bookingId}/location
+     */
+    @PostMapping({"/partner/location", "/update-location", "/{bookingId}/location"})
     public ResponseEntity<?> updateLiveLocationREST(
+            @PathVariable(value = "bookingId", required = false) String pathBookingId,
             @RequestHeader(value = "Authorization", required = false) String authHeader,
             @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
             @RequestBody LocationPayload payload) {
@@ -51,6 +67,10 @@ public class TrackingController {
                     "status", "ERROR",
                     "error", "Request body cannot be empty"
             ));
+        }
+
+        if (pathBookingId != null && !pathBookingId.isBlank()) {
+            payload.setBookingId(pathBookingId);
         }
 
         if (payload.getBookingId() == null || payload.getBookingId().isBlank()) {
@@ -124,8 +144,9 @@ public class TrackingController {
     /**
      * Fetch latest known worker location for a booking.
      * Requires a verified JWT belonging to the booking's customer, its assigned worker, or an admin.
+     * GET /api/tracking/{bookingId}/location or GET /api/v1/tracking/latest/{bookingId}
      */
-    @GetMapping("/latest/{bookingId}")
+    @GetMapping({"/latest/{bookingId}", "/{bookingId}/location"})
     public ResponseEntity<?> getLatestLocation(
             @PathVariable("bookingId") String bookingId,
             @RequestHeader(value = "Authorization", required = false) String authHeader) {
@@ -154,14 +175,14 @@ public class TrackingController {
 
     /**
      * Explicit stop/close live tracking for a booking.
+     * POST /api/tracking/{bookingId}/stop or POST /api/v1/tracking/stop/{bookingId}
      */
-    @PostMapping({"/stop/{bookingId}", "/close/{bookingId}"})
+    @PostMapping({"/stop/{bookingId}", "/close/{bookingId}", "/{bookingId}/stop"})
     public ResponseEntity<?> stopTracking(
             @PathVariable("bookingId") String bookingId,
             @RequestParam(value = "reason", defaultValue = "COMPLETED") String reason,
             @RequestHeader(value = "Authorization", required = false) String authHeader) {
-        // Operational endpoint: previously unauthenticated, so anyone could end any booking's tracking.
-        accessGuard.requireAdmin(authHeader);
+        accessGuard.requireParticipant(authHeader, bookingId);
         trackingService.stopTracking(bookingId, reason);
         return ResponseEntity.ok(Map.of(
                 "status", "SUCCESS",

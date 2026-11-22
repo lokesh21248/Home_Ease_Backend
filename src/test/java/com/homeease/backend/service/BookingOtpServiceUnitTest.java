@@ -118,6 +118,7 @@ public class BookingOtpServiceUnitTest {
 
         when(otpRepository.findFirstByBooking_BookingIdAndStatus(bookingId, OtpStatus.ACTIVE))
                 .thenReturn(Optional.of(otp));
+        stubAtomicOtpOps(otpRepository, otp);
 
         boolean verified = otpService.verifyOtp(testBooking, workerUserId, rawPin);
 
@@ -154,6 +155,7 @@ public class BookingOtpServiceUnitTest {
 
         when(otpRepository.findFirstByBooking_BookingIdAndStatus(bookingId, OtpStatus.ACTIVE))
                 .thenReturn(Optional.of(otp));
+        stubAtomicOtpOps(otpRepository, otp);
 
         // 5th attempt with wrong PIN -> should lock out
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
@@ -170,5 +172,31 @@ public class BookingOtpServiceUnitTest {
                 otpService.verifyOtp(testBooking, workerUserId, "1234")
         );
         assertTrue(lockedEx.getMessage().contains("Maximum verification attempts exceeded"));
+    }
+
+    /**
+     * In-memory stand-in for the three atomic repository statements verifyOtp relies on, with the same semantics as
+     * the SQL (consume only while ACTIVE and below the limit; close only while ACTIVE). Real-database behaviour is
+     * covered by BookingOtpPersistencePostgresTest.
+     */
+    private static void stubAtomicOtpOps(com.homeease.backend.repository.BookingOtpRepository repo, BookingOtp otp) {
+        org.mockito.Mockito.lenient().when(repo.consumeAttempt(org.mockito.ArgumentMatchers.any())).thenAnswer(inv -> {
+            if (otp.getStatus() == OtpStatus.ACTIVE && otp.getAttempts() < otp.getMaxAttempts()) {
+                otp.setAttempts(otp.getAttempts() + 1);
+                return 1;
+            }
+            return 0;
+        });
+        org.mockito.Mockito.lenient().when(repo.currentAttempts(org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(inv -> otp.getAttempts());
+        org.mockito.Mockito.lenient().when(repo.closeActive(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any())).thenAnswer(inv -> {
+            if (otp.getStatus() != OtpStatus.ACTIVE) {
+                return 0;
+            }
+            otp.setStatus(inv.getArgument(1));
+            otp.setResendCooldownUntil(inv.getArgument(2));
+            return 1;
+        });
     }
 }

@@ -271,10 +271,48 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Handles concurrent booking state updates and optimistic locking exceptions.
+     */
+    @ExceptionHandler({
+            org.springframework.dao.OptimisticLockingFailureException.class,
+            jakarta.persistence.OptimisticLockException.class,
+            org.hibernate.StaleObjectStateException.class
+    })
+    public ResponseEntity<Map<String, Object>> handleOptimisticLockConflict(Exception ex) {
+        log.warn("Optimistic lock conflict: {}", ex.getMessage());
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("timestamp", Instant.now().toString());
+        body.put("status", HttpStatus.CONFLICT.value());
+        body.put("error", "CONCURRENT_MODIFICATION");
+        body.put("message", "The booking was modified by another request. Please refresh to see the latest status.");
+
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
+    }
+
+    /**
      * Fallback for standard application runtime exceptions.
      */
     @ExceptionHandler(RuntimeException.class)
     public ResponseEntity<Map<String, Object>> handleGeneralRuntimeException(RuntimeException ex) {
+        Throwable cause = ex;
+        while (cause != null) {
+            if (cause instanceof org.springframework.dao.OptimisticLockingFailureException ||
+                cause instanceof jakarta.persistence.OptimisticLockException ||
+                cause instanceof org.hibernate.StaleObjectStateException ||
+                (cause.getMessage() != null && (cause.getMessage().contains("unexpected row count from update") ||
+                                                cause.getMessage().contains("Row was updated or deleted")))) {
+                log.warn("Nested optimistic lock conflict caught in runtime exception: {}", cause.getMessage());
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("timestamp", Instant.now().toString());
+                body.put("status", HttpStatus.CONFLICT.value());
+                body.put("error", "CONCURRENT_MODIFICATION");
+                body.put("message", "The booking was modified by another request. Please refresh to see the latest status.");
+                return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
+            }
+            cause = cause.getCause();
+        }
+
         log.error("Unhandled runtime exception caught in controller advice: ", ex);
 
         Map<String, Object> body = new LinkedHashMap<>();

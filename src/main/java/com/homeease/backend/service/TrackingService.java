@@ -31,10 +31,13 @@ public class TrackingService {
     public static final String REDIS_SESSION_PREFIX = "tracking:session:";
     public static final String REDIS_BOOKING_PREFIX = "tracking:booking:";
     public static final String REDIS_ASSIGNMENT_PREFIX = "tracking:assignment:";
+    public static final String REDIS_HOMEEASE_LOCATION_PREFIX = "homeease:tracking:";
+    public static final String REDIS_HOMEEASE_LOCATION_SUFFIX = ":location";
 
     private static final Duration SESSION_TTL = Duration.ofHours(4);
     private static final Duration LIVE_COORD_TTL = Duration.ofHours(2);
     private static final Duration ARRIVED_COORD_TTL = Duration.ofSeconds(120);
+    private static final Duration HOMEEASE_LOCATION_TTL = Duration.ofSeconds(120);
 
     // In-memory throttles to prevent excessive Redis/DB writes on high-frequency GPS ticks
     private final ConcurrentHashMap<UUID, Long> sessionTickCounter = new ConcurrentHashMap<>();
@@ -216,6 +219,7 @@ public class TrackingService {
         // 2. Cache latest live coordinate in Redis (fast key update for live customer polling)
         Map<String, Object> coordMap = new LinkedHashMap<>();
         coordMap.put("bookingId", bookingId.toString());
+        coordMap.put("workerId", session.getWorkerUserId() != null ? session.getWorkerUserId().toString() : (workerUserId != null ? workerUserId.toString() : null));
         coordMap.put("lat", req.getLat());
         coordMap.put("lng", req.getLng());
         coordMap.put("latitude", req.getLat());
@@ -229,9 +233,17 @@ public class TrackingService {
         coordMap.put("status", "ACTIVE");
 
         try {
+            String jsonStr = objectMapper.writeValueAsString(coordMap);
+            // Primary key specified in requirements: homeease:tracking:{bookingId}:location with 120s TTL
+            redisTemplate.opsForValue().set(
+                    REDIS_HOMEEASE_LOCATION_PREFIX + bookingId + REDIS_HOMEEASE_LOCATION_SUFFIX,
+                    jsonStr,
+                    HOMEEASE_LOCATION_TTL
+            );
+            // Backward-compatible key: tracking:booking:{bookingId}
             redisTemplate.opsForValue().set(
                     REDIS_BOOKING_PREFIX + bookingId,
-                    objectMapper.writeValueAsString(coordMap),
+                    jsonStr,
                     LIVE_COORD_TTL
             );
         } catch (Exception e) {
@@ -376,8 +388,9 @@ public class TrackingService {
         // Update assignment key
         updateAssignmentKey(bookingId, reason, false);
 
-        // Delete temporary live GPS coordinates
+        // Delete temporary live GPS coordinates from both keys
         try {
+            redisTemplate.delete(REDIS_HOMEEASE_LOCATION_PREFIX + bookingId + REDIS_HOMEEASE_LOCATION_SUFFIX);
             redisTemplate.delete(REDIS_BOOKING_PREFIX + bookingId);
         } catch (Exception ignored) {}
 
@@ -400,6 +413,50 @@ public class TrackingService {
     }
 
     /**
+     * Starts tracking session when worker starts travelling towards customer location.
+     */
+    public TrackingSessionDto startTravellingSession(UUID bookingId, UUID workerUserId) {
+        TrackingSessionDto session = getSession(bookingId);
+        if (session == null) {
+            Booking booking = bookingRepository.findById(bookingId).orElse(null);
+            if (booking != null) {
+                session = createTrackingSession(booking);
+            } else {
+                session = TrackingSessionDto.builder()
+                        .sessionId(UUID.randomUUID().toString())
+                        .bookingId(bookingId)
+                        .workerUserId(workerUserId)
+                        .build();
+            }
+        }
+        if (workerUserId != null) {
+            session.setWorkerUserId(workerUserId);
+        }
+        session.setStatus(TrackingSessionStatus.ACTIVE);
+        session.setTrackingActive(true);
+        session.setStartedAt(Instant.now());
+        saveSession(session, SESSION_TTL);
+
+        // Update assignment in Redis
+        updateAssignmentKey(bookingId, "ON_THE_WAY", true);
+
+        // Broadcast WORKER_ON_THE_WAY event to notify customer app
+        TrackingEventMessage event = TrackingEventMessage.builder()
+                .type("WORKER_ON_THE_WAY")
+                .bookingId(bookingId.toString())
+                .status("ON_THE_WAY")
+                .trackingStatus(TrackingSessionStatus.ACTIVE.name())
+                .trackingActive(true)
+                .message("Worker started travelling to customer")
+                .timestamp(System.currentTimeMillis())
+                .build();
+        broadcastTrackingEvent(bookingId, session.getCustomerUserId(), event);
+
+        logger.info("Tracking session for booking {} started by worker {}", bookingId, workerUserId);
+        return session;
+    }
+
+    /**
      * Returns the latest location for customer or worker.
      * Returns trackingActive = false if session is ARRIVED or STOPPED.
      */
@@ -408,9 +465,12 @@ public class TrackingService {
         boolean isTrackingActive = session != null && session.getTrackingActive() != null && session.getTrackingActive();
         String currentStatus = session != null ? session.getStatus().name() : "UNKNOWN";
 
-        // Read cached coordinate from Redis
+        // Read cached coordinate from Redis: check homeease:tracking:{bookingId}:location first, fallback to tracking:booking:{bookingId}
         try {
-            String coordJson = redisTemplate.opsForValue().get(REDIS_BOOKING_PREFIX + bookingId);
+            String coordJson = redisTemplate.opsForValue().get(REDIS_HOMEEASE_LOCATION_PREFIX + bookingId + REDIS_HOMEEASE_LOCATION_SUFFIX);
+            if (coordJson == null || coordJson.isBlank()) {
+                coordJson = redisTemplate.opsForValue().get(REDIS_BOOKING_PREFIX + bookingId);
+            }
             if (coordJson != null && !coordJson.isBlank()) {
                 Map<String, Object> map = objectMapper.readValue(coordJson, new TypeReference<>() {});
                 Double lat = map.get("lat") != null ? Double.parseDouble(String.valueOf(map.get("lat"))) : null;
