@@ -98,6 +98,19 @@ public class BookingCancellationService {
             if (updated > 0) {
                 booking = bookingRepository.findById(bookingId).orElse(booking);
             } else {
+                Booking refreshed = bookingRepository.findById(bookingId).orElse(null);
+                if (refreshed != null) {
+                    if (refreshed.getStatus() == BookingStage.COMPLETED) {
+                        throw new IllegalStateException("Completed bookings cannot be cancelled.");
+                    }
+                    if (refreshed.getStatus() == BookingStage.IN_PROGRESS) {
+                        throw new IllegalStateException("Service is already in progress and cannot be cancelled directly. Please contact support.");
+                    }
+                    if (refreshed.getStatus() == BookingStage.CANCELLED) {
+                        return mapToResponse(refreshed);
+                    }
+                    booking = refreshed;
+                }
                 booking.setStatus(BookingStage.CANCELLED);
                 booking.setCancellationReason(cancellationReason);
                 booking.setCancelledBy(caller);
@@ -107,10 +120,19 @@ public class BookingCancellationService {
                 }
                 booking = bookingRepository.saveAndFlush(booking);
             }
+        } catch (IllegalStateException ex) {
+            throw ex;
         } catch (Exception ex) {
             logger.warn("Standard cancellation save hit conflict for booking {}, executing direct atomic update: {}", bookingId, ex.getMessage());
-            bookingRepository.directCancelBooking(bookingId, cancellationReason, caller, now);
-            booking = bookingRepository.findById(bookingId).orElse(booking);
+            int retried = bookingRepository.directCancelBooking(bookingId, cancellationReason, caller, now);
+            Booking refreshed = bookingRepository.findById(bookingId).orElse(booking);
+            if (retried == 0 && refreshed.getStatus() == BookingStage.COMPLETED) {
+                throw new IllegalStateException("Completed bookings cannot be cancelled.");
+            }
+            if (retried == 0 && refreshed.getStatus() == BookingStage.IN_PROGRESS) {
+                throw new IllegalStateException("Service is already in progress and cannot be cancelled directly. Please contact support.");
+            }
+            booking = refreshed;
             booking.setStatus(BookingStage.CANCELLED);
             booking.setCancellationReason(cancellationReason);
             booking.setCancelledAt(now);

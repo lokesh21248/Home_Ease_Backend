@@ -63,7 +63,11 @@ public interface BookingRepository extends JpaRepository<Booking, UUID>, JpaSpec
     @org.springframework.data.jpa.repository.Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("UPDATE Booking b SET b.status = com.homeease.backend.model.enums.BookingStage.CANCELLED, " +
            "b.cancellationReason = :reason, b.cancelledBy = :cancelledBy, b.cancelledAt = :cancelledAt, " +
-           "b.version = COALESCE(b.version, 0) + 1 WHERE b.bookingId = :bookingId")
+           "b.version = COALESCE(b.version, 0) + 1 WHERE b.bookingId = :bookingId " +
+           "AND b.status NOT IN (" +
+           "  com.homeease.backend.model.enums.BookingStage.COMPLETED, " +
+           "  com.homeease.backend.model.enums.BookingStage.IN_PROGRESS, " +
+           "  com.homeease.backend.model.enums.BookingStage.CANCELLED)")
     int directCancelBooking(@Param("bookingId") UUID bookingId,
                             @Param("reason") String reason,
                             @Param("cancelledBy") com.homeease.backend.model.entity.User cancelledBy,

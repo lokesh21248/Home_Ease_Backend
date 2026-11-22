@@ -294,8 +294,10 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler({
             org.springframework.dao.OptimisticLockingFailureException.class,
+            org.springframework.orm.jpa.JpaOptimisticLockingFailureException.class,
             jakarta.persistence.OptimisticLockException.class,
-            org.hibernate.StaleObjectStateException.class
+            org.hibernate.StaleObjectStateException.class,
+            org.hibernate.StaleStateException.class
     })
     public ResponseEntity<Map<String, Object>> handleOptimisticLockConflict(Exception ex) {
         log.warn("Optimistic lock conflict: {}", ex.getMessage());
@@ -317,10 +319,14 @@ public class GlobalExceptionHandler {
         Throwable cause = ex;
         while (cause != null) {
             if (cause instanceof org.springframework.dao.OptimisticLockingFailureException ||
+                cause instanceof org.springframework.orm.jpa.JpaOptimisticLockingFailureException ||
                 cause instanceof jakarta.persistence.OptimisticLockException ||
                 cause instanceof org.hibernate.StaleObjectStateException ||
-                (cause.getMessage() != null && (cause.getMessage().contains("unexpected row count from update") ||
-                                                cause.getMessage().contains("Row was updated or deleted")))) {
+                cause instanceof org.hibernate.StaleStateException ||
+                (cause.getMessage() != null && (cause.getMessage().contains("unexpected row count") ||
+                                                cause.getMessage().contains("Row was updated or deleted") ||
+                                                cause.getMessage().contains("StaleState") ||
+                                                cause.getMessage().contains("optimistic")))) {
                 log.warn("Nested optimistic lock conflict caught in runtime exception: {}", cause.getMessage());
                 Map<String, Object> body = new LinkedHashMap<>();
                 body.put("timestamp", Instant.now().toString());

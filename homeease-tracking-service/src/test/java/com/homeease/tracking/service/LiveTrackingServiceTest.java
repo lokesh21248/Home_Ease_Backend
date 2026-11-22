@@ -334,8 +334,8 @@ public class LiveTrackingServiceTest {
                 "status", "ARRIVED",
                 "trackingActive", false
         );
-        when(valueOperations.get("tracking:assignment:" + bookingId))
-                .thenReturn(objectMapper.writeValueAsString(assignment));
+        doReturn(objectMapper.writeValueAsString(assignment))
+                .when(valueOperations).get("tracking:assignment:" + bookingId);
 
         LocationPayload closed = trackingService.getLatestLocation(bookingId);
         assertNotNull(closed);
