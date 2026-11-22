@@ -11,5 +11,22 @@ package com.homeease.backend.routing;
 public record ComputedRoute(String encodedPolyline,
                             long distanceMeters,
                             long durationSeconds,
-                            Long staticDurationSeconds) {
+                            Long staticDurationSeconds,
+                            java.util.List<RouteStep> steps) {
+
+    public ComputedRoute(String encodedPolyline, long distanceMeters, long durationSeconds, Long staticDurationSeconds) {
+        this(encodedPolyline, distanceMeters, durationSeconds, staticDurationSeconds, java.util.List.of());
+    }
+
+    public ComputedRoute {
+        steps = steps == null ? java.util.List.of() : java.util.List.copyOf(steps);
+    }
+
+    /**
+     * One provider manoeuvre (Google Routes {@code legs[].steps[]}): the real turn-by-turn instruction text, the
+     * manoeuvre code (e.g. TURN_LEFT) and where it starts. Nothing is synthesised by the server.
+     */
+    public record RouteStep(String instruction, String maneuver, long distanceMeters,
+                            double startLat, double startLng, double endLat, double endLng) {
+    }
 }

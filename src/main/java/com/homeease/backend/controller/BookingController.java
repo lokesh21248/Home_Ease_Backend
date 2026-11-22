@@ -13,6 +13,7 @@ import com.homeease.backend.repository.BookingRepository;
 import com.homeease.backend.repository.BookingServiceItemRepository;
 import com.homeease.backend.repository.WorkerRepository;
 import com.homeease.backend.security.JwtService;
+import com.homeease.backend.security.VerifiedCaller;
 import com.homeease.backend.service.*;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
@@ -169,10 +170,10 @@ public class BookingController {
         // Only the authenticated customer receives it when status is ARRIVED.
         String pinForCustomer = null;
         try {
-            UUID callerId = com.homeease.backend.security.VerifiedCaller.current().userId();
+            VerifiedCaller caller = VerifiedCaller.current();
             Booking booking = bookingRepository.findById(bookingId).orElse(null);
             if (booking != null && booking.getUser() != null &&
-                    booking.getUser().getUserId().equals(callerId) &&
+                    (caller.isAdmin() || booking.getUser().getUserId().equals(caller.userId())) &&
                     booking.getStatus() == BookingStage.ARRIVED) {
                 pinForCustomer = bookingOtpService.getCustomerPin(booking);
             }
@@ -202,13 +203,14 @@ public class BookingController {
             @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
             @RequestHeader(value = "Authorization", required = false) String authHeader,
             @RequestParam(value = "userId", required = false) UUID queryUserId) {
-        UUID userId = com.homeease.backend.security.VerifiedCaller.current().userId();
+        VerifiedCaller caller = VerifiedCaller.current();
 
         Booking booking = bookingRepository.findById(bookingId)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
 
         // 1. Verify that the authenticated customer owns the booking
-        if (booking.getUser() == null || !booking.getUser().getUserId().equals(userId)) {
+        boolean isOwner = caller.isAdmin() || (booking.getUser() != null && booking.getUser().getUserId().equals(caller.userId()));
+        if (!isOwner) {
             throw new SecurityException("Unauthorized: Only the customer who placed this booking can access the Service Start PIN.");
         }
 
@@ -521,7 +523,21 @@ public class BookingController {
             @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
             @RequestHeader(value = "Authorization", required = false) String authHeader,
             @RequestParam(value = "userId", required = false) UUID queryUserId) {
-        UUID userId = com.homeease.backend.security.VerifiedCaller.current().userId();
+        VerifiedCaller caller = VerifiedCaller.current();
+        UUID userId;
+        if (caller.isAdmin()) {
+            if (headerUserId != null && !headerUserId.isBlank()) {
+                userId = UUID.fromString(headerUserId.trim());
+            } else {
+                Booking b = bookingRepository.findById(bookingId)
+                        .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
+                userId = (b.getWorker() != null && b.getWorker().getUser() != null)
+                        ? b.getWorker().getUser().getUserId()
+                        : caller.userId();
+            }
+        } else {
+            userId = caller.userId();
+        }
         var booking = assignmentService.handleWorkerStartTravel(bookingId, userId);
         BookingResponse resp = bookingStateMachine.mapToBookingResponse(booking);
         resp.setPinCode(null); // Never expose customer PIN to worker
@@ -534,17 +550,33 @@ public class BookingController {
             @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
             @RequestHeader(value = "Authorization", required = false) String authHeader,
             @RequestParam(value = "userId", required = false) UUID queryUserId) {
-        UUID userId = com.homeease.backend.security.VerifiedCaller.current().userId();
+        VerifiedCaller caller = VerifiedCaller.current();
+        UUID userId;
+        if (caller.isAdmin()) {
+            if (headerUserId != null && !headerUserId.isBlank()) {
+                userId = UUID.fromString(headerUserId.trim());
+            } else {
+                Booking b = bookingRepository.findById(bookingId)
+                        .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
+                userId = (b.getWorker() != null && b.getWorker().getUser() != null)
+                        ? b.getWorker().getUser().getUserId()
+                        : caller.userId();
+            }
+        } else {
+            userId = caller.userId();
+        }
         if (arrivalProximityGuard != null) {
             Booking current = bookingRepository.findById(bookingId)
                     .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
-            boolean assigned = current.getWorker() != null && (userId.equals(current.getWorker().getWorkerId())
-                    || (current.getWorker().getUser() != null && userId.equals(current.getWorker().getUser().getUserId())));
+            boolean assigned = caller.isAdmin() || (current.getWorker() != null && (userId.equals(current.getWorker().getWorkerId())
+                    || (current.getWorker().getUser() != null && userId.equals(current.getWorker().getUser().getUserId()))));
             if (!assigned) {
                 throw new SecurityException("Unauthorized: Only the assigned worker can confirm arrival.");
             }
             // The partner must really be at the address (fresh GPS fix within the manual radius)
-            arrivalProximityGuard.checkManualArrival(current);
+            if (!caller.isAdmin()) {
+                arrivalProximityGuard.checkManualArrival(current);
+            }
         }
         var booking = assignmentService.handleWorkerArrival(bookingId, userId);
         BookingResponse resp = bookingStateMachine.mapToBookingResponse(booking);
@@ -559,7 +591,21 @@ public class BookingController {
             @RequestHeader(value = "Authorization", required = false) String authHeader,
             @RequestParam(value = "userId", required = false) UUID queryUserId,
             @RequestBody(required = false) Map<String, Object> body) {
-        UUID userId = com.homeease.backend.security.VerifiedCaller.current().userId();
+        VerifiedCaller caller = VerifiedCaller.current();
+        UUID userId;
+        if (caller.isAdmin()) {
+            if (headerUserId != null && !headerUserId.isBlank()) {
+                userId = UUID.fromString(headerUserId.trim());
+            } else {
+                Booking b = bookingRepository.findById(bookingId)
+                        .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
+                userId = (b.getWorker() != null && b.getWorker().getUser() != null)
+                        ? b.getWorker().getUser().getUserId()
+                        : caller.userId();
+            }
+        } else {
+            userId = caller.userId();
+        }
 
         String otp = null;
         if (body != null) {

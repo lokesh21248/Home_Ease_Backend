@@ -369,6 +369,7 @@ public class BookingRouteService {
                 Instant.ofEpochMilli(c.computedAtMs),
                 c.computedAtMs,
                 cached,
-                (int) Math.max(1, minIntervalMs / 1000));
+                (int) Math.max(1, minIntervalMs / 1000),
+                r.steps());
     }
 }

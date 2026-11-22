@@ -3,6 +3,7 @@ package com.homeease.backend.integration;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -238,9 +239,11 @@ class FullApplicationBookingFlowPostgresTest {
     @DisplayName("The whole application starts on the schema built by the real Flyway migrations, and every migration succeeded")
     void applicationStarted_onTheRealMigrationChain() {
         assertThat(count("SELECT count(*) FROM flyway_schema_history WHERE success = false")).as("failed migrations").isZero();
-        assertThat(count("SELECT count(*) FROM flyway_schema_history WHERE version IS NOT NULL")).as("applied versioned migrations").isEqualTo(26);
+        assertThat(count("SELECT count(*) FROM flyway_schema_history WHERE version IS NOT NULL")).as("applied versioned migrations").isEqualTo(27);
         assertThat(jdbc.queryForObject("SELECT max(version::int) FROM flyway_schema_history WHERE version ~ '^[0-9]+$'", Integer.class))
-                .isEqualTo(26);
+                .isEqualTo(27);
+        assertThat(count("SELECT count(*) FROM information_schema.tables WHERE table_name = 'booking_location_history'"))
+                .as("V27 created the durable tracking-history table").isEqualTo(1);
     }
 
     @Test
@@ -289,13 +292,28 @@ class FullApplicationBookingFlowPostgresTest {
         // 5. on the way, then live location reaches the customer
         mockMvc.perform(as(f.workerUser(), post("/api/v1/bookings/" + bookingId + "/on-the-way"))).andExpect(status().isOk());
         assertThat(bookingStatus(bookingId)).isEqualTo("ON_THE_WAY");
+        long enRouteTs = System.currentTimeMillis() - 90_000;
         mockMvc.perform(as(f.workerUser(), post("/api/v1/tracking/partner/location")).contentType(MediaType.APPLICATION_JSON)
-                .content("{\"bookingId\":\"" + bookingId + "\",\"lat\":17.4460,\"lng\":78.3840,\"speed\":24.0,\"bearing\":90.0}"))
+                .content("{\"bookingId\":\"" + bookingId + "\",\"lat\":17.4460,\"lng\":78.3840,\"speed\":12.0,\"bearing\":90.0,"
+                        + "\"accuracy\":6.0,\"timestamp\":" + enRouteTs + "}"))
                 .andExpect(status().isOk());
+        // a fix without a device timestamp cannot be ordered or checked for replay: rejected, not stamped "now"
+        mockMvc.perform(as(f.workerUser(), post("/api/v1/tracking/partner/location")).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"bookingId\":\"" + bookingId + "\",\"lat\":17.4461,\"lng\":78.3841}"))
+                .andExpect(status().isUnprocessableEntity());
         JsonNode latest = json(mockMvc.perform(as(f.customer(), get("/api/v1/tracking/latest/" + bookingId))).andExpect(status().isOk()));
         assertThat(latest.toString()).as("customer sees the worker's last reported position").contains("17.446").contains("78.384");
 
-        // 6. arrival: only now does the customer get the PIN; the worker starts the service with it
+        // 6. arrival: refused while the partner is ~750 m away (no PIN is issued), accepted at the door
+        mockMvc.perform(as(f.workerUser(), post("/api/v1/bookings/" + bookingId + "/arrive")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("NOT_AT_DESTINATION"));
+        assertThat(bookingStatus(bookingId)).isEqualTo("ON_THE_WAY");
+        assertThat(count("SELECT count(*) FROM booking_otp WHERE booking_id = ?", bookingId)).as("no PIN issued from afar").isZero();
+        mockMvc.perform(as(f.workerUser(), post("/api/v1/tracking/partner/location")).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"bookingId\":\"" + bookingId + "\",\"lat\":17.4487,\"lng\":78.3907,\"speed\":0.0,"
+                        + "\"accuracy\":5.0,\"timestamp\":" + (System.currentTimeMillis() - 2_000) + "}"))
+                .andExpect(status().isOk());
         mockMvc.perform(as(f.workerUser(), post("/api/v1/bookings/" + bookingId + "/arrive"))).andExpect(status().isOk());
         assertThat(bookingStatus(bookingId)).isEqualTo("ARRIVED");
         String pin = json(mockMvc.perform(as(f.customer(), get("/api/v1/bookings/" + bookingId + "/service-pin"))).andExpect(status().isOk()))

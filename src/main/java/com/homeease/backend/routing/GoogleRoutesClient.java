@@ -41,7 +41,9 @@ public class GoogleRoutesClient {
     private static final Logger log = LoggerFactory.getLogger(GoogleRoutesClient.class);
 
     static final String FIELD_MASK =
-            "routes.duration,routes.staticDuration,routes.distanceMeters,routes.polyline.encodedPolyline";
+            "routes.duration,routes.staticDuration,routes.distanceMeters,routes.polyline.encodedPolyline,"
+                    + "routes.legs.steps.distanceMeters,routes.legs.steps.navigationInstruction,"
+                    + "routes.legs.steps.startLocation,routes.legs.steps.endLocation";
 
     private final String apiKey;
     private final URI computeRoutesUri;
@@ -173,7 +175,7 @@ public class GoogleRoutesClient {
                         "The routing service returned a route without a duration.", 15);
             }
             Long staticSeconds = parseDurationSeconds(route.path("staticDuration").asText(""));
-            return new ComputedRoute(encoded, distanceMeters, durationSeconds, staticSeconds);
+            return new ComputedRoute(encoded, distanceMeters, durationSeconds, staticSeconds, parseSteps(route));
         } catch (RoutingException e) {
             throw e;
         } catch (Exception e) {
@@ -181,6 +183,29 @@ public class GoogleRoutesClient {
             throw new RoutingException(Code.ROUTING_PROVIDER_ERROR,
                     "The routing service returned an unreadable response.", 15, e);
         }
+    }
+
+    /** Provider turn-by-turn steps; malformed steps are skipped, never invented. */
+    static List<ComputedRoute.RouteStep> parseSteps(JsonNode route) {
+        List<ComputedRoute.RouteStep> steps = new java.util.ArrayList<>();
+        for (JsonNode leg : route.path("legs")) {
+            for (JsonNode st : leg.path("steps")) {
+                JsonNode start = st.path("startLocation").path("latLng");
+                JsonNode end = st.path("endLocation").path("latLng");
+                if (!start.path("latitude").isNumber() || !start.path("longitude").isNumber()
+                        || !end.path("latitude").isNumber() || !end.path("longitude").isNumber()) {
+                    continue;
+                }
+                JsonNode nav = st.path("navigationInstruction");
+                steps.add(new ComputedRoute.RouteStep(
+                        nav.path("instructions").asText(""),
+                        nav.path("maneuver").asText("MANEUVER_UNSPECIFIED"),
+                        st.path("distanceMeters").asLong(0L),
+                        start.path("latitude").asDouble(), start.path("longitude").asDouble(),
+                        end.path("latitude").asDouble(), end.path("longitude").asDouble()));
+            }
+        }
+        return steps;
     }
 
     /** Parses a protobuf JSON duration such as {@code "754s"} or {@code "754.5s"}. */
