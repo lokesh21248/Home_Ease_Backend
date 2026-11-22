@@ -182,7 +182,8 @@ public class TrackingController {
             @PathVariable("bookingId") String bookingId,
             @RequestParam(value = "reason", defaultValue = "COMPLETED") String reason,
             @RequestHeader(value = "Authorization", required = false) String authHeader) {
-        accessGuard.requireParticipant(authHeader, bookingId);
+        // Operational endpoint: previously unauthenticated, so anyone could end any booking's tracking.
+        accessGuard.requireAdmin(authHeader);
         trackingService.stopTracking(bookingId, reason);
         return ResponseEntity.ok(Map.of(
                 "status", "SUCCESS",
