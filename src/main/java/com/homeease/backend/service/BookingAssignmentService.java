@@ -633,6 +633,24 @@ public class BookingAssignmentService {
     }
 
     /**
+     * System-initiated arrival from the GPS geofence (ArrivalDetectionService). Only a booking that is actually
+     * travelling (ON_THE_WAY) is moved; the row is locked so a simultaneous manual "Arrived" tap cannot issue two PINs.
+     * Delegates to {@link #handleWorkerArrival} so the PIN, notifications and tracking stop are identical.
+     */
+    @Transactional
+    public Booking handleAutoArrival(UUID bookingId) {
+        Booking booking = bookingRepository.findByIdForUpdate(bookingId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
+        if (booking.getStatus() != BookingStage.ON_THE_WAY) {
+            return booking;
+        }
+        if (booking.getWorker() == null || booking.getWorker().getUser() == null) {
+            throw new IllegalStateException("Booking " + bookingId + " has no assigned partner");
+        }
+        return handleWorkerArrival(bookingId, booking.getWorker().getUser().getUserId());
+    }
+
+    /**
      * Worker arrival verification: marks booking as ARRIVED and issues 4-digit OTP to customer.
      */
     @Transactional

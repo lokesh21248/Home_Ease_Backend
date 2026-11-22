@@ -82,6 +82,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                                 .email(email)
                                 .role(role)
                                 .authorities(authorities)
+                                .jwtVerified(true)
                                 .build();
 
                         UsernamePasswordAuthenticationToken authentication =

@@ -25,7 +25,7 @@ final class TestAuth {
         List<SimpleGrantedAuthority> authorities = List.of(new SimpleGrantedAuthority("ROLE_" + role.name()));
         UserPrincipal principal = UserPrincipal.builder()
                 .userId(userId).role(role).phoneNumber("+910000000000").email("test@example.invalid")
-                .authorities(authorities).build();
+                .authorities(authorities).jwtVerified(true).build();
         return request -> {
             SecurityContext ctx = SecurityContextHolder.createEmptyContext();
             ctx.setAuthentication(new UsernamePasswordAuthenticationToken(principal, null, authorities));

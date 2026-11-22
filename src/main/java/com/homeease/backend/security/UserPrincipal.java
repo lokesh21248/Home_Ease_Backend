@@ -24,6 +24,13 @@ public class UserPrincipal implements UserDetails {
     private final UserRole role;
     private final Collection<? extends GrantedAuthority> authorities;
 
+    /**
+     * true only when this principal came from a JWT whose signature was verified. The legacy "Bearer &lt;uuid&gt;" /
+     * X-User-Id fallback leaves it false, so sensitive endpoints (doorstep PIN, arrival, live location) can refuse it.
+     */
+    @Builder.Default
+    private final boolean jwtVerified = false;
+
     public static UserPrincipal create(User user) {
         SimpleGrantedAuthority authority = new SimpleGrantedAuthority("ROLE_" + user.getRole().name());
         return UserPrincipal.builder()

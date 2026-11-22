@@ -11,6 +11,9 @@ import java.util.UUID;
 @Repository
 public interface ReviewRepository extends JpaRepository<Review, UUID> {
     List<Review> findByWorker_WorkerId(UUID workerId);
+
+    /** Number of real customer reviews; a rating with zero reviews is a default, not a rating. */
+    long countByWorker_WorkerId(UUID workerId);
     List<Review> findByUser_UserId(UUID userId);
     Optional<Review> findByBooking_BookingId(UUID bookingId);
 }
