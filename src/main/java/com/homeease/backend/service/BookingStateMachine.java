@@ -677,6 +677,11 @@ public class BookingStateMachine {
                 .workerId(booking.getWorker() != null ? booking.getWorker().getWorkerId() : null)
                 .workerName(booking.getWorker() != null ? booking.getWorker().getUser().getFullName() : null)
                 .workerPhone(booking.getWorker() != null ? booking.getWorker().getUser().getPhoneNumber() : null)
+                // Real rating only: Worker.rating defaults to 4.8 for every new partner, so it is reported only once
+                // at least one customer review exists (null = "new partner"; the app no longer shows a fake 5.0).
+                .workerRating(booking.getWorker() != null && reviewRepository != null
+                        && reviewRepository.countByWorker_WorkerId(booking.getWorker().getWorkerId()) > 0
+                        ? booking.getWorker().getRating() : null)
                 .serviceId(booking.getService().getServiceId())
                 .serviceName(booking.getService().getName())
                 .status(booking.getStatus())
