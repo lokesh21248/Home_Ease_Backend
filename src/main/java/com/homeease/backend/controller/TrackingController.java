@@ -87,6 +87,15 @@ public class TrackingController {
                     .build());
         }
 
+        if (request.getTimestamp() == null || request.getTimestamp() <= 0) {
+            return ResponseEntity.status(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY).body(LocationUpdateResult.builder()
+                    .success(false)
+                    .status("UNPROCESSABLE_ENTITY")
+                    .trackingActive(false)
+                    .message("Device timestamp is required to order and check fixes for replay")
+                    .build());
+        }
+
         LocationUpdateResult result = trackingService.updateWorkerLocation(bookingId, workerUserId, request);
         if (!result.isSuccess() && ("ARRIVED".equals(result.getStatus()) || "STOPPED".equals(result.getStatus()))) {
             return ResponseEntity.status(409).body(result);

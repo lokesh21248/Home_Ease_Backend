@@ -11,6 +11,9 @@ import com.homeease.backend.model.enums.BookingStage;
 import com.homeease.backend.model.enums.TrackingSessionStatus;
 import com.homeease.backend.repository.BookingRepository;
 import com.homeease.backend.repository.WorkerRepository;
+import com.homeease.backend.tracking.ArrivalDetectionService;
+import com.homeease.backend.tracking.GpsFix;
+import com.homeease.backend.tracking.LocationHistoryRecorder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -43,6 +46,17 @@ public class TrackingService {
     // GPS ticks
     private final ConcurrentHashMap<UUID, Long> sessionTickCounter = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<UUID, Long> lastWorkerHeartbeatMap = new ConcurrentHashMap<>();
+
+    private LocationHistoryRecorder historyRecorder;
+    private ArrivalDetectionService arrivalDetection;
+
+    @Autowired(required = false)
+    public void setTrackingHooks(
+            @Autowired(required = false) LocationHistoryRecorder historyRecorder,
+            @Autowired(required = false) ArrivalDetectionService arrivalDetection) {
+        this.historyRecorder = historyRecorder;
+        this.arrivalDetection = arrivalDetection;
+    }
 
     /**
      * Job-time availability heartbeat cadence: the single policy value shared with
@@ -247,6 +261,7 @@ public class TrackingService {
         coordMap.put("speed", req.getSpeed() != null ? req.getSpeed() : 0.0);
         coordMap.put("accuracy", req.getAccuracy() != null ? req.getAccuracy() : 5.0);
         coordMap.put("timestamp", coordTime);
+        coordMap.put("serverTimestamp", nowMs);
         coordMap.put("trackingActive", true);
         coordMap.put("status", "ACTIVE");
 
@@ -283,6 +298,19 @@ public class TrackingService {
                 .build();
 
         broadcastTrackingEvent(bookingId, session.getCustomerUserId(), event);
+
+        // 3b. Durable PostgreSQL breadcrumb (sampled, batched) and geofence-based automatic arrival
+        GpsFix fix = new GpsFix(req.getLat(), req.getLng(), coordTime, req.getAccuracy(), req.getSpeed(), req.getBearing());
+        if (historyRecorder != null) {
+            historyRecorder.offer(bookingId, workerUserId, fix, nowMs);
+        }
+        if (arrivalDetection != null) {
+            try {
+                arrivalDetection.onFix(bookingId, fix);
+            } catch (RuntimeException e) {
+                logger.warn("Arrival detection failed for booking {}: {}", bookingId, e.getMessage());
+            }
+        }
 
         // 4. Update worker general availability heartbeat (throttled to once per
         // heartbeat interval, default 15s)
@@ -417,6 +445,13 @@ public class TrackingService {
             redisTemplate.delete(REDIS_HOMEEASE_LOCATION_PREFIX + bookingId + REDIS_HOMEEASE_LOCATION_SUFFIX);
             redisTemplate.delete(REDIS_BOOKING_PREFIX + bookingId);
         } catch (Exception ignored) {
+        }
+
+        if (historyRecorder != null) {
+            historyRecorder.forget(bookingId);
+        }
+        if (arrivalDetection != null) {
+            arrivalDetection.forget(bookingId);
         }
 
         // Broadcast BOOKING_TRACKING_STOPPED
@@ -756,7 +791,10 @@ public class TrackingService {
     }
 
     private void validateWorkerOwnership(TrackingSessionDto session, UUID workerUserId) {
-        if (session.getWorkerUserId() == null || workerUserId == null) {
+        if (workerUserId == null) {
+            throw new SecurityException("Unauthorized: worker user id is required");
+        }
+        if (session.getWorkerUserId() == null) {
             return;
         }
         if (session.getWorkerUserId().equals(workerUserId)) {
