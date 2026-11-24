@@ -631,7 +631,7 @@ public class BookingAssignmentService {
             // Propagate failures: @Transactional rolls back the booking state on failure.
             // Never broadcast WORKER_ON_THE_WAY until the session is actually active.
             var session = trackingService.startTravelling(bookingId, workerUserId);
-            if (session == null || !session.isTrackingActive()) {
+            if (session == null || !Boolean.TRUE.equals(session.getTrackingActive())) {
                 throw new IllegalStateException("Tracking session did not become active for this booking.");
             }
             if (newTransition) {
