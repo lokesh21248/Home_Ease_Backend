@@ -614,20 +614,30 @@ public class BookingAssignmentService {
             throw new SecurityException("Unauthorized: Only the assigned worker can start travel.");
         }
 
-        if (booking.getStatus() == BookingStage.ACCEPTED || booking.getStatus() == BookingStage.CONFIRMED) {
-            booking.setStatus(BookingStage.ON_THE_WAY);
-            booking = bookingRepository.save(booking);
-            broadcastBookingUpdate(booking, "WORKER_ON_THE_WAY");
-
-            if (trackingService != null) {
-                try {
-                    trackingService.startTravelling(bookingId, workerUserId);
-                } catch (Exception e) {
-                    logger.warn("Tracking startTravelling skipped for booking {}: {}", bookingId, e.getMessage());
-                }
+        if (booking.getStatus() == BookingStage.ACCEPTED || booking.getStatus() == BookingStage.CONFIRMED
+                || booking.getStatus() == BookingStage.ON_THE_WAY) {
+            // ON_THE_WAY is retryable: previous versions could update the booking while
+            // silently failing to activate Redis tracking. Repeated Start Travelling
+            // repairs the session instead of leaving the customer permanently on STANDBY.
+            boolean newTransition = booking.getStatus() != BookingStage.ON_THE_WAY;
+            if (trackingService == null) {
+                throw new IllegalStateException("Tracking service is not available; travel cannot start.");
+            }
+            if (newTransition) {
+                booking.setStatus(BookingStage.ON_THE_WAY);
+                booking = bookingRepository.save(booking);
             }
 
-            logger.info("Worker {} started travelling for booking {}", workerUserId, bookingId);
+            // Propagate failures: @Transactional rolls back the booking state on failure.
+            // Never broadcast WORKER_ON_THE_WAY until the session is actually active.
+            var session = trackingService.startTravelling(bookingId, workerUserId);
+            if (session == null || !session.isTrackingActive()) {
+                throw new IllegalStateException("Tracking session did not become active for this booking.");
+            }
+            if (newTransition) {
+                broadcastBookingUpdate(booking, "WORKER_ON_THE_WAY");
+            }
+            logger.info("Worker {} started or resumed travel for booking {}", workerUserId, bookingId);
         }
         return booking;
     }
