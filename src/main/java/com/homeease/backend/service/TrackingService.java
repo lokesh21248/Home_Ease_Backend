@@ -154,8 +154,23 @@ public class TrackingService {
         session.setStatus(TrackingSessionStatus.ACTIVE);
         session.setTrackingActive(true);
         session.setStartedAt(Instant.now());
+        // Redis is authoritative for the Tracking microservice. Treat failure to
+        // publish an active session/assignment as an error, not a successful trip.
         saveSession(session, SESSION_TTL);
         updateAssignmentKey(bookingId, "ON_THE_WAY", true);
+        try {
+            String key = redisTemplate.opsForValue().get(REDIS_ASSIGNMENT_PREFIX + bookingId);
+            if (key == null || key.isBlank()) {
+                throw new IllegalStateException("Tracking assignment is unavailable in Redis.");
+            }
+            var assignment = objectMapper.readTree(key);
+            if (!assignment.path("trackingActive").asBoolean(false)
+                    || !"ON_THE_WAY".equals(assignment.path("status").asText())) {
+                throw new IllegalStateException("Tracking assignment is not active in Redis.");
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("Could not activate the worker tracking assignment.", e);
+        }
 
         // Broadcast WORKER_ON_THE_WAY event
         TrackingEventMessage event = TrackingEventMessage.builder()
