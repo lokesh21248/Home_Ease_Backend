@@ -186,6 +186,9 @@ class InstantBookingDispatchPostgresTest {
     @MockBean FcmNotificationService fcmNotificationService;
     @MockBean RedisTemplate<String, String> redisTemplate;
     @MockBean WorkerPresenceService presenceService;
+    // Dispatch persistence is exercised with real JPA; the external tracking session
+    // collaborator is mocked and must explicitly acknowledge activation.
+    @MockBean TrackingService trackingService;
 
     // ---- real beans under test -------------------------------------------------------------------------------
     @Autowired InstantBookingService instantBookingService;
@@ -941,6 +944,12 @@ class InstantBookingDispatchPostgresTest {
         inRequest(() -> assignmentService.handleWorkerAcceptance(bookingId, workerUserId));
         assertThat(bookingStatus(bookingId)).isEqualTo("ACCEPTED");
 
+        when(trackingService.startTravelling(eq(bookingId), eq(workerUserId))).thenReturn(
+                com.homeease.backend.dto.TrackingDto.TrackingSessionDto.builder()
+                        .bookingId(bookingId)
+                        .workerUserId(workerUserId)
+                        .trackingActive(true)
+                        .build());
         inRequest(() -> assignmentService.handleWorkerStartTravel(bookingId, workerUserId));
         assertThat(bookingStatus(bookingId)).isEqualTo("ON_THE_WAY");
 
