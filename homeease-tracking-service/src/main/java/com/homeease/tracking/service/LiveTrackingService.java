@@ -446,9 +446,12 @@ public class LiveTrackingService {
                     if (authenticatedUserId == null || authenticatedUserId.isBlank()) {
                         throw new SecurityException("Authentication required: unauthenticated location update rejected for assigned booking " + bookingId);
                     }
-                    if (!assignedUserId.isBlank() && !assignedUserId.equalsIgnoreCase(authenticatedUserId) &&
-                            !assignedWorkerId.isBlank() && !assignedWorkerId.equalsIgnoreCase(authenticatedUserId)) {
-                        throw new SecurityException("Authenticated user " + authenticatedUserId + " is not assigned to booking " + bookingId);
+                    // Either the assigned User ID OR the Worker entity ID may match.
+                    // The old && check silently allowed any JWT when one ID was missing.
+                    boolean isAssigned = (!assignedUserId.isBlank() && assignedUserId.equalsIgnoreCase(authenticatedUserId))
+                            || (!assignedWorkerId.isBlank() && assignedWorkerId.equalsIgnoreCase(authenticatedUserId));
+                    if (!isAssigned) {
+                        throw new SecurityException("Authenticated user is not assigned to booking " + bookingId);
                     }
                 }
 
