@@ -11,6 +11,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -33,6 +34,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final JwtService jwtService;
     private final UserRepository userRepository;
     private final com.homeease.backend.repository.WorkerRepository workerRepository;
+
+    @Value("${homeease.security.allow-legacy-uuid-auth:false}")
+    private boolean allowLegacyUuidAuth;
 
     public JwtAuthenticationFilter(JwtService jwtService,
                                    @Lazy UserRepository userRepository,
@@ -71,10 +75,6 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
                         List<SimpleGrantedAuthority> authorities = new java.util.ArrayList<>();
                         authorities.add(new SimpleGrantedAuthority("ROLE_" + role.name()));
-                        authorities.add(new SimpleGrantedAuthority("ROLE_WORKER"));
-                        if (!"CUSTOMER".equals(role.name())) {
-                            authorities.add(new SimpleGrantedAuthority("ROLE_CUSTOMER"));
-                        }
 
                         UserPrincipal principal = UserPrincipal.builder()
                                 .userId(userId)
@@ -99,7 +99,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         }
 
         // Safe DB-verified fallback: if no JWT or unparsed Bearer / X-User-Id
-        if (SecurityContextHolder.getContext().getAuthentication() == null) {
+        if (allowLegacyUuidAuth && SecurityContextHolder.getContext().getAuthentication() == null) {
             UUID directUserId = null;
             if (authHeader != null && authHeader.startsWith("Bearer ")) {
                 String potentialUuid = authHeader.substring(7).trim();
@@ -131,10 +131,6 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                         UserRole role = user.getRole() != null ? user.getRole() : UserRole.WORKER;
                         List<SimpleGrantedAuthority> authorities = new java.util.ArrayList<>();
                         authorities.add(new SimpleGrantedAuthority("ROLE_" + role.name()));
-                        authorities.add(new SimpleGrantedAuthority("ROLE_WORKER"));
-                        if (!"CUSTOMER".equals(role.name())) {
-                            authorities.add(new SimpleGrantedAuthority("ROLE_CUSTOMER"));
-                        }
 
                         UserPrincipal principal = UserPrincipal.builder()
                                 .userId(user.getUserId())
