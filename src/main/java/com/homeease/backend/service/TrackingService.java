@@ -154,23 +154,10 @@ public class TrackingService {
         session.setStatus(TrackingSessionStatus.ACTIVE);
         session.setTrackingActive(true);
         session.setStartedAt(Instant.now());
-        // Redis is authoritative for the Tracking microservice. Treat failure to
-        // publish an active session/assignment as an error, not a successful trip.
+        // Redis is authoritative for the Tracking microservice. Errors from
+        // either write must propagate instead of producing a false trip success.
         saveSession(session, SESSION_TTL);
         updateAssignmentKey(bookingId, "ON_THE_WAY", true);
-        try {
-            String key = redisTemplate.opsForValue().get(REDIS_ASSIGNMENT_PREFIX + bookingId);
-            if (key == null || key.isBlank()) {
-                throw new IllegalStateException("Tracking assignment is unavailable in Redis.");
-            }
-            var assignment = objectMapper.readTree(key);
-            if (!assignment.path("trackingActive").asBoolean(false)
-                    || !"ON_THE_WAY".equals(assignment.path("status").asText())) {
-                throw new IllegalStateException("Tracking assignment is not active in Redis.");
-            }
-        } catch (Exception e) {
-            throw new IllegalStateException("Could not activate the worker tracking assignment.", e);
-        }
 
         // Broadcast WORKER_ON_THE_WAY event
         TrackingEventMessage event = TrackingEventMessage.builder()
@@ -719,6 +706,9 @@ public class TrackingService {
             redisTemplate.opsForValue().set(REDIS_SESSION_PREFIX + session.getBookingId(), json, ttl);
         } catch (Exception e) {
             logger.warn("Error saving tracking session for booking {}: {}", session.getBookingId(), e.getMessage());
+            if (session.getStatus() == TrackingSessionStatus.ACTIVE) {
+                throw new IllegalStateException("Could not activate the tracking session in Redis.", e);
+            }
         }
     }
 
@@ -784,7 +774,11 @@ public class TrackingService {
                     REDIS_ASSIGNMENT_PREFIX + bookingId,
                     objectMapper.writeValueAsString(map),
                     SESSION_TTL);
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            logger.warn("Could not update tracking assignment for booking {}: {}", bookingId, e.getMessage());
+            if ("ON_THE_WAY".equals(status)) {
+                throw new IllegalStateException("Could not activate tracking assignment in Redis.", e);
+            }
         }
     }
 
