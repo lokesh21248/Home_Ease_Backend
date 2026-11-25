@@ -7,7 +7,11 @@ import com.homeease.backend.exception.RoutingException;
 import com.homeease.backend.routing.BookingRouteService;
 import com.homeease.backend.routing.RouteRefreshReason;
 import com.homeease.backend.security.JwtService;
+import com.homeease.backend.security.VerifiedCaller;
 import com.homeease.backend.service.TrackingService;
+import com.homeease.backend.tracking.DeviceStatusStore;
+import com.homeease.backend.tracking.TrackingPhaseResolver.DeviceGpsState;
+import com.homeease.backend.tracking.TrackingSnapshotService;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,6 +20,7 @@ import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
@@ -29,13 +34,78 @@ public class TrackingController {
     private final TrackingService trackingService;
     private final JwtService jwtService;
     private final BookingRouteService bookingRouteService;
+    private final TrackingSnapshotService snapshotService;
+    private final DeviceStatusStore deviceStatusStore;
+
+    /** Standalone test wiring overload (route/basic controller tests). */
+    public TrackingController(TrackingService trackingService, JwtService jwtService,
+            BookingRouteService bookingRouteService) {
+        this(trackingService, jwtService, bookingRouteService, null, null);
+    }
 
     @Autowired
     public TrackingController(TrackingService trackingService, JwtService jwtService,
-            BookingRouteService bookingRouteService) {
+            BookingRouteService bookingRouteService, TrackingSnapshotService snapshotService,
+            DeviceStatusStore deviceStatusStore) {
         this.trackingService = trackingService;
         this.jwtService = jwtService;
         this.bookingRouteService = bookingRouteService;
+        this.snapshotService = snapshotService;
+        this.deviceStatusStore = deviceStatusStore;
+    }
+
+    /**
+     * Authoritative tracking snapshot for customer/partner tracking screens:
+     * booking phase, live vs stale GPS flag, latest fix, destination, partner info, and doorstep PIN visibility.
+     */
+    @GetMapping("/{bookingId:[0-9a-fA-F\\-]{36}}")
+    public ResponseEntity<Map<String, Object>> getTracking(@PathVariable("bookingId") UUID bookingId) {
+        if (snapshotService == null) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(snapshotService.snapshot(bookingId, VerifiedCaller.current()));
+    }
+
+    /**
+     * Durable GPS breadcrumbs from PostgreSQL, oldest first.
+     */
+    @GetMapping("/{bookingId:[0-9a-fA-F\\-]{36}}/history")
+    public ResponseEntity<Map<String, Object>> getHistory(
+            @PathVariable("bookingId") UUID bookingId,
+            @RequestParam(value = "limit", defaultValue = "500") int limit) {
+        if (snapshotService == null) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(snapshotService.history(bookingId, VerifiedCaller.current(), limit));
+    }
+
+    /**
+     * Partner app reports permission/GPS device state (OK | PERMISSION_DENIED | GPS_DISABLED).
+     */
+    @PostMapping("/{bookingId:[0-9a-fA-F\\-]{36}}/device-status")
+    public ResponseEntity<Map<String, Object>> reportDeviceStatus(
+            @PathVariable("bookingId") UUID bookingId,
+            @RequestBody(required = false) Map<String, Object> body) {
+        if (snapshotService == null || deviceStatusStore == null) {
+            return ResponseEntity.notFound().build();
+        }
+        snapshotService.requireAssignedWorker(bookingId, VerifiedCaller.current());
+        DeviceGpsState state;
+        try {
+            state = DeviceGpsState.valueOf(
+                    String.valueOf(body == null ? null : body.get("state")).trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("state must be one of OK, PERMISSION_DENIED, GPS_DISABLED");
+        }
+        if (state == DeviceGpsState.UNKNOWN) {
+            throw new IllegalArgumentException("state must be one of OK, PERMISSION_DENIED, GPS_DISABLED");
+        }
+        deviceStatusStore.report(bookingId, state);
+        return ResponseEntity.ok(Map.of("bookingId", bookingId, "deviceGpsState", state.name()));
     }
 
     /**

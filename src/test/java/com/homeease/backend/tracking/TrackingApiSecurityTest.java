@@ -13,12 +13,18 @@ import com.homeease.backend.model.enums.UserRole;
 import com.homeease.backend.routing.BookingRouteService;
 import com.homeease.backend.security.JwtService;
 import com.homeease.backend.security.UserPrincipal;
+import com.homeease.backend.security.VerifiedCaller;
 import com.homeease.backend.service.TrackingService;
+import com.homeease.backend.tracking.DeviceStatusStore;
+import com.homeease.backend.tracking.TrackingPhaseResolver.DeviceGpsState;
+import com.homeease.backend.tracking.TrackingSnapshotService;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContext;
@@ -88,5 +94,37 @@ class TrackingApiSecurityTest {
         mvc.perform(get("/api/tracking/" + bookingId + "/location"))
                 .andExpect(status().isOk());
         verify(trackingService).getLatestLocation(bookingId);
+    }
+
+    @Test
+    @DisplayName("snapshot, history, and device-status delegate to TrackingSnapshotService & DeviceStatusStore")
+    void snapshotHistoryAndDeviceStatusDelegate() throws Exception {
+        TrackingSnapshotService snapshotService = mock(TrackingSnapshotService.class);
+        DeviceStatusStore deviceStatusStore = mock(DeviceStatusStore.class);
+        MockMvc fullMvc = MockMvcBuilders.standaloneSetup(new TrackingController(
+                        trackingService,
+                        mock(JwtService.class),
+                        mock(BookingRouteService.class),
+                        snapshotService,
+                        deviceStatusStore))
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build();
+
+        when(snapshotService.snapshot(org.mockito.ArgumentMatchers.eq(bookingId), org.mockito.ArgumentMatchers.any(VerifiedCaller.class)))
+                .thenReturn(Map.of("bookingId", bookingId.toString(), "phase", "EN_ROUTE"));
+        when(snapshotService.history(org.mockito.ArgumentMatchers.eq(bookingId), org.mockito.ArgumentMatchers.any(VerifiedCaller.class), org.mockito.ArgumentMatchers.eq(500)))
+                .thenReturn(Map.of("bookingId", bookingId.toString(), "points", List.of()));
+
+        fullMvc.perform(get("/api/tracking/" + bookingId).with(as(customerId, UserRole.CUSTOMER)))
+                .andExpect(status().isOk());
+        fullMvc.perform(get("/api/v1/tracking/" + bookingId + "/history").with(as(customerId, UserRole.CUSTOMER)))
+                .andExpect(status().isOk());
+        fullMvc.perform(post("/api/tracking/" + bookingId + "/device-status")
+                        .with(as(workerUserId, UserRole.WORKER))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"state\":\"GPS_DISABLED\"}"))
+                .andExpect(status().isOk());
+
+        verify(deviceStatusStore).report(bookingId, DeviceGpsState.GPS_DISABLED);
     }
 }
