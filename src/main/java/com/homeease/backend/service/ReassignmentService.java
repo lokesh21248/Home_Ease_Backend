@@ -77,6 +77,7 @@ public class ReassignmentService {
         booking.setWorker(null);
         booking.setStatus(BookingStage.SEARCHING);
         booking = bookingRepository.save(booking);
+        assignmentService.clearTrackingStateForReassignment(bookingId);
 
         // 3. Append booking_event (Non-negotiable Rule #8)
         try {

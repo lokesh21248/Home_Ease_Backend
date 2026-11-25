@@ -1406,6 +1406,24 @@ public class BookingAssignmentService {
         }
     }
 
+    /**
+     * Clears the previous partner's live assignment and location cache entries on reassignment
+     * so stale coordinates disappear immediately and the old partner cannot continue publishing.
+     */
+    public void clearTrackingStateForReassignment(UUID bookingId) {
+        if (bookingId == null) {
+            return;
+        }
+        try {
+            redisTemplate.delete("tracking:assignment:" + bookingId);
+            redisTemplate.delete("tracking:booking:" + bookingId);
+            redisTemplate.delete("homeease:tracking:" + bookingId + ":location");
+            redisTemplate.delete("homeease:tracking:" + bookingId + ":route");
+        } catch (Exception e) {
+            logger.warn("Could not clear tracking cache on reassignment for booking {}: {}", bookingId, e.getMessage());
+        }
+    }
+
     private void recordNotificationDelivery(Booking booking, User user, Worker worker,
                                             DeliveryChannel channel, String dest, DeliveryStatus status) {
         try {
