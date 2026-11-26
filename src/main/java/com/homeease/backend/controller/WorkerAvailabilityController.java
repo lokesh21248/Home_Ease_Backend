@@ -6,6 +6,7 @@ import com.homeease.backend.exception.ResourceNotFoundException;
 import com.homeease.backend.model.entity.Worker;
 import com.homeease.backend.repository.WorkerRepository;
 import com.homeease.backend.security.JwtService;
+import com.homeease.backend.security.SecurityUtils;
 import com.homeease.backend.service.WorkerAvailabilityService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
@@ -32,19 +33,10 @@ public class WorkerAvailabilityController {
     }
 
     private UUID resolveWorkerId(String authHeader, UUID headerUserId, UUID queryUserId) {
-        UUID userId = queryUserId != null ? queryUserId : headerUserId;
-        if (userId == null && authHeader != null && !authHeader.isBlank()) {
-            try {
-                String clean = authHeader.replace("Bearer ", "").trim();
-                userId = UUID.fromString(clean);
-            } catch (Exception ignored) {
-                userId = jwtService.extractUserId(authHeader);
-            }
-        }
-        if (userId == null) {
-            throw new ResourceNotFoundException("Missing user credentials. Provide X-User-Id header or Bearer token.");
-        }
-        final UUID finalUserId = userId;
+        UUID finalUserId = SecurityUtils.resolveAuthenticatedUserId(
+                queryUserId,
+                headerUserId != null ? headerUserId.toString() : null
+        );
         Worker worker = workerRepository.findByUser_UserId(finalUserId)
                 .or(() -> workerRepository.findById(finalUserId))
                 .orElseThrow(() -> new ResourceNotFoundException("Worker profile not found for user: " + finalUserId));
