@@ -1,7 +1,6 @@
 package com.homeease.backend.integration;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -47,6 +46,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -71,6 +71,8 @@ import org.springframework.web.socket.messaging.WebSocketStompClient;
  * <-> Real Tracking Microservice JAR subprocess
  * <-> Real Customer & Stranger WebSocketStompClient connections.
  */
+@EnabledIfEnvironmentVariable(named = "REDIS_URL", matches = ".*\\S.*")
+@EnabledIfEnvironmentVariable(named = "REDIS_LIVE_ALLOW_SHARED_KEYS", matches = "(?i)true")
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @DirtiesContext
 class LiveDualServiceTrackingUpstashStompLiveTest {
@@ -106,9 +108,6 @@ class LiveDualServiceTrackingUpstashStompLiveTest {
 
     @DynamicPropertySource
     static void initLiveDualInfrastructure(DynamicPropertyRegistry registry) throws Exception {
-        assumeTrue(REDIS_URL != null && !REDIS_URL.isBlank(), "REDIS_URL not set - live dual E2E skipped");
-        assumeTrue("true".equalsIgnoreCase(ALLOW_SHARED), "REDIS_LIVE_ALLOW_SHARED_KEYS!=true - skipped");
-
         postgres = EmbeddedPostgres.start();
         migrations = migrationsWithoutPostgis();
 
