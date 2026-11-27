@@ -221,6 +221,7 @@ public class InstantAcceptService {
             assignment.put("userId", worker.getUser() != null ? worker.getUser().getUserId().toString() : "");
             assignment.put("customerId", booking.getUser() != null ? booking.getUser().getUserId().toString() : "");
             assignment.put("status", "ACCEPTED");
+            assignment.put("trackingActive", false);
             assignment.put("pinCode", pinCode);
             assignment.put("acceptedAt", Instant.now().toString());
             if (booking.getUserLocation() != null) {

@@ -252,6 +252,7 @@ public class DispatchEngine {
             assignment.put("userId", worker.getUser().getUserId().toString());
             assignment.put("customerId", booking.getUser().getUserId().toString());
             assignment.put("status", "ACCEPTED");
+            assignment.put("trackingActive", false);
             assignment.put("pinCode", pinCode);
             assignment.put("acceptedAt", Instant.now().toString());
             if (booking.getUserLocation() != null) {

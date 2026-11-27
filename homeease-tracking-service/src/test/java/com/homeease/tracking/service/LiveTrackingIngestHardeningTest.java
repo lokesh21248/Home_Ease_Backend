@@ -70,7 +70,7 @@ class LiveTrackingIngestHardeningTest {
     @Test
     void gpsFrameCarriesNoInventedEta() {
         lenient().when(ops.get("tracking:assignment:BK-ETA")).thenReturn(
-                "{\"status\":\"ON_THE_WAY\",\"trackingActive\":true,\"customerLat\":17.45,\"customerLng\":78.40}");
+                "{\"status\":\"ON_THE_WAY\",\"trackingActive\":true,\"userId\":\"WRK-1\",\"customerLat\":17.45,\"customerLng\":78.40}");
         LocationPayload p = LocationPayload.builder().bookingId("BK-ETA").lat(17.40).lng(78.40)
                 .accuracy(5.0).timestamp(System.currentTimeMillis()).build();
         LocationPayload out = service.processLocationUpdate("BK-ETA", p, "WRK-1");
