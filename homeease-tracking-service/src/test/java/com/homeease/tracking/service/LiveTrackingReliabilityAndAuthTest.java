@@ -80,6 +80,7 @@ class LiveTrackingReliabilityAndAuthTest {
 
         lenient().when(redisTemplate.opsForValue()).thenReturn(valueOps);
         lenient().when(redisTemplate.opsForGeo()).thenReturn(geoOps);
+        lenient().when(valueOps.get(anyString())).thenReturn(null);
 
         TrackingController controller = new TrackingController(service, jwtValidator, accessGuard);
         mockMvc = MockMvcBuilders.standaloneSetup(controller)

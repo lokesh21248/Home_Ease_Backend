@@ -252,8 +252,11 @@ public class LiveTrackingServiceTest {
     @Test
     void testProcessLocationUpdate_CompletedBooking_ThrowsIllegalStateException() throws Exception {
         String bookingId = "BK-DONE";
+        String workerId = "WRK-DONE";
         Map<String, Object> assignment = Map.of(
                 "bookingId", bookingId,
+                "userId", workerId,
+                "workerId", workerId,
                 "status", "COMPLETED"
         );
         when(valueOperations.get("tracking:assignment:" + bookingId))
@@ -266,14 +269,17 @@ public class LiveTrackingServiceTest {
                 .build();
 
         assertThrows(IllegalStateException.class, () ->
-                trackingService.processLocationUpdate(bookingId, p, null));
+                trackingService.processLocationUpdate(bookingId, p, workerId));
     }
 
     @Test
     void testProcessLocationUpdate_ArrivedBooking_ThrowsIllegalStateException() throws Exception {
         String bookingId = "BK-ARRIVED";
+        String workerId = "WRK-ARRIVED";
         Map<String, Object> assignment = Map.of(
                 "bookingId", bookingId,
+                "userId", workerId,
+                "workerId", workerId,
                 "status", "ARRIVED",
                 "trackingActive", false
         );
@@ -287,7 +293,7 @@ public class LiveTrackingServiceTest {
                 .build();
 
         assertThrows(IllegalStateException.class, () ->
-                trackingService.processLocationUpdate(bookingId, p, null));
+                trackingService.processLocationUpdate(bookingId, p, workerId));
     }
 
     @Test
