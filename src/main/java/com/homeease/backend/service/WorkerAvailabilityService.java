@@ -366,6 +366,11 @@ public class WorkerAvailabilityService {
      */
     @Transactional(readOnly = true)
     public List<AvailableSlotDto> getAvailableTimeSlots(LocalDate date, UUID serviceId, UUID subServiceId) {
+        return getAvailableTimeSlots(date, serviceId, subServiceId, null);
+    }
+
+    @Transactional(readOnly = true)
+    public List<AvailableSlotDto> getAvailableTimeSlots(LocalDate date, UUID serviceId, UUID subServiceId, String pincode) {
         int dayOfWeek = date.getDayOfWeek().getValue();
 
         // 1. Check Date Override (completely closed)
@@ -380,8 +385,8 @@ public class WorkerAvailabilityService {
             return Collections.emptyList();
         }
 
-        // 3. Find eligible active workers
-        List<Worker> eligibleWorkers = findEligibleWorkers(serviceId, subServiceId);
+        // 3. Find eligible active workers (filtered by pincode when supplied)
+        List<Worker> eligibleWorkers = findEligibleWorkers(serviceId, subServiceId, pincode);
         if (eligibleWorkers.isEmpty()) {
             return Collections.emptyList();
         }
@@ -639,16 +644,34 @@ public class WorkerAvailabilityService {
         }).toList();
     }
 
-    private List<Worker> findEligibleWorkers(UUID serviceId, UUID subServiceId) {
+    private List<Worker> findEligibleWorkers(UUID serviceId, UUID subServiceId, String pincode) {
+        List<Worker> raw;
         if (subServiceId != null) {
             List<WorkerServiceLink> links = workerServiceLinkRepository.findById_SubServiceId(subServiceId);
-            return links.stream()
+            raw = links.stream()
                     .map(WorkerServiceLink::getWorker)
+                    .filter(w -> w != null && Boolean.TRUE.equals(w.getIsVerified()))
+                    .toList();
+        } else {
+            raw = workerRepository.findAll().stream()
                     .filter(w -> Boolean.TRUE.equals(w.getIsVerified()))
                     .toList();
         }
-        return workerRepository.findAll().stream()
-                .filter(w -> Boolean.TRUE.equals(w.getIsVerified()))
+
+        String cleanPin = pincode != null ? pincode.replaceAll("\\D", "") : "";
+        if (cleanPin.length() != 6) {
+            return raw;
+        }
+        return raw.stream()
+                .filter(w -> {
+                    if (w.getWorkingPincodes() == null || w.getWorkingPincodes().isBlank()) {
+                        return true;
+                    }
+                    return Arrays.stream(w.getWorkingPincodes().split("[,;|\\s]+"))
+                            .map(s -> s.replaceAll("\\D", ""))
+                            .filter(s -> !s.isBlank())
+                            .anyMatch(cleanPin::equals);
+                })
                 .toList();
     }
 

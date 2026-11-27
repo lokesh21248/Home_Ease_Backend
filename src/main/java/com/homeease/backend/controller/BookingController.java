@@ -132,11 +132,12 @@ public class BookingController {
     public ResponseEntity<List<AvailableSlotDto>> getDynamicAvailableSlots(
             @RequestParam(value = "date", required = false) String dateStr,
             @RequestParam(value = "serviceId", required = false) UUID serviceId,
-            @RequestParam(value = "subServiceId", required = false) UUID subServiceId) {
+            @RequestParam(value = "subServiceId", required = false) UUID subServiceId,
+            @RequestParam(value = "pincode", required = false) String pincode) {
         LocalDate date = (dateStr != null && !dateStr.isBlank())
                 ? LocalDate.parse(dateStr.trim())
                 : LocalDate.now(WorkerAvailabilityService.IST_ZONE);
-        return ResponseEntity.ok(availabilityService.getAvailableTimeSlots(date, serviceId, subServiceId));
+        return ResponseEntity.ok(availabilityService.getAvailableTimeSlots(date, serviceId, subServiceId, pincode));
     }
 
     @GetMapping("/bookings/nearby-workers")

@@ -188,6 +188,19 @@ public class WorkerService {
                 .build();
     }
 
+    private String resolvePresenceZone(Worker worker) {
+        if (worker == null || worker.getWorkingPincodes() == null || worker.getWorkingPincodes().isBlank()) {
+            return null;
+        }
+        for (String token : worker.getWorkingPincodes().split("[,;|\\s]+")) {
+            String digits = token.replaceAll("\\D", "");
+            if (digits.length() == 6) {
+                return digits;
+            }
+        }
+        return null;
+    }
+
     @Transactional
     public WorkerProfileResponse toggleOnlineStatus(UUID userId, Boolean isOnline) {
         return toggleOnlineStatus(userId, isOnline, null, null);
@@ -240,7 +253,7 @@ public class WorkerService {
             if (freshFix || legacyStoredFix) {
                 try {
                     presenceService.registerPresence(worker.getWorkerId(),
-                            worker.getCurrentLat(), worker.getCurrentLng(), null, "ALIVE");
+                            worker.getCurrentLat(), worker.getCurrentLng(), resolvePresenceZone(worker), "ALIVE");
                     logger.info("[WorkerService] Worker {} registered as present (ONLINE)", worker.getWorkerId());
                 } catch (Exception e) {
                     logger.warn("[WorkerService] Failed to register presence for worker {} on ONLINE toggle: {}",
@@ -327,7 +340,7 @@ public class WorkerService {
         boolean online = Boolean.TRUE.equals(worker.getIsOnline()) && Boolean.TRUE.equals(worker.getIsVerified());
         if (online && WorkerPresenceService.isUsableCoordinate(lat, lng)) {
             try {
-                presenceService.registerPresence(worker.getWorkerId(), lat, lng, null, "ALIVE");
+                presenceService.registerPresence(worker.getWorkerId(), lat, lng, resolvePresenceZone(worker), "ALIVE");
             } catch (Exception e) {
                 logger.warn("[WorkerService] Presence refresh failed for worker {}: {}", worker.getWorkerId(), e.getClass().getSimpleName());
             }
@@ -399,6 +412,7 @@ public class WorkerService {
                     .count();
         }
 
+        Set<String> serviceIdSet = new LinkedHashSet<>();
         List<String> subServiceIds = new ArrayList<>();
         if (worker.getWorkerId() != null) {
             try {
@@ -406,6 +420,9 @@ public class WorkerService {
                 for (WorkerServiceLink link : links) {
                     if (link.getSubService() != null && link.getSubService().getSubServiceId() != null) {
                         subServiceIds.add(link.getSubService().getSubServiceId().toString());
+                        if (link.getSubService().getService() != null && link.getSubService().getService().getServiceId() != null) {
+                            serviceIdSet.add(link.getSubService().getService().getServiceId().toString());
+                        }
                     }
                 }
             } catch (Exception e) {
@@ -434,6 +451,7 @@ public class WorkerService {
                 .gender(worker.getGender())
                 .dob(worker.getDob())
                 .experienceYears(worker.getExperienceYears())
+                .serviceIds(new ArrayList<>(serviceIdSet))
                 .subServiceIds(subServiceIds)
                 .currentLat(worker.getCurrentLat())
                 .currentLng(worker.getCurrentLng())

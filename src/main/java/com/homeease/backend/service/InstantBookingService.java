@@ -42,17 +42,17 @@ public class InstantBookingService {
     private final GeometryFactory geometryFactory = new GeometryFactory();
 
     public InstantBookingService(BookingRepository bookingRepository,
-                                 UserRepository userRepository,
-                                 ServiceRepository serviceRepository,
-                                 SubServiceRepository subServiceRepository,
-                                 ServiceAddonRepository addonRepository,
-                                 BookingServiceItemRepository bookingServiceItemRepository,
-                                 BookingAddonItemRepository bookingAddonItemRepository,
-                                 CouponRepository couponRepository,
-                                 ServiceAreaService serviceAreaService,
-                                 BookingAssignmentService assignmentService,
-                                 BookingDomainEventService domainEventService,
-                                 UserAddressService userAddressService) {
+            UserRepository userRepository,
+            ServiceRepository serviceRepository,
+            SubServiceRepository subServiceRepository,
+            ServiceAddonRepository addonRepository,
+            BookingServiceItemRepository bookingServiceItemRepository,
+            BookingAddonItemRepository bookingAddonItemRepository,
+            CouponRepository couponRepository,
+            ServiceAreaService serviceAreaService,
+            BookingAssignmentService assignmentService,
+            BookingDomainEventService domainEventService,
+            UserAddressService userAddressService) {
         this.bookingRepository = bookingRepository;
         this.userRepository = userRepository;
         this.serviceRepository = serviceRepository;
@@ -67,7 +67,21 @@ public class InstantBookingService {
         this.userAddressService = userAddressService;
     }
 
-    /** Used to open the booking transaction explicitly. Optional so unit tests that build the service by hand still work. */
+    /**
+     * Used to resolve pincode centroids dynamically when an address omits
+     * coordinates. Optional for unit tests.
+     */
+    @Autowired(required = false)
+    private GeoService geoService;
+
+    public void setGeoService(GeoService geoService) {
+        this.geoService = geoService;
+    }
+
+    /**
+     * Used to open the booking transaction explicitly. Optional so unit tests that
+     * build the service by hand still work.
+     */
     @Autowired(required = false)
     private PlatformTransactionManager transactionManager;
 
@@ -76,23 +90,34 @@ public class InstantBookingService {
     }
 
     /** What the booking transaction produced. */
-    private record CreatedBooking(BookingResponse response, UUID firstSubServiceId, boolean idempotentReplay) { }
+    private record CreatedBooking(BookingResponse response, UUID firstSubServiceId, boolean idempotentReplay) {
+    }
 
     /**
-     * Creates an instant booking and dispatches it to nearby workers, in three separate steps.
+     * Creates an instant booking and dispatches it to nearby workers, in three
+     * separate steps.
      *
      * <ol>
-     *   <li><b>Booking transaction</b>: the booking, its line items and the domain event / outbox row are written and
-     *       COMMITTED. Nothing else happens inside this transaction.</li>
-     *   <li><b>Dispatch</b>: only after that commit, worker matching and the {@code booking_assignment} /
-     *       audit rows are written in their own transaction, against the committed booking
-     *       ({@link BookingAssignmentService#dispatchInstantBookingById}). It used to run inside the booking
-     *       transaction via {@code REQUIRES_NEW}: the new transaction could not see the uncommitted booking, every
-     *       insert referencing it violated a foreign key, the error was swallowed, and the booking was left
-     *       {@code SEARCHING} with no assignments. A dispatch failure can no longer affect the booking: it stays
-     *       {@code REQUESTED} and the recovery job dispatches it again.</li>
-     *   <li><b>Response</b>: built from the committed state, so it reports what really happened
-     *       ({@code SEARCHING}, or {@code WORKER_NOT_FOUND}), exactly as the API has always documented.</li>
+     * <li><b>Booking transaction</b>: the booking, its line items and the domain
+     * event / outbox row are written and
+     * COMMITTED. Nothing else happens inside this transaction.</li>
+     * <li><b>Dispatch</b>: only after that commit, worker matching and the
+     * {@code booking_assignment} /
+     * audit rows are written in their own transaction, against the committed
+     * booking
+     * ({@link BookingAssignmentService#dispatchInstantBookingById}). It used to run
+     * inside the booking
+     * transaction via {@code REQUIRES_NEW}: the new transaction could not see the
+     * uncommitted booking, every
+     * insert referencing it violated a foreign key, the error was swallowed, and
+     * the booking was left
+     * {@code SEARCHING} with no assignments. A dispatch failure can no longer
+     * affect the booking: it stays
+     * {@code REQUESTED} and the recovery job dispatches it again.</li>
+     * <li><b>Response</b>: built from the committed state, so it reports what
+     * really happened
+     * ({@code SEARCHING}, or {@code WORKER_NOT_FOUND}), exactly as the API has
+     * always documented.</li>
      * </ol>
      */
     public BookingResponse createInstantBooking(UUID userId, InstantBookingRequest request, String idempotencyKey) {
@@ -103,7 +128,8 @@ public class InstantBookingService {
 
         UUID bookingId = created.response().getBookingId();
         if (AfterCommit.inTransaction()) {
-            // The caller itself runs inside a transaction that has not committed yet: dispatching now would not see
+            // The caller itself runs inside a transaction that has not committed yet:
+            // dispatching now would not see
             // the booking. Dispatch as soon as that outer transaction commits instead.
             AfterCommit.run("instant booking dispatch " + bookingId,
                     () -> dispatch(bookingId, created.firstSubServiceId()));
@@ -119,19 +145,23 @@ public class InstantBookingService {
             assignmentService.dispatchInstantBookingById(bookingId, firstSubServiceId);
         } catch (Exception dispatchEx) {
             logger.error("Instant booking {} was saved but dispatching it failed; it stays REQUESTED and will be "
-                            + "dispatched again by the recovery job: {}",
+                    + "dispatched again by the recovery job: {}",
                     bookingId, dispatchEx.getMessage(), dispatchEx);
         }
     }
 
-    /** Re-reads the committed booking so the response reflects the dispatch outcome; falls back to the creation snapshot. */
+    /**
+     * Re-reads the committed booking so the response reflects the dispatch outcome;
+     * falls back to the creation snapshot.
+     */
     private BookingResponse currentState(UUID bookingId, BookingResponse fallback) {
         try {
             BookingResponse fresh = inTransaction(true,
                     () -> bookingRepository.findById(bookingId).map(this::mapToResponse).orElse(null));
             return fresh != null ? fresh : fallback;
         } catch (Exception e) {
-            logger.warn("Could not re-read booking {} after dispatch, returning the creation snapshot: {}", bookingId, e.getMessage());
+            logger.warn("Could not re-read booking {} after dispatch, returning the creation snapshot: {}", bookingId,
+                    e.getMessage());
             return fallback;
         }
     }
@@ -145,7 +175,10 @@ public class InstantBookingService {
         return template.execute(status -> work.get());
     }
 
-    /** Phase 1: runs inside the booking transaction. Must not dispatch or notify anyone. */
+    /**
+     * Phase 1: runs inside the booking transaction. Must not dispatch or notify
+     * anyone.
+     */
     private CreatedBooking persistInstantBooking(UUID userId, InstantBookingRequest request, String idempotencyKey) {
         logger.info("Creating Instant Booking for customer {} at ({}, {}) in pincode {}",
                 userId, request.getUserLat(), request.getUserLng(), request.getPincode());
@@ -167,17 +200,24 @@ public class InstantBookingService {
         if (request.getAddressId() != null && !request.getAddressId().isBlank()) {
             var addrOpt = userAddressService.findUserAddress(userId, request.getAddressId().trim());
             if (addrOpt.isEmpty()) {
-                throw new IllegalArgumentException("Invalid addressId: Selected address not found or unauthorized for customer " + userId);
+                throw new IllegalArgumentException(
+                        "Invalid addressId: Selected address not found or unauthorized for customer " + userId);
             }
             var addr = addrOpt.get();
             if (addr.get("pincode") != null && !addr.get("pincode").toString().isBlank()) {
                 resolvedPincode = addr.get("pincode").toString().replaceAll("\\D", "");
             }
             if (addr.get("lat") != null) {
-                try { resolvedLat = Double.valueOf(addr.get("lat").toString()); } catch (Exception ignored) {}
+                try {
+                    resolvedLat = Double.valueOf(addr.get("lat").toString());
+                } catch (Exception ignored) {
+                }
             }
             if (addr.get("lng") != null) {
-                try { resolvedLng = Double.valueOf(addr.get("lng").toString()); } catch (Exception ignored) {}
+                try {
+                    resolvedLng = Double.valueOf(addr.get("lng").toString());
+                } catch (Exception ignored) {
+                }
             }
             if (addr.get("addressLine") != null) {
                 resolvedAddress = addr.get("addressLine").toString();
@@ -192,14 +232,16 @@ public class InstantBookingService {
             resolvedPincode = resolvedPincode.replaceAll("\\D", "");
         }
 
-        // Sanity check: If 500010 (Alwal/Bolarum) has stale KPHB coordinates (17.4947), correct to Alwal centroid
-        if ("500010".equals(resolvedPincode) && (resolvedLat == null || Math.abs(resolvedLat - 17.4947) < 0.005)) {
-            resolvedLat = 17.5028;
-            resolvedLng = 78.5078;
-        }
-
         if (resolvedPincode == null || !resolvedPincode.matches("^[0-9]{6}$")) {
             throw new IllegalArgumentException("A valid 6-digit Indian pincode is required for booking");
+        }
+
+        if ((resolvedLat == null || resolvedLng == null) && geoService != null) {
+            double[] centroid = geoService.geocodePincode(resolvedPincode);
+            if (centroid != null) {
+                resolvedLat = centroid[0];
+                resolvedLng = centroid[1];
+            }
         }
 
         // 3. Validate Serviceability
@@ -211,7 +253,8 @@ public class InstantBookingService {
 
         // 5. Validate Service Vertical
         ServiceEntity service = serviceRepository.findById(request.getServiceId())
-                .orElseThrow(() -> new ResourceNotFoundException("Service vertical not found: " + request.getServiceId()));
+                .orElseThrow(
+                        () -> new ResourceNotFoundException("Service vertical not found: " + request.getServiceId()));
 
         Point userLocation = geometryFactory.createPoint(new Coordinate(resolvedLng, resolvedLat));
 
@@ -222,7 +265,8 @@ public class InstantBookingService {
 
         for (SubServiceRequestItem item : request.getSubServices()) {
             SubService sub = subServiceRepository.findById(item.getSubServiceId())
-                    .orElseThrow(() -> new ResourceNotFoundException("Sub-service not found: " + item.getSubServiceId()));
+                    .orElseThrow(
+                            () -> new ResourceNotFoundException("Sub-service not found: " + item.getSubServiceId()));
             if (firstSubServiceId == null) {
                 firstSubServiceId = sub.getSubServiceId();
             }
@@ -249,7 +293,8 @@ public class InstantBookingService {
                 coupon = couponOpt.get();
                 if (coupon.getDiscountType() == DiscountModel.PERCENTAGE) {
                     discountAmount = baseAmount.multiply(coupon.getDiscountVal()).divide(BigDecimal.valueOf(100));
-                    if (coupon.getMaxDiscountAmount() != null && discountAmount.compareTo(coupon.getMaxDiscountAmount()) > 0) {
+                    if (coupon.getMaxDiscountAmount() != null
+                            && discountAmount.compareTo(coupon.getMaxDiscountAmount()) > 0) {
                         discountAmount = coupon.getMaxDiscountAmount();
                     }
                 } else {
@@ -296,8 +341,10 @@ public class InstantBookingService {
 
         booking = bookingRepository.save(booking);
 
-        logger.info("[BOOKING_CREATED] bookingId={}, customerId={}, addressId={}", booking.getBookingId(), userId, request.getAddressId());
-        logger.info("[BOOKING_LOCATION] bookingId={}, lat={}, lng={}, address={}", booking.getBookingId(), resolvedLat, resolvedLng, resolvedAddress);
+        logger.info("[BOOKING_CREATED] bookingId={}, customerId={}, addressId={}", booking.getBookingId(), userId,
+                request.getAddressId());
+        logger.info("[BOOKING_LOCATION] bookingId={}, lat={}, lng={}, address={}", booking.getBookingId(), resolvedLat,
+                resolvedLng, resolvedAddress);
         logger.info("[BOOKING_PINCODE] bookingId={}, pincode={}", booking.getBookingId(), resolvedPincode);
         logger.info("SERVICEABILITY_CHECK: bookingId={}, pincode={}, serviceId={}, result=SERVICEABLE",
                 booking.getBookingId(), resolvedPincode, request.getServiceId());
@@ -342,10 +389,10 @@ public class InstantBookingService {
                 userId,
                 idempotencyKey,
                 null,
-                null
-        );
+                null);
 
-        // Worker matching is deliberately NOT done here: it runs after this transaction commits (see createInstantBooking).
+        // Worker matching is deliberately NOT done here: it runs after this transaction
+        // commits (see createInstantBooking).
         return new CreatedBooking(mapToResponse(booking), firstSubServiceId, false);
     }
 
@@ -356,8 +403,12 @@ public class InstantBookingService {
                 .userName(b.getUser() != null ? b.getUser().getFullName() : null)
                 .userPhone(b.getUser() != null ? b.getUser().getPhoneNumber() : null)
                 .workerId(b.getWorker() != null ? b.getWorker().getWorkerId() : null)
-                .workerName(b.getWorker() != null && b.getWorker().getUser() != null ? b.getWorker().getUser().getFullName() : null)
-                .workerPhone(b.getWorker() != null && b.getWorker().getUser() != null ? b.getWorker().getUser().getPhoneNumber() : null)
+                .workerName(
+                        b.getWorker() != null && b.getWorker().getUser() != null ? b.getWorker().getUser().getFullName()
+                                : null)
+                .workerPhone(b.getWorker() != null && b.getWorker().getUser() != null
+                        ? b.getWorker().getUser().getPhoneNumber()
+                        : null)
                 .workerAvatarUrl(b.getWorker() != null ? b.getWorker().getAvatarUrl() : null)
                 .serviceId(b.getService() != null ? b.getService().getServiceId() : null)
                 .serviceName(b.getService() != null ? b.getService().getName() : null)

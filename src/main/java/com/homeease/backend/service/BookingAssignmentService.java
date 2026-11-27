@@ -31,6 +31,10 @@ import jakarta.persistence.EntityManager;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 
@@ -58,7 +62,7 @@ public class BookingAssignmentService {
     private double radiusMeters = 5000.0;
 
     // Radius expansion tiers (meters): 5km → 10km → 15km → 20km (Task 4)
-    private static final double[] RADIUS_EXPANSION_TIERS = {5000.0, 10000.0, 15000.0, 20000.0};
+    private static final double[] RADIUS_EXPANSION_TIERS = { 5000.0, 10000.0, 15000.0, 20000.0 };
 
     @Value("${homeease.dispatch.batch-size:5}")
     private int dispatchBatchSize = 5;
@@ -70,8 +74,10 @@ public class BookingAssignmentService {
     private io.micrometer.core.instrument.MeterRegistry meterRegistry;
 
     /**
-     * Dispatch-time presence gate (heartbeat). Optional so that directly-constructed instances (unit tests)
-     * keep their previous behaviour; in the running application Spring always injects it.
+     * Dispatch-time presence gate (heartbeat). Optional so that
+     * directly-constructed instances (unit tests)
+     * keep their previous behaviour; in the running application Spring always
+     * injects it.
      */
     @Autowired(required = false)
     private WorkerPresenceService presenceService;
@@ -80,7 +86,10 @@ public class BookingAssignmentService {
         this.presenceService = presenceService;
     }
 
-    /** Prevents one worker from winning two instant bookings at once. Optional for the same reason as above. */
+    /**
+     * Prevents one worker from winning two instant bookings at once. Optional for
+     * the same reason as above.
+     */
     @Autowired(required = false)
     private WorkerAcceptanceGuard acceptanceGuard;
 
@@ -88,9 +97,32 @@ public class BookingAssignmentService {
         this.acceptanceGuard = acceptanceGuard;
     }
 
+    @Autowired(required = false)
+    private GeoService geoService;
+
+    public void setGeoService(GeoService geoService) {
+        this.geoService = geoService;
+    }
+
+    @Autowired(required = false)
+    private WorkerAvailabilityRepository availabilityRepository;
+
+    public void setAvailabilityRepository(WorkerAvailabilityRepository availabilityRepository) {
+        this.availabilityRepository = availabilityRepository;
+    }
+
+    @Autowired(required = false)
+    private WorkerTimeOffRepository timeOffRepository;
+
+    public void setTimeOffRepository(WorkerTimeOffRepository timeOffRepository) {
+        this.timeOffRepository = timeOffRepository;
+    }
+
     /**
-     * Gives post-commit notifications their own transaction (FCM and delivery bookkeeping write rows). Optional so
-     * directly-constructed instances (unit tests) keep working: without one, post-commit actions simply run inline.
+     * Gives post-commit notifications their own transaction (FCM and delivery
+     * bookkeeping write rows). Optional so
+     * directly-constructed instances (unit tests) keep working: without one,
+     * post-commit actions simply run inline.
      */
     @Autowired(required = false)
     private PlatformTransactionManager transactionManager;
@@ -100,13 +132,17 @@ public class BookingAssignmentService {
     }
 
     /**
-     * Only used to re-read a locked booking (see {@link #lockBooking}). Null in directly-constructed instances (unit
+     * Only used to re-read a locked booking (see {@link #lockBooking}). Null in
+     * directly-constructed instances (unit
      * tests), where there is no persistence context to go stale.
      */
     @Autowired(required = false)
     private EntityManager entityManager;
 
-    /** Runs {@code work} in its own transaction (or inline when no transaction manager is wired, as in unit tests). */
+    /**
+     * Runs {@code work} in its own transaction (or inline when no transaction
+     * manager is wired, as in unit tests).
+     */
     private void inOwnTransaction(Runnable work) {
         if (transactionManager == null) {
             work.run();
@@ -116,13 +152,20 @@ public class BookingAssignmentService {
     }
 
     /**
-     * Locks the booking row ({@code SELECT ... FOR UPDATE}) and returns its CURRENT committed state.
+     * Locks the booking row ({@code SELECT ... FOR UPDATE}) and returns its CURRENT
+     * committed state.
      *
-     * <p>With open-in-view (Spring Boot's default for web requests) one EntityManager lives for the whole request, so a
-     * copy of the booking read earlier in the request may already be cached in it. A locking query waits for the row
-     * lock but hands back that cached copy, so the status checks made under the lock would be made against stale data
-     * (a booking another transaction has since cancelled or accepted would still look like it is waiting). Re-reading
-     * the row after the lock is taken makes every check run against what is really committed.
+     * <p>
+     * With open-in-view (Spring Boot's default for web requests) one EntityManager
+     * lives for the whole request, so a
+     * copy of the booking read earlier in the request may already be cached in it.
+     * A locking query waits for the row
+     * lock but hands back that cached copy, so the status checks made under the
+     * lock would be made against stale data
+     * (a booking another transaction has since cancelled or accepted would still
+     * look like it is waiting). Re-reading
+     * the row after the lock is taken makes every check run against what is really
+     * committed.
      */
     private Optional<Booking> lockBooking(UUID bookingId) {
         Optional<Booking> locked = bookingRepository.findByIdForUpdate(bookingId);
@@ -134,19 +177,19 @@ public class BookingAssignmentService {
 
     @Autowired
     public BookingAssignmentService(WorkerRepository workerRepository,
-                                  WorkerServiceLinkRepository workerServiceLinkRepository,
-                                  BookingRepository bookingRepository,
-                                  BookingAssignmentRepository assignmentRepository,
-                                  ReviewRepository reviewRepository,
-                                  NotificationDeliveryRepository deliveryRepository,
-                                  RedisTemplate<String, String> redisTemplate,
-                                  FcmNotificationService fcmNotificationService,
-                                  BookingDomainEventService domainEventService,
-                                  SimpMessagingTemplate messagingTemplate,
-                                  BookingOtpService bookingOtpService,
-                                  ObjectMapper objectMapper,
-                                  @Autowired(required = false) DispatchAuditLogRepository auditLogRepository,
-                                  @Autowired(required = false) TrackingService trackingService) {
+            WorkerServiceLinkRepository workerServiceLinkRepository,
+            BookingRepository bookingRepository,
+            BookingAssignmentRepository assignmentRepository,
+            ReviewRepository reviewRepository,
+            NotificationDeliveryRepository deliveryRepository,
+            RedisTemplate<String, String> redisTemplate,
+            FcmNotificationService fcmNotificationService,
+            BookingDomainEventService domainEventService,
+            SimpMessagingTemplate messagingTemplate,
+            BookingOtpService bookingOtpService,
+            ObjectMapper objectMapper,
+            @Autowired(required = false) DispatchAuditLogRepository auditLogRepository,
+            @Autowired(required = false) TrackingService trackingService) {
         this.workerRepository = workerRepository;
         this.workerServiceLinkRepository = workerServiceLinkRepository;
         this.bookingRepository = bookingRepository;
@@ -164,62 +207,75 @@ public class BookingAssignmentService {
     }
 
     public BookingAssignmentService(WorkerRepository workerRepository,
-                                  WorkerServiceLinkRepository workerServiceLinkRepository,
-                                  BookingRepository bookingRepository,
-                                  BookingAssignmentRepository assignmentRepository,
-                                  ReviewRepository reviewRepository,
-                                  NotificationDeliveryRepository deliveryRepository,
-                                  RedisTemplate<String, String> redisTemplate,
-                                  FcmNotificationService fcmNotificationService,
-                                  BookingDomainEventService domainEventService,
-                                  SimpMessagingTemplate messagingTemplate,
-                                  BookingOtpService bookingOtpService,
-                                  ObjectMapper objectMapper,
-                                  DispatchAuditLogRepository auditLogRepository) {
+            WorkerServiceLinkRepository workerServiceLinkRepository,
+            BookingRepository bookingRepository,
+            BookingAssignmentRepository assignmentRepository,
+            ReviewRepository reviewRepository,
+            NotificationDeliveryRepository deliveryRepository,
+            RedisTemplate<String, String> redisTemplate,
+            FcmNotificationService fcmNotificationService,
+            BookingDomainEventService domainEventService,
+            SimpMessagingTemplate messagingTemplate,
+            BookingOtpService bookingOtpService,
+            ObjectMapper objectMapper,
+            DispatchAuditLogRepository auditLogRepository) {
         this(workerRepository, workerServiceLinkRepository, bookingRepository, assignmentRepository,
-             reviewRepository, deliveryRepository, redisTemplate, fcmNotificationService,
-             domainEventService, messagingTemplate, bookingOtpService, objectMapper, auditLogRepository, null);
+                reviewRepository, deliveryRepository, redisTemplate, fcmNotificationService,
+                domainEventService, messagingTemplate, bookingOtpService, objectMapper, auditLogRepository, null);
     }
 
     public BookingAssignmentService(WorkerRepository workerRepository,
-                                  WorkerServiceLinkRepository workerServiceLinkRepository,
-                                  BookingRepository bookingRepository,
-                                  BookingAssignmentRepository assignmentRepository,
-                                  ReviewRepository reviewRepository,
-                                  NotificationDeliveryRepository deliveryRepository,
-                                  RedisTemplate<String, String> redisTemplate,
-                                  FcmNotificationService fcmNotificationService,
-                                  BookingDomainEventService domainEventService,
-                                  SimpMessagingTemplate messagingTemplate,
-                                  BookingOtpService bookingOtpService,
-                                  ObjectMapper objectMapper) {
+            WorkerServiceLinkRepository workerServiceLinkRepository,
+            BookingRepository bookingRepository,
+            BookingAssignmentRepository assignmentRepository,
+            ReviewRepository reviewRepository,
+            NotificationDeliveryRepository deliveryRepository,
+            RedisTemplate<String, String> redisTemplate,
+            FcmNotificationService fcmNotificationService,
+            BookingDomainEventService domainEventService,
+            SimpMessagingTemplate messagingTemplate,
+            BookingOtpService bookingOtpService,
+            ObjectMapper objectMapper) {
         this(workerRepository, workerServiceLinkRepository, bookingRepository, assignmentRepository,
-             reviewRepository, deliveryRepository, redisTemplate, fcmNotificationService,
-             domainEventService, messagingTemplate, bookingOtpService, objectMapper, null, null);
+                reviewRepository, deliveryRepository, redisTemplate, fcmNotificationService,
+                domainEventService, messagingTemplate, bookingOtpService, objectMapper, null, null);
     }
 
     /**
-     * Production entry point for dispatching an instant booking: matches workers, persists the offers
+     * Production entry point for dispatching an instant booking: matches workers,
+     * persists the offers
      * ({@code booking_assignment}) and the audit row, and alerts workers.
      *
-     * <p>It takes the booking ID, never an entity, and runs in its OWN transaction. That transaction loads the booking
+     * <p>
+     * It takes the booking ID, never an entity, and runs in its OWN transaction.
+     * That transaction loads the booking
      * row and locks it ({@code SELECT ... FOR UPDATE}), so:
      * <ul>
-     *   <li>the booking must already be COMMITTED. Callers that create the booking in a transaction must call this
-     *       only after that transaction has committed (see {@code InstantBookingService}); a transaction that has not
-     *       committed is invisible here, so inserting rows that reference it violates the foreign keys;</li>
-     *   <li>no entity instance is shared between the caller's transaction and this one, so nothing the dispatch
-     *       changes can leak back into, or conflict with, the caller's persistence context;</li>
-     *   <li>concurrent dispatches of the same booking (request thread, recovery job, Kafka consumer, retry endpoint)
-     *       are serialised and the later ones find the work already done, so workers are not offered the job twice;</li>
-     *   <li>if anything fails, this transaction rolls back completely: no partial offers, no status change, and (see
-     *       {@link AfterCommit}) no worker is ever notified. The booking is simply still {@code REQUESTED} and can be
-     *       dispatched again.</li>
+     * <li>the booking must already be COMMITTED. Callers that create the booking in
+     * a transaction must call this
+     * only after that transaction has committed (see
+     * {@code InstantBookingService}); a transaction that has not
+     * committed is invisible here, so inserting rows that reference it violates the
+     * foreign keys;</li>
+     * <li>no entity instance is shared between the caller's transaction and this
+     * one, so nothing the dispatch
+     * changes can leak back into, or conflict with, the caller's persistence
+     * context;</li>
+     * <li>concurrent dispatches of the same booking (request thread, recovery job,
+     * Kafka consumer, retry endpoint)
+     * are serialised and the later ones find the work already done, so workers are
+     * not offered the job twice;</li>
+     * <li>if anything fails, this transaction rolls back completely: no partial
+     * offers, no status change, and (see
+     * {@link AfterCommit}) no worker is ever notified. The booking is simply still
+     * {@code REQUESTED} and can be
+     * dispatched again.</li>
      * </ul>
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void dispatchInstantBookingById(UUID bookingId, UUID targetSubServiceId) {
-        if (bookingId == null) return;
+        if (bookingId == null)
+            return;
 
         Booking booking = lockBooking(bookingId).orElse(null);
         if (booking == null) {
@@ -227,16 +283,20 @@ public class BookingAssignmentService {
             return;
         }
         if (!isDispatchable(booking)) {
-            logger.info("[DISPATCH_SKIPPED] bookingId={} reason=ALREADY_HANDLED status={}", bookingId, booking.getStatus());
+            logger.info("[DISPATCH_SKIPPED] bookingId={} reason=ALREADY_HANDLED status={}", bookingId,
+                    booking.getStatus());
             return;
         }
         dispatchInstantBooking(booking, targetSubServiceId);
     }
 
     /**
-     * A booking may start (or restart) dispatch when it is waiting ({@code REQUESTED}/{@code PENDING}), or when it is
-     * {@code SEARCHING} with nobody currently holding an offer (for example after a reassignment). Anything else
-     * (accepted, cancelled, completed, an offer still outstanding, ...) means the work is already done or in flight.
+     * A booking may start (or restart) dispatch when it is waiting
+     * ({@code REQUESTED}/{@code PENDING}), or when it is
+     * {@code SEARCHING} with nobody currently holding an offer (for example after a
+     * reassignment). Anything else
+     * (accepted, cancelled, completed, an offer still outstanding, ...) means the
+     * work is already done or in flight.
      */
     private boolean isDispatchable(Booking booking) {
         BookingStage status = booking.getStatus();
@@ -251,18 +311,26 @@ public class BookingAssignmentService {
     }
 
     /**
-     * Dispatch Instant Booking: Finds eligible candidates using radius expansion tiers (5→10→15→20km).
+     * Dispatch Instant Booking: Finds eligible candidates using radius expansion
+     * tiers (5→10→15→20km).
      *
-     * <p>Entity-based variant: it runs in the CALLER'S transaction ({@code REQUIRED}) and works on the caller's
-     * entity, which must therefore belong to that same transaction. It previously ran in {@code REQUIRES_NEW}, which
-     * is wrong for a booking created in the caller's still-uncommitted transaction (foreign-key violations on the
-     * rows inserted here) and made it mutate an entity owned by another transaction. Code that creates a booking and
-     * then dispatches it must use {@link #dispatchInstantBookingById(UUID, UUID)} after the creating transaction
+     * <p>
+     * Entity-based variant: it runs in the CALLER'S transaction ({@code REQUIRED})
+     * and works on the caller's
+     * entity, which must therefore belong to that same transaction. It previously
+     * ran in {@code REQUIRES_NEW}, which
+     * is wrong for a booking created in the caller's still-uncommitted transaction
+     * (foreign-key violations on the
+     * rows inserted here) and made it mutate an entity owned by another
+     * transaction. Code that creates a booking and
+     * then dispatches it must use {@link #dispatchInstantBookingById(UUID, UUID)}
+     * after the creating transaction
      * has committed.
      */
     @Transactional
     public void dispatchInstantBooking(Booking booking, UUID targetSubServiceId) {
-        if (booking == null) return;
+        if (booking == null)
+            return;
         UUID serviceId = booking.getService() != null ? booking.getService().getServiceId() : null;
         String servicePincode = booking.getServicePincode();
 
@@ -273,10 +341,14 @@ public class BookingAssignmentService {
         double usedRadius = radiusMeters;
         Map<String, String> rejectionReasons = new LinkedHashMap<>();
 
-        // A worker who already holds (or answered, or ignored) an offer for this booking is never offered it a second
-        // time: dispatchToBatch skips such workers anyway. Leaving them in the candidate list made a retry or a
-        // reassignment with nobody new to offer end with the booking SEARCHING and not a single pending offer, i.e.
-        // nobody looking for a worker and the customer never told. Without them the empty-list branch below applies.
+        // A worker who already holds (or answered, or ignored) an offer for this
+        // booking is never offered it a second
+        // time: dispatchToBatch skips such workers anyway. Leaving them in the
+        // candidate list made a retry or a
+        // reassignment with nobody new to offer end with the booking SEARCHING and not
+        // a single pending offer, i.e.
+        // nobody looking for a worker and the customer never told. Without them the
+        // empty-list branch below applies.
         Set<UUID> alreadyOffered = new HashSet<>();
         for (BookingAssignment previous : assignmentRepository.findByBooking_BookingId(booking.getBookingId())) {
             if (previous.getWorker() != null) {
@@ -293,7 +365,8 @@ public class BookingAssignmentService {
                     .filter(w -> matchesWorkingPincode(w, servicePincode))
                     .filter(w -> !alreadyOffered.contains(w.getWorkerId()))
                     .filter(w -> {
-                        boolean eligible = isCandidateEligible(w, serviceId, targetSubServiceId, servicePincode, rejectionReasons);
+                        boolean eligible = isCandidateEligible(w, serviceId, targetSubServiceId, servicePincode,
+                                rejectionReasons);
                         double dist = calculateHaversineDistance(booking.getUserLat(), booking.getUserLng(),
                                 w.getCurrentLat() != null ? w.getCurrentLat() : booking.getUserLat(),
                                 w.getCurrentLng() != null ? w.getCurrentLng() : booking.getUserLng());
@@ -307,11 +380,12 @@ public class BookingAssignmentService {
                         logger.info("[WORKER_GEO_DISTANCE] bookingId={}, workerId={}, distanceMeters={}",
                                 booking.getBookingId(), w.getWorkerId(), Math.round(dist));
                         logger.info("[WORKER_ELIGIBILITY] bookingId={}, workerId={}, eligible={}, reason={}",
-                                booking.getBookingId(), w.getWorkerId(), eligible, eligible ? "OK" : rejectionReasons.getOrDefault(w.getWorkerId().toString(), "UNKNOWN"));
+                                booking.getBookingId(), w.getWorkerId(), eligible,
+                                eligible ? "OK" : rejectionReasons.getOrDefault(w.getWorkerId().toString(), "UNKNOWN"));
                         return eligible;
                     })
-                    .sorted(Comparator.comparingDouble(w ->
-                            calculateHaversineDistance(booking.getUserLat(), booking.getUserLng(),
+                    .sorted(Comparator
+                            .comparingDouble(w -> calculateHaversineDistance(booking.getUserLat(), booking.getUserLng(),
                                     w.getCurrentLat() != null ? w.getCurrentLat() : booking.getUserLat(),
                                     w.getCurrentLng() != null ? w.getCurrentLng() : booking.getUserLng())))
                     .toList();
@@ -326,10 +400,11 @@ public class BookingAssignmentService {
 
         // -------------------------------------------------------------
         // STRATEGY 2: RADIUS EXPANSION TIERS (If no candidates in same pincode)
+        // Preserve Strategy 1 rejectionReasons so dispatch audit logs retain why
+        // pincode workers were ineligible.
         // -------------------------------------------------------------
         if (eligibleCandidates.isEmpty()) {
             for (double tier : RADIUS_EXPANSION_TIERS) {
-                rejectionReasons.clear();
                 eligibleCandidates = new ArrayList<>(findEligibleCandidateWorkers(
                         serviceId,
                         targetSubServiceId,
@@ -337,14 +412,15 @@ public class BookingAssignmentService {
                         booking.getUserLng(),
                         tier,
                         servicePincode,
-                        rejectionReasons
-                ).stream().filter(w -> !alreadyOffered.contains(w.getWorkerId())).toList());
+                        rejectionReasons).stream().filter(w -> !alreadyOffered.contains(w.getWorkerId())).toList());
                 usedRadius = tier;
                 if (!eligibleCandidates.isEmpty()) {
-                    logger.info("Found {} eligible workers within {} m for booking {}", eligibleCandidates.size(), tier, booking.getBookingId());
+                    logger.info("Found {} eligible workers within {} m for booking {}", eligibleCandidates.size(), tier,
+                            booking.getBookingId());
                     break;
                 }
-                logger.info("No workers found within {} m for booking {}, expanding radius...", tier, booking.getBookingId());
+                logger.info("No workers found within {} m for booking {}, expanding radius...", tier,
+                        booking.getBookingId());
             }
         }
 
@@ -355,18 +431,43 @@ public class BookingAssignmentService {
             logger.info("[WORKER_SELECTED] bookingId={}, workerId={}", booking.getBookingId(), worker.getWorkerId());
         }
 
-        // Nobody NEW to ask, but an earlier offer is still alive (a retry of a booking that is already being offered):
-        // the search is not exhausted. Declaring WORKER_NOT_FOUND here would tell the customer nobody is available and
-        // make the status check in acceptance reject the worker who is holding a live offer. Leave it SEARCHING; the
+        // Nobody NEW to ask, but an earlier offer is still alive (a retry of a booking
+        // that is already being offered):
+        // the search is not exhausted. Declaring WORKER_NOT_FOUND here would tell the
+        // customer nobody is available and
+        // make the status check in acceptance reject the worker who is holding a live
+        // offer. Leave it SEARCHING; the
         // offer sweeper moves the booking on when those offers expire.
         if (eligibleCandidates.isEmpty() && hasLiveOffer(booking.getBookingId())) {
-            logger.info("[DISPATCH_SKIPPED] bookingId={} reason=LIVE_OFFER_OUTSTANDING nobody new to offer, keeping SEARCHING",
+            logger.info(
+                    "[DISPATCH_SKIPPED] bookingId={} reason=LIVE_OFFER_OUTSTANDING nobody new to offer, keeping SEARCHING",
                     booking.getBookingId());
             if (booking.getStatus() != BookingStage.SEARCHING) {
                 booking.setStatus(BookingStage.SEARCHING);
                 bookingRepository.save(booking);
             }
             return;
+        }
+
+        // If still empty, inspect any pincode-configured workers (including
+        // offline/unverified) so audit logs explain why none matched
+        if (eligibleCandidates.isEmpty() && servicePincode != null && !servicePincode.isBlank()) {
+            String cleanPin = servicePincode.replaceAll("\\D", "");
+            if (cleanPin.length() == 6) {
+                try {
+                    List<Worker> pinConfigured = workerRepository.findByWorkingPincodesContaining(cleanPin);
+                    if (pinConfigured != null) {
+                        for (Worker w : pinConfigured) {
+                            if (w != null && w.getWorkerId() != null && !alreadyOffered.contains(w.getWorkerId())
+                                    && !rejectionReasons.containsKey(w.getWorkerId().toString())
+                                    && matchesWorkingPincode(w, cleanPin)) {
+                                isCandidateEligible(w, serviceId, targetSubServiceId, cleanPin, rejectionReasons);
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+            }
         }
 
         // Record Dispatch Audit Log
@@ -380,17 +481,34 @@ public class BookingAssignmentService {
                 "CONSUMED",
                 eligibleCandidates.isEmpty() ? "SKIPPED" : "SENT",
                 eligibleCandidates.isEmpty() ? "SKIPPED" : "SENT",
-                eligibleCandidates.isEmpty() ? "WORKER_NOT_FOUND" : "SEARCHING"
-        );
+                eligibleCandidates.isEmpty() ? "WORKER_NOT_FOUND" : "SEARCHING");
 
         if (eligibleCandidates.isEmpty()) {
             String primaryReason = "NO_WORKER_IN_PINCODE";
-            if (rejectionReasons.containsValue("WORKER_BUSY")) primaryReason = "WORKER_ALREADY_BUSY";
-            else if (rejectionReasons.containsValue("WORKER_OFFLINE")) primaryReason = "WORKER_OFFLINE";
-            else if (rejectionReasons.containsValue("HEARTBEAT_EXPIRED")) primaryReason = "WORKER_HEARTBEAT_EXPIRED";
-            else if (rejectionReasons.containsValue("LOCATION_STALE")) primaryReason = "LOCATION_STALE";
-            else if (rejectionReasons.containsValue("SERVICE_NOT_SUPPORTED")) primaryReason = "SERVICE_NOT_SUPPORTED";
-            else if (rejectionReasons.containsValue("OUTSIDE_RADIUS")) primaryReason = "OUTSIDE_ALLOWED_DISTANCE";
+            if (rejectionReasons.containsValue("WORKER_BUSY"))
+                primaryReason = "WORKER_ALREADY_BUSY";
+            else if (rejectionReasons.containsValue("WORKER_ON_LEAVE"))
+                primaryReason = "WORKER_ON_LEAVE";
+            else if (rejectionReasons.containsValue("OUTSIDE_WORKING_HOURS"))
+                primaryReason = "OUTSIDE_WORKING_HOURS";
+            else if (rejectionReasons.containsValue("WORKER_OFFLINE"))
+                primaryReason = "WORKER_OFFLINE";
+            else if (rejectionReasons.containsValue("WORKER_NOT_APPROVED"))
+                primaryReason = "WORKER_NOT_APPROVED";
+            else if (rejectionReasons.containsValue("WORKER_NOT_AVAILABLE"))
+                primaryReason = "WORKER_NOT_AVAILABLE";
+            else if (rejectionReasons.containsValue("HEARTBEAT_EXPIRED"))
+                primaryReason = "WORKER_HEARTBEAT_EXPIRED";
+            else if (rejectionReasons.containsValue("LOCATION_MISSING"))
+                primaryReason = "LOCATION_MISSING";
+            else if (rejectionReasons.containsValue("LOCATION_STALE"))
+                primaryReason = "LOCATION_STALE";
+            else if (rejectionReasons.containsValue("SERVICE_NOT_SUPPORTED"))
+                primaryReason = "SERVICE_NOT_SUPPORTED";
+            else if (rejectionReasons.containsValue("PINCODE_NOT_SERVICED"))
+                primaryReason = "PINCODE_NOT_SERVICED";
+            else if (rejectionReasons.containsValue("OUTSIDE_RADIUS"))
+                primaryReason = "OUTSIDE_ALLOWED_DISTANCE";
 
             logger.warn("[WORKER_ELIGIBILITY] bookingId={}, eligible=false, reason={}",
                     booking.getBookingId(), primaryReason);
@@ -407,7 +525,10 @@ public class BookingAssignmentService {
         dispatchToBatch(booking, eligibleCandidates, 1);
     }
 
-    /** True while at least one worker holds an unanswered offer for the booking that has not yet expired. */
+    /**
+     * True while at least one worker holds an unanswered offer for the booking that
+     * has not yet expired.
+     */
     private boolean hasLiveOffer(UUID bookingId) {
         Instant now = Instant.now();
         return assignmentRepository.findByBooking_BookingIdAndStatus(bookingId, AssignmentStatus.PENDING).stream()
@@ -420,8 +541,8 @@ public class BookingAssignmentService {
     @Transactional
     public void dispatchToBatch(Booking booking, List<Worker> candidates, int attemptNo) {
         if (booking.getStatus() != BookingStage.REQUESTED &&
-            booking.getStatus() != BookingStage.SEARCHING &&
-            booking.getStatus() != BookingStage.PENDING) {
+                booking.getStatus() != BookingStage.SEARCHING &&
+                booking.getStatus() != BookingStage.PENDING) {
             logger.info("Booking {} is no longer searching for workers (current status: {})",
                     booking.getBookingId(), booking.getStatus());
             return;
@@ -457,8 +578,10 @@ public class BookingAssignmentService {
             assignmentRepository.save(assignment);
             batchCount++;
 
-            // Alert the worker via WebSocket & FCM, but only AFTER this transaction has committed the offer: the
-            // worker's app may call GET /workers/me/requests the instant the push arrives, and a rolled-back offer
+            // Alert the worker via WebSocket & FCM, but only AFTER this transaction has
+            // committed the offer: the
+            // worker's app may call GET /workers/me/requests the instant the push arrives,
+            // and a rolled-back offer
             // must never have been announced.
             queueWorkerJobAlert(worker, booking);
         }
@@ -468,7 +591,8 @@ public class BookingAssignmentService {
     }
 
     /**
-     * Worker acceptance logic with atomic lock and guarantee that exactly one worker wins.
+     * Worker acceptance logic with atomic lock and guarantee that exactly one
+     * worker wins.
      */
     @Transactional
     public Booking handleWorkerAcceptance(UUID bookingId, UUID workerUserId) {
@@ -476,16 +600,18 @@ public class BookingAssignmentService {
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
 
         if (booking.getStatus() != BookingStage.SEARCHING &&
-            booking.getStatus() != BookingStage.REQUESTED &&
-            booking.getStatus() != BookingStage.PENDING) {
-            throw new IllegalStateException("Booking is no longer searching for workers. Current status: " + booking.getStatus());
+                booking.getStatus() != BookingStage.REQUESTED &&
+                booking.getStatus() != BookingStage.PENDING) {
+            throw new IllegalStateException(
+                    "Booking is no longer searching for workers. Current status: " + booking.getStatus());
         }
 
         Worker worker = workerRepository.findByUser_UserId(workerUserId)
                 .or(() -> workerRepository.findById(workerUserId))
                 .orElseThrow(() -> new ResourceNotFoundException("Worker profile not found for user: " + workerUserId));
 
-        // A worker may hold only one in-flight instant job: serialised per worker, checked after the booking lock
+        // A worker may hold only one in-flight instant job: serialised per worker,
+        // checked after the booking lock
         if (acceptanceGuard != null) {
             acceptanceGuard.ensureWorkerFree(worker.getWorkerId(), booking);
         }
@@ -505,8 +631,10 @@ public class BookingAssignmentService {
         if (meterRegistry != null) {
             try {
                 meterRegistry.counter("homeease.dispatch.assigned",
-                        "pincode", booking.getServicePincode() != null ? booking.getServicePincode() : "unknown").increment();
-            } catch (Exception ignored) {}
+                        "pincode", booking.getServicePincode() != null ? booking.getServicePincode() : "unknown")
+                        .increment();
+            } catch (Exception ignored) {
+            }
         }
 
         // Update winning assignment to ACCEPTED
@@ -519,7 +647,8 @@ public class BookingAssignmentService {
                 });
 
         // Drop all other pending assignments for this booking
-        assignmentRepository.dropOtherPendingAssignments(bookingId, worker.getWorkerId(), AssignmentStatus.DROPPED, Instant.now());
+        assignmentRepository.dropOtherPendingAssignments(bookingId, worker.getWorkerId(), AssignmentStatus.DROPPED,
+                Instant.now());
 
         // Notify customer
         notifyCustomerWorkerAssigned(booking, worker, pinCode);
@@ -532,8 +661,7 @@ public class BookingAssignmentService {
                     BookingStage.SEARCHING,
                     BookingStage.ACCEPTED,
                     BookingActorType.WORKER,
-                    workerUserId
-            );
+                    workerUserId);
         } catch (Exception e) {
             logger.warn("Domain event record skipped: {}", e.getMessage());
         }
@@ -561,8 +689,7 @@ public class BookingAssignmentService {
                 "CONSUMED",
                 "DELIVERED",
                 "DELIVERED",
-                "ACCEPTED"
-        );
+                "ACCEPTED");
 
         logger.info("Worker {} successfully accepted booking {}", worker.getWorkerId(), bookingId);
         return booking;
@@ -573,8 +700,10 @@ public class BookingAssignmentService {
      */
     @Transactional
     public void handleWorkerRejection(UUID bookingId, UUID workerUserId, UUID targetSubServiceId) {
-        // Lock the booking row (same lock order as acceptance: booking first). Without it, two workers rejecting at
-        // the same moment each see the other's offer still PENDING, neither cascades, and the booking is stranded in
+        // Lock the booking row (same lock order as acceptance: booking first). Without
+        // it, two workers rejecting at
+        // the same moment each see the other's offer still PENDING, neither cascades,
+        // and the booking is stranded in
         // SEARCHING with every offer rejected.
         Booking booking = lockBooking(bookingId)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
@@ -591,25 +720,27 @@ public class BookingAssignmentService {
 
         logger.info("Worker {} rejected booking {}", worker.getWorkerId(), bookingId);
 
-        // If no more active pending assignments exist for this booking, cascade to next batch
-        List<BookingAssignment> pending = assignmentRepository.findByBooking_BookingIdAndStatus(bookingId, AssignmentStatus.PENDING);
+        // If no more active pending assignments exist for this booking, cascade to next
+        // batch
+        List<BookingAssignment> pending = assignmentRepository.findByBooking_BookingIdAndStatus(bookingId,
+                AssignmentStatus.PENDING);
         if (pending.isEmpty() && booking.getStatus() == BookingStage.SEARCHING) {
             cascadeToNextBatch(booking, targetSubServiceId);
         }
     }
 
     /**
-     * Worker start travel: transitions booking from ACCEPTED/CONFIRMED to ON_THE_WAY and broadcasts update.
+     * Worker start travel: transitions booking from ACCEPTED/CONFIRMED to
+     * ON_THE_WAY and broadcasts update.
      */
     @Transactional
     public Booking handleWorkerStartTravel(UUID bookingId, UUID workerUserId) {
         Booking booking = bookingRepository.findById(bookingId)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
 
-        boolean isAssignedWorker = booking.getWorker() != null && (
-                (booking.getWorker().getUser() != null && booking.getWorker().getUser().getUserId().equals(workerUserId)) ||
-                booking.getWorker().getWorkerId().equals(workerUserId)
-        );
+        boolean isAssignedWorker = booking.getWorker() != null && ((booking.getWorker().getUser() != null
+                && booking.getWorker().getUser().getUserId().equals(workerUserId)) ||
+                booking.getWorker().getWorkerId().equals(workerUserId));
         if (!isAssignedWorker) {
             throw new SecurityException("Unauthorized: Only the assigned worker can start travel.");
         }
@@ -643,9 +774,12 @@ public class BookingAssignmentService {
     }
 
     /**
-     * System-initiated arrival from the GPS geofence (ArrivalDetectionService). Only a booking that is actually
-     * travelling (ON_THE_WAY) is moved; the row is locked so a simultaneous manual "Arrived" tap cannot issue two PINs.
-     * Delegates to {@link #handleWorkerArrival} so the PIN, notifications and tracking stop are identical.
+     * System-initiated arrival from the GPS geofence (ArrivalDetectionService).
+     * Only a booking that is actually
+     * travelling (ON_THE_WAY) is moved; the row is locked so a simultaneous manual
+     * "Arrived" tap cannot issue two PINs.
+     * Delegates to {@link #handleWorkerArrival} so the PIN, notifications and
+     * tracking stop are identical.
      */
     @Transactional
     public Booking handleAutoArrival(UUID bookingId) {
@@ -661,33 +795,34 @@ public class BookingAssignmentService {
     }
 
     /**
-     * Worker arrival verification: marks booking as ARRIVED and issues 4-digit OTP to customer.
+     * Worker arrival verification: marks booking as ARRIVED and issues 4-digit OTP
+     * to customer.
      */
     @Transactional
     public Booking handleWorkerArrival(UUID bookingId, UUID workerUserId) {
         Booking booking = bookingRepository.findById(bookingId)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + bookingId));
 
-        boolean isAssignedWorker = booking.getWorker() != null && (
-                (booking.getWorker().getUser() != null && booking.getWorker().getUser().getUserId().equals(workerUserId)) ||
-                booking.getWorker().getWorkerId().equals(workerUserId)
-        );
+        boolean isAssignedWorker = booking.getWorker() != null && ((booking.getWorker().getUser() != null
+                && booking.getWorker().getUser().getUserId().equals(workerUserId)) ||
+                booking.getWorker().getWorkerId().equals(workerUserId));
         if (!isAssignedWorker) {
             throw new SecurityException("Unauthorized: Only the assigned worker can confirm arrival.");
         }
 
-        // Idempotency check: If booking is already at or past ARRIVED stage, return gracefully
+        // Idempotency check: If booking is already at or past ARRIVED stage, return
+        // gracefully
         if (booking.getStatus() == BookingStage.ARRIVED ||
-            booking.getStatus() == BookingStage.IN_PROGRESS ||
-            booking.getStatus() == BookingStage.COMPLETED) {
+                booking.getStatus() == BookingStage.IN_PROGRESS ||
+                booking.getStatus() == BookingStage.COMPLETED) {
             logger.info("Worker {} arrival check: booking {} is already in stage {} - returning idempotent response",
                     workerUserId, bookingId, booking.getStatus());
             return booking;
         }
 
         if (booking.getStatus() != BookingStage.ACCEPTED &&
-            booking.getStatus() != BookingStage.CONFIRMED &&
-            booking.getStatus() != BookingStage.ON_THE_WAY) {
+                booking.getStatus() != BookingStage.CONFIRMED &&
+                booking.getStatus() != BookingStage.ON_THE_WAY) {
             throw new IllegalStateException("Cannot arrive for booking in status: " + booking.getStatus());
         }
 
@@ -710,14 +845,16 @@ public class BookingAssignmentService {
             java.util.Map<String, Object> map = new java.util.HashMap<>();
             if (existingJson != null && !existingJson.isBlank()) {
                 map = objectMapper.readValue(existingJson,
-                        new com.fasterxml.jackson.core.type.TypeReference<java.util.Map<String, Object>>() {});
+                        new com.fasterxml.jackson.core.type.TypeReference<java.util.Map<String, Object>>() {
+                        });
             }
             map.put("status", "ARRIVED");
             map.put("arrivedAt", arrivedAt.toString());
             map.put("trackingActive", false);
             redisTemplate.opsForValue().set(assignmentKey, objectMapper.writeValueAsString(map), Duration.ofHours(24));
 
-            // Broadcast ARRIVED tracking event so customer app reacts instantly via WebSocket
+            // Broadcast ARRIVED tracking event so customer app reacts instantly via
+            // WebSocket
             java.util.Map<String, Object> event = new java.util.HashMap<>();
             event.put("bookingId", bookingId.toString());
             event.put("status", "ARRIVED");
@@ -726,7 +863,8 @@ public class BookingAssignmentService {
             messagingTemplate.convertAndSend("/topic/track/" + bookingId, event);
             messagingTemplate.convertAndSend("/topic/tracking/" + bookingId, event);
         } catch (Exception e) {
-            logger.warn("Redis tracking assignment ARRIVED update failed for booking {}: {}", bookingId, e.getMessage());
+            logger.warn("Redis tracking assignment ARRIVED update failed for booking {}: {}", bookingId,
+                    e.getMessage());
         }
 
         // Authoritative tracking auto-stop & session transition to ARRIVED
@@ -743,22 +881,28 @@ public class BookingAssignmentService {
     }
 
     /**
-     * Periodic scheduled poller (every 10 seconds): checks expired pending assignments and cascades.
+     * Periodic scheduled poller (every 10 seconds): checks expired pending
+     * assignments and cascades.
      */
     @Scheduled(fixedDelay = 10000)
     public void processExpiredAssignments() {
         Instant now = Instant.now();
-        // Offers made by the wave engine carry a score and are advanced round by round by
-        // WaveDispatchService.scanAndAdvanceRounds. This sweeper owns the unscored offers created by dispatchToBatch.
-        // Both schedulers used to claim every expired PENDING offer, so whichever ran first cascaded it with a
+        // Offers made by the wave engine carry a score and are advanced round by round
+        // by
+        // WaveDispatchService.scanAndAdvanceRounds. This sweeper owns the unscored
+        // offers created by dispatchToBatch.
+        // Both schedulers used to claim every expired PENDING offer, so whichever ran
+        // first cascaded it with a
         // different matching engine and the other one found nothing left to do.
         List<UUID> bookingIds = assignmentRepository.findBookingIdsWithExpiredStandardOffers(now);
         if (bookingIds == null || bookingIds.isEmpty()) {
             return;
         }
 
-        // One short transaction per booking. A failure rolls back only that booking (it is simply picked up again on
-        // the next run) instead of discarding the work done for every other booking in the batch.
+        // One short transaction per booking. A failure rolls back only that booking (it
+        // is simply picked up again on
+        // the next run) instead of discarding the work done for every other booking in
+        // the batch.
         for (UUID bookingId : bookingIds) {
             try {
                 inOwnTransaction(() -> expireOffersAndCascade(bookingId, now));
@@ -769,13 +913,19 @@ public class BookingAssignmentService {
     }
 
     /**
-     * Times out one booking's expired offers and, if nobody holds an offer any more, offers the booking to the next
+     * Times out one booking's expired offers and, if nobody holds an offer any
+     * more, offers the booking to the next
      * batch.
      *
-     * <p>LOCK ORDER: the booking row first, then its offers. That is the order acceptance and rejection use. The
-     * sweeper used to update the offers first and take the booking afterwards, so a worker accepting at the very
-     * moment their offer expired made the two wait for each other's row and PostgreSQL aborted one of them with
-     * "deadlock detected". Under the lock the offers are read afresh, so an offer that was accepted a moment ago is
+     * <p>
+     * LOCK ORDER: the booking row first, then its offers. That is the order
+     * acceptance and rejection use. The
+     * sweeper used to update the offers first and take the booking afterwards, so a
+     * worker accepting at the very
+     * moment their offer expired made the two wait for each other's row and
+     * PostgreSQL aborted one of them with
+     * "deadlock detected". Under the lock the offers are read afresh, so an offer
+     * that was accepted a moment ago is
      * never overwritten with TIMEOUT.
      */
     private void expireOffersAndCascade(UUID bookingId, Instant now) {
@@ -808,17 +958,22 @@ public class BookingAssignmentService {
         UUID serviceId = booking.getService() != null ? booking.getService().getServiceId() : null;
         String servicePincode = booking.getServicePincode();
 
-        // Workers who already received an offer for this booking (whatever the outcome) are never offered it again
+        // Workers who already received an offer for this booking (whatever the outcome)
+        // are never offered it again
         List<BookingAssignment> pastAssignments = assignmentRepository.findByBooking_BookingId(booking.getBookingId());
         Set<UUID> attemptedWorkerIds = new HashSet<>();
         for (BookingAssignment a : pastAssignments) {
             attemptedWorkerIds.add(a.getWorker().getWorkerId());
         }
 
-        // Widen the radius until a tier yields at least one worker who has NOT been offered the job yet. Stopping at
-        // the first non-empty tier would declare the booking exhausted while wider tiers still hold untried workers.
-        // The booking's pincode is passed so the same rules as the first dispatch apply (working pincodes, location
-        // freshness for same-pincode workers); without it the cascade silently skipped them.
+        // Widen the radius until a tier yields at least one worker who has NOT been
+        // offered the job yet. Stopping at
+        // the first non-empty tier would declare the booking exhausted while wider
+        // tiers still hold untried workers.
+        // The booking's pincode is passed so the same rules as the first dispatch apply
+        // (working pincodes, location
+        // freshness for same-pincode workers); without it the cascade silently skipped
+        // them.
         List<Worker> nextCandidates = Collections.emptyList();
         for (double tier : RADIUS_EXPANSION_TIERS) {
             nextCandidates = findEligibleCandidateWorkers(
@@ -828,11 +983,11 @@ public class BookingAssignmentService {
                     booking.getUserLng(),
                     tier,
                     servicePincode,
-                    new LinkedHashMap<>()
-            ).stream()
+                    new LinkedHashMap<>()).stream()
                     .filter(w -> !attemptedWorkerIds.contains(w.getWorkerId()))
                     .toList();
-            if (!nextCandidates.isEmpty()) break;
+            if (!nextCandidates.isEmpty())
+                break;
         }
 
         if (nextCandidates.isEmpty()) {
@@ -851,8 +1006,7 @@ public class BookingAssignmentService {
                     "CONSUMED",
                     "SENT",
                     "SENT",
-                    "WORKER_NOT_FOUND"
-            );
+                    "WORKER_NOT_FOUND");
         } else {
             int nextAttempt = pastAssignments.size() / dispatchBatchSize + 1;
             dispatchToBatch(booking, nextCandidates, nextAttempt);
@@ -860,26 +1014,29 @@ public class BookingAssignmentService {
     }
 
     /**
-     * Candidate discovery: Redis GEO + PostGIS fallback with strict category, skills, and online filtering.
+     * Candidate discovery: Redis GEO + PostGIS fallback with strict category,
+     * skills, and online filtering.
      */
     public List<Worker> findEligibleCandidateWorkers(UUID serviceId, UUID subServiceId,
-                                                    double userLat, double userLng,
-                                                    double effectiveRadius) {
-        return findEligibleCandidateWorkers(serviceId, subServiceId, userLat, userLng, effectiveRadius, null, new LinkedHashMap<>());
+            double userLat, double userLng,
+            double effectiveRadius) {
+        return findEligibleCandidateWorkers(serviceId, subServiceId, userLat, userLng, effectiveRadius, null,
+                new LinkedHashMap<>());
     }
 
     public List<Worker> findEligibleCandidateWorkers(UUID serviceId, UUID subServiceId,
-                                                    double userLat, double userLng,
-                                                    double effectiveRadius,
-                                                    Map<String, String> rejectionReasons) {
-        return findEligibleCandidateWorkers(serviceId, subServiceId, userLat, userLng, effectiveRadius, null, rejectionReasons);
+            double userLat, double userLng,
+            double effectiveRadius,
+            Map<String, String> rejectionReasons) {
+        return findEligibleCandidateWorkers(serviceId, subServiceId, userLat, userLng, effectiveRadius, null,
+                rejectionReasons);
     }
 
     public List<Worker> findEligibleCandidateWorkers(UUID serviceId, UUID subServiceId,
-                                                    double userLat, double userLng,
-                                                    double effectiveRadius,
-                                                    String servicePincode,
-                                                    Map<String, String> rejectionReasons) {
+            double userLat, double userLng,
+            double effectiveRadius,
+            String servicePincode,
+            Map<String, String> rejectionReasons) {
         List<Worker> candidates = new ArrayList<>();
         Set<UUID> workerIds = new HashSet<>();
 
@@ -888,12 +1045,13 @@ public class BookingAssignmentService {
             return Collections.emptyList();
         }
 
-        // 1. Redis GEO radius query — query active_workers_geo, fallback to geo:workers:global
+        // 1. Redis GEO radius query — query active_workers_geo, fallback to
+        // geo:workers:global
         try {
             double radiusKm = effectiveRadius / 1000.0;
             Circle searchArea = new Circle(new Point(userLng, userLat), new Distance(radiusKm, Metrics.KILOMETERS));
-            GeoResults<RedisGeoCommands.GeoLocation<String>> results =
-                    redisTemplate.opsForGeo().radius("active_workers_geo", searchArea);
+            GeoResults<RedisGeoCommands.GeoLocation<String>> results = redisTemplate.opsForGeo()
+                    .radius("active_workers_geo", searchArea);
             if (results == null || results.getContent().isEmpty()) {
                 results = redisTemplate.opsForGeo().radius("geo:workers:global", searchArea);
             }
@@ -905,15 +1063,23 @@ public class BookingAssignmentService {
                                 .or(() -> workerRepository.findByUser_UserId(candidateId))
                                 .orElse(null);
                         if (worker != null) {
-                            if (isCandidateEligible(worker, serviceId, subServiceId, servicePincode, rejectionReasons) && workerIds.add(worker.getWorkerId())) {
+                            String workerKey = worker.getWorkerId() != null ? worker.getWorkerId().toString()
+                                    : candidateId.toString();
+                            Map<String, String> targetReasons = (rejectionReasons != null
+                                    && rejectionReasons.containsKey(workerKey))
+                                            ? null
+                                            : rejectionReasons;
+                            if (isCandidateEligible(worker, serviceId, subServiceId, servicePincode, targetReasons)
+                                    && workerIds.add(worker.getWorkerId())) {
                                 candidates.add(worker);
                             }
                         } else {
                             if (rejectionReasons != null) {
-                                rejectionReasons.put(candidateId.toString(), "WORKER_NOT_AVAILABLE");
+                                rejectionReasons.putIfAbsent(candidateId.toString(), "WORKER_NOT_AVAILABLE");
                             }
                         }
-                    } catch (Exception ignored) {}
+                    } catch (Exception ignored) {
+                    }
                 }
             }
         } catch (Exception e) {
@@ -924,22 +1090,32 @@ public class BookingAssignmentService {
         if (candidates.isEmpty()) {
             List<Worker> onlineWorkers = workerRepository.findByIsOnlineTrueAndIsVerifiedTrue().stream()
                     .filter(w -> {
+                        String wkKey = w.getWorkerId() != null ? w.getWorkerId().toString() : "unknown";
                         if (w.getCurrentLat() == null || w.getCurrentLng() == null) {
-                            if (rejectionReasons != null) rejectionReasons.put(w.getWorkerId() != null ? w.getWorkerId().toString() : "unknown", "LOCATION_MISSING");
+                            if (rejectionReasons != null)
+                                rejectionReasons.putIfAbsent(wkKey, "LOCATION_MISSING");
                             return false;
                         }
                         if (w.getBlockedUntil() != null && w.getBlockedUntil().isAfter(Instant.now())) {
-                            if (rejectionReasons != null) rejectionReasons.put(w.getWorkerId() != null ? w.getWorkerId().toString() : "unknown", "WORKER_BLOCKED");
+                            if (rejectionReasons != null)
+                                rejectionReasons.putIfAbsent(wkKey, "WORKER_BLOCKED");
                             return false;
                         }
-                        double dist = calculateHaversineDistance(userLat, userLng, w.getCurrentLat(), w.getCurrentLng());
+                        double dist = calculateHaversineDistance(userLat, userLng, w.getCurrentLat(),
+                                w.getCurrentLng());
                         if (dist > effectiveRadius) {
-                            if (rejectionReasons != null) rejectionReasons.put(w.getWorkerId() != null ? w.getWorkerId().toString() : "unknown", "OUTSIDE_RADIUS");
+                            if (rejectionReasons != null)
+                                rejectionReasons.putIfAbsent(wkKey, "OUTSIDE_RADIUS");
                             return false;
                         }
-                        return isCandidateEligible(w, serviceId, subServiceId, servicePincode, rejectionReasons);
+                        Map<String, String> targetReasons = (rejectionReasons != null
+                                && rejectionReasons.containsKey(wkKey))
+                                        ? null
+                                        : rejectionReasons;
+                        return isCandidateEligible(w, serviceId, subServiceId, servicePincode, targetReasons);
                     })
-                    .sorted(Comparator.comparingDouble(w -> calculateHaversineDistance(userLat, userLng, w.getCurrentLat(), w.getCurrentLng())))
+                    .sorted(Comparator.comparingDouble(
+                            w -> calculateHaversineDistance(userLat, userLng, w.getCurrentLat(), w.getCurrentLng())))
                     .toList();
             for (Worker w : onlineWorkers) {
                 if (workerIds.add(w.getWorkerId())) {
@@ -949,10 +1125,9 @@ public class BookingAssignmentService {
         }
 
         // Sort candidates by proximity to customer
-        candidates.sort(Comparator.comparingDouble(w ->
-                calculateHaversineDistance(userLat, userLng,
-                        w.getCurrentLat() != null ? w.getCurrentLat() : userLat,
-                        w.getCurrentLng() != null ? w.getCurrentLng() : userLng)));
+        candidates.sort(Comparator.comparingDouble(w -> calculateHaversineDistance(userLat, userLng,
+                w.getCurrentLat() != null ? w.getCurrentLat() : userLat,
+                w.getCurrentLng() != null ? w.getCurrentLng() : userLng)));
 
         return candidates;
     }
@@ -961,37 +1136,47 @@ public class BookingAssignmentService {
         return isCandidateEligible(worker, null, targetSubServiceId, null, new LinkedHashMap<>());
     }
 
-    public boolean isCandidateEligible(Worker worker, UUID serviceId, UUID targetSubServiceId, Map<String, String> rejectionReasons) {
+    public boolean isCandidateEligible(Worker worker, UUID serviceId, UUID targetSubServiceId,
+            Map<String, String> rejectionReasons) {
         return isCandidateEligible(worker, serviceId, targetSubServiceId, null, rejectionReasons);
     }
 
-    public boolean isCandidateEligible(Worker worker, UUID serviceId, UUID targetSubServiceId, String servicePincode, Map<String, String> rejectionReasons) {
-        if (worker == null) return false;
+    public boolean isCandidateEligible(Worker worker, UUID serviceId, UUID targetSubServiceId, String servicePincode,
+            Map<String, String> rejectionReasons) {
+        if (worker == null)
+            return false;
         String wId = worker.getWorkerId() != null ? worker.getWorkerId().toString() : "unknown";
 
         // 1. Online check
         if (!Boolean.TRUE.equals(worker.getIsOnline())) {
-            if (rejectionReasons != null) rejectionReasons.put(wId, "WORKER_OFFLINE");
+            if (rejectionReasons != null)
+                rejectionReasons.put(wId, "WORKER_OFFLINE");
             return false;
         }
 
         // 2. Verification check
         if (!Boolean.TRUE.equals(worker.getIsVerified())) {
-            if (rejectionReasons != null) rejectionReasons.put(wId, "WORKER_NOT_APPROVED");
+            if (rejectionReasons != null)
+                rejectionReasons.put(wId, "WORKER_NOT_APPROVED");
             return false;
         }
 
         // 3. Blocked / Penalty penalty check
         if (worker.getBlockedUntil() != null && worker.getBlockedUntil().isAfter(Instant.now())) {
-            if (rejectionReasons != null) rejectionReasons.put(wId, "WORKER_NOT_AVAILABLE");
+            if (rejectionReasons != null)
+                rejectionReasons.put(wId, "WORKER_NOT_AVAILABLE");
             return false;
         }
 
-        // 3b. Presence: the worker must have a live heartbeat (default TTL 60s). Redis GEO members never
-        // expire, and is_online stays true after an unexpected disconnect, so this is what stops dispatch to
-        // a worker who has silently gone away. Checked before the costlier DB queries below.
+        // 3b. Presence: the worker must have a live heartbeat (default TTL 60s). Redis
+        // GEO members never
+        // expire, and is_online stays true after an unexpected disconnect, so this is
+        // what stops dispatch to
+        // a worker who has silently gone away. Checked before the costlier DB queries
+        // below.
         if (presenceService != null && !presenceService.isDispatchable(worker)) {
-            if (rejectionReasons != null) rejectionReasons.put(wId, "HEARTBEAT_EXPIRED");
+            if (rejectionReasons != null)
+                rejectionReasons.put(wId, "HEARTBEAT_EXPIRED");
             return false;
         }
 
@@ -1001,8 +1186,7 @@ public class BookingAssignmentService {
                 BookingStage.CONFIRMED,
                 BookingStage.ON_THE_WAY,
                 BookingStage.ARRIVED,
-                BookingStage.IN_PROGRESS
-        );
+                BookingStage.IN_PROGRESS);
         Instant staleThreshold = Instant.now().minus(12, ChronoUnit.HOURS);
         List<Booking> activeBookings = bookingRepository.findByWorker_WorkerIdAndStatusInOrderByScheduledAtAsc(
                 worker.getWorkerId(), activeStages);
@@ -1011,7 +1195,8 @@ public class BookingAssignmentService {
             return jobTime == null || jobTime.isAfter(staleThreshold);
         });
         if (hasGenuineActiveJob) {
-            if (rejectionReasons != null) rejectionReasons.put(wId, "WORKER_BUSY");
+            if (rejectionReasons != null)
+                rejectionReasons.put(wId, "WORKER_BUSY");
             return false;
         }
 
@@ -1019,30 +1204,66 @@ public class BookingAssignmentService {
                 worker.getWorkerId(), AssignmentStatus.ACCEPTED);
         boolean hasActiveAcceptedJob = activeAssignments.stream()
                 .anyMatch(a -> {
-                    if (a.getBooking() == null || !activeStages.contains(a.getBooking().getStatus())) return false;
-                    Instant jobTime = a.getBooking().getScheduledAt() != null ? a.getBooking().getScheduledAt() : a.getBooking().getCreatedAt();
+                    if (a.getBooking() == null || !activeStages.contains(a.getBooking().getStatus()))
+                        return false;
+                    Instant jobTime = a.getBooking().getScheduledAt() != null ? a.getBooking().getScheduledAt()
+                            : a.getBooking().getCreatedAt();
                     return jobTime == null || jobTime.isAfter(staleThreshold);
                 });
         if (hasActiveAcceptedJob) {
-            if (rejectionReasons != null) rejectionReasons.put(wId, "WORKER_BUSY");
+            if (rejectionReasons != null)
+                rejectionReasons.put(wId, "WORKER_BUSY");
             return false;
+        }
+
+        // 4b. Leave (Time-Off) & Configured Working Hours check (IST)
+        ZonedDateTime nowIst = ZonedDateTime.now(ZoneId.of("Asia/Kolkata"));
+        if (timeOffRepository != null && worker.getWorkerId() != null) {
+            List<WorkerTimeOff> leaves = timeOffRepository.findByWorkerAndDate(worker.getWorkerId(),
+                    nowIst.toLocalDate());
+            if (leaves != null && !leaves.isEmpty()) {
+                if (rejectionReasons != null)
+                    rejectionReasons.put(wId, "WORKER_ON_LEAVE");
+                return false;
+            }
+        }
+        if (availabilityRepository != null && worker.getWorkerId() != null) {
+            Optional<WorkerAvailability> waOpt = availabilityRepository.findByWorker_WorkerIdAndDayOfWeek(
+                    worker.getWorkerId(), nowIst.getDayOfWeek().getValue());
+            if (waOpt.isPresent()) {
+                WorkerAvailability wa = waOpt.get();
+                LocalTime nowTime = nowIst.toLocalTime();
+                boolean dayOff = !Boolean.TRUE.equals(wa.getIsAvailable());
+                boolean outsideHours = (wa.getStartTime() != null && nowTime.isBefore(wa.getStartTime()))
+                        || (wa.getEndTime() != null && nowTime.isAfter(wa.getEndTime()));
+                boolean inBreak = wa.getBreakStartTime() != null && wa.getBreakEndTime() != null
+                        && !nowTime.isBefore(wa.getBreakStartTime()) && nowTime.isBefore(wa.getBreakEndTime());
+                if (dayOff || outsideHours || inBreak) {
+                    if (rejectionReasons != null)
+                        rejectionReasons.put(wId, "OUTSIDE_WORKING_HOURS");
+                    return false;
+                }
+            }
         }
 
         // 5. Location validity & freshness check
         if (worker.getCurrentLat() == null || worker.getCurrentLng() == null) {
-            if (rejectionReasons != null) rejectionReasons.put(wId, "LOCATION_MISSING");
+            if (rejectionReasons != null)
+                rejectionReasons.put(wId, "LOCATION_MISSING");
             return false;
         }
         if (Math.abs(worker.getCurrentLat()) > 90.0 || Math.abs(worker.getCurrentLng()) > 180.0 ||
-            (worker.getCurrentLat() == 0.0 && worker.getCurrentLng() == 0.0)) {
-            if (rejectionReasons != null) rejectionReasons.put(wId, "LOCATION_MISSING");
+                (worker.getCurrentLat() == 0.0 && worker.getCurrentLng() == 0.0)) {
+            if (rejectionReasons != null)
+                rejectionReasons.put(wId, "LOCATION_MISSING");
             return false;
         }
         if (worker.getLastLocationUpdatedAt() != null) {
             boolean samePincode = matchesWorkingPincode(worker, servicePincode);
             long thresholdMinutes = samePincode ? 1440 : 30; // 24 hours if online partner in same pincode
             if (worker.getLastLocationUpdatedAt().isBefore(Instant.now().minus(thresholdMinutes, ChronoUnit.MINUTES))) {
-                if (rejectionReasons != null) rejectionReasons.put(wId, "LOCATION_STALE");
+                if (rejectionReasons != null)
+                    rejectionReasons.put(wId, "LOCATION_STALE");
                 return false;
             }
         }
@@ -1052,8 +1273,10 @@ public class BookingAssignmentService {
             boolean qualified = false;
 
             if (targetSubServiceId != null) {
-                qualified = workerServiceLinkRepository.existsById_WorkerIdAndId_SubServiceId(worker.getWorkerId(), targetSubServiceId)
-                        || workerServiceLinkRepository.existsByWorkerIdAndSubServiceOrServiceId(worker.getWorkerId(), targetSubServiceId);
+                qualified = workerServiceLinkRepository.existsById_WorkerIdAndId_SubServiceId(worker.getWorkerId(),
+                        targetSubServiceId)
+                        || workerServiceLinkRepository.existsByWorkerIdAndSubServiceOrServiceId(worker.getWorkerId(),
+                                targetSubServiceId);
             }
 
             if (!qualified && serviceId != null) {
@@ -1061,16 +1284,18 @@ public class BookingAssignmentService {
             }
 
             if (!qualified) {
-                if (rejectionReasons != null) rejectionReasons.put(wId, "SERVICE_NOT_SUPPORTED");
+                if (rejectionReasons != null)
+                    rejectionReasons.put(wId, "SERVICE_NOT_SUPPORTED");
                 return false;
             }
         }
 
         // 7. Working pincodes check (if partner configured preferred/working pincodes)
         if (servicePincode != null && !servicePincode.isBlank() &&
-            worker.getWorkingPincodes() != null && !worker.getWorkingPincodes().isBlank()) {
+                worker.getWorkingPincodes() != null && !worker.getWorkingPincodes().isBlank()) {
             if (!matchesWorkingPincode(worker, servicePincode)) {
-                if (rejectionReasons != null) rejectionReasons.put(wId, "PINCODE_NOT_SERVICED");
+                if (rejectionReasons != null)
+                    rejectionReasons.put(wId, "PINCODE_NOT_SERVICED");
                 return false;
             }
         }
@@ -1079,35 +1304,38 @@ public class BookingAssignmentService {
     }
 
     public boolean matchesWorkingPincode(Worker worker, String servicePincode) {
-        if (worker == null || servicePincode == null || servicePincode.isBlank()) return false;
+        if (worker == null || servicePincode == null || servicePincode.isBlank())
+            return false;
         String cleanPin = servicePincode.replaceAll("\\D", "");
-        if (cleanPin.length() != 6) return false;
+        if (cleanPin.length() != 6)
+            return false;
 
         if (worker.getWorkingPincodes() != null && !worker.getWorkingPincodes().isBlank()) {
             List<String> allowedPins = Arrays.stream(worker.getWorkingPincodes().split("[,;|\\s]+"))
                     .map(s -> s.replaceAll("\\D", ""))
                     .filter(s -> !s.isBlank())
                     .toList();
-            if (allowedPins.contains(cleanPin)) {
-                return true;
-            }
+            return allowedPins.contains(cleanPin);
         }
-        // Fallback: If worker is physically situated near that pincode centroid (<6.5km)
-        if (worker.getCurrentLat() != null && worker.getCurrentLng() != null) {
-            if ("500010".equals(cleanPin)) {
-                double dist = calculateHaversineDistance(17.5028, 78.5078, worker.getCurrentLat(), worker.getCurrentLng());
-                if (dist <= 6500.0) return true;
-            } else if ("500072".equals(cleanPin)) {
-                double dist = calculateHaversineDistance(17.4947, 78.3996, worker.getCurrentLat(), worker.getCurrentLng());
-                if (dist <= 6500.0) return true;
+        // Fallback only when partner has not configured explicit pincodes: dynamic
+        // geocoded centroid (<= 6.5km)
+        if (worker.getCurrentLat() != null && worker.getCurrentLng() != null && geoService != null) {
+            double[] centroid = geoService.geocodePincode(cleanPin);
+            if (centroid != null) {
+                double dist = calculateHaversineDistance(centroid[0], centroid[1], worker.getCurrentLat(),
+                        worker.getCurrentLng());
+                if (dist <= 6500.0)
+                    return true;
             }
         }
         return false;
     }
 
     /**
-     * TTL of the public nearby-workers result cache (seconds, 0 = off). The field default is 0 so that directly
-     * constructed instances (unit tests) are unaffected; Spring injects the configured value (default 10).
+     * TTL of the public nearby-workers result cache (seconds, 0 = off). The field
+     * default is 0 so that directly
+     * constructed instances (unit tests) are unaffected; Spring injects the
+     * configured value (default 10).
      */
     @Value("${homeease.public-api.nearby-workers.cache-seconds:10}")
     private int nearbyCacheSeconds = 0;
@@ -1129,19 +1357,22 @@ public class BookingAssignmentService {
     }
 
     public List<NearbyWorkerDto> findNearbyAvailableWorkers(UUID serviceId, UUID subServiceId,
-                                                          double userLat, double userLng,
-                                                          Double radiusMeters) {
+            double userLat, double userLng,
+            Double radiusMeters) {
         double effectiveRadius = (radiusMeters != null && radiusMeters > 0) ? radiusMeters : this.radiusMeters;
-        // Public, unauthenticated, ~12 Redis commands per uncached call: share results within a ~11 m cell for a
-        // few seconds (see NearbyWorkersCache). Same response shape; distances may differ by about one cell width.
+        // Public, unauthenticated, ~12 Redis commands per uncached call: share results
+        // within a ~11 m cell for a
+        // few seconds (see NearbyWorkersCache). Same response shape; distances may
+        // differ by about one cell width.
         return nearbyCache().get(serviceId, subServiceId, userLat, userLng, effectiveRadius,
                 () -> computeNearbyAvailableWorkers(serviceId, subServiceId, userLat, userLng, effectiveRadius));
     }
 
     private List<NearbyWorkerDto> computeNearbyAvailableWorkers(UUID serviceId, UUID subServiceId,
-                                                                double userLat, double userLng,
-                                                                double effectiveRadius) {
-        List<Worker> candidates = findEligibleCandidateWorkers(serviceId, subServiceId, userLat, userLng, effectiveRadius);
+            double userLat, double userLng,
+            double effectiveRadius) {
+        List<Worker> candidates = findEligibleCandidateWorkers(serviceId, subServiceId, userLat, userLng,
+                effectiveRadius);
 
         List<NearbyWorkerDto> dtoList = new ArrayList<>();
         for (Worker w : candidates) {
@@ -1186,8 +1417,8 @@ public class BookingAssignmentService {
 
             Booking booking = assignment.getBooking();
             if (booking != null && (booking.getStatus() == BookingStage.SEARCHING ||
-                                    booking.getStatus() == BookingStage.REQUESTED ||
-                                    booking.getStatus() == BookingStage.PENDING)) {
+                    booking.getStatus() == BookingStage.REQUESTED ||
+                    booking.getStatus() == BookingStage.PENDING)) {
 
                 String serviceName = booking.getService() != null ? booking.getService().getName() : "Home Service";
                 String customerName = booking.getRecipientName() != null && !booking.getRecipientName().isBlank()
@@ -1196,9 +1427,10 @@ public class BookingAssignmentService {
                 String customerPhone = booking.getRecipientPhone() != null && !booking.getRecipientPhone().isBlank()
                         ? booking.getRecipientPhone()
                         : (booking.getUser() != null ? booking.getUser().getPhoneNumber() : "");
-                String customerAddress = booking.getRecipientAddress() != null && !booking.getRecipientAddress().isBlank()
-                        ? booking.getRecipientAddress()
-                        : "Customer Location";
+                String customerAddress = booking.getRecipientAddress() != null
+                        && !booking.getRecipientAddress().isBlank()
+                                ? booking.getRecipientAddress()
+                                : "Customer Location";
 
                 requests.add(WorkerBookingRequestResponse.builder()
                         .bookingId(booking.getBookingId())
@@ -1226,13 +1458,19 @@ public class BookingAssignmentService {
     }
 
     /**
-     * Everything one worker alert needs, read while the transaction (and its persistence context) is still open.
-     * It is delivered only after that transaction has committed, so nothing lazy is touched afterwards.
+     * Everything one worker alert needs, read while the transaction (and its
+     * persistence context) is still open.
+     * It is delivered only after that transaction has committed, so nothing lazy is
+     * touched afterwards.
      */
     private record WorkerJobAlert(UUID bookingId, UUID workerId, UUID workerUserId, String serviceName,
-                                  Map<String, Object> payload) { }
+            Map<String, Object> payload) {
+    }
 
-    /** Builds the alert now and delivers it (STOMP + FCM) only once the current transaction has committed. */
+    /**
+     * Builds the alert now and delivers it (STOMP + FCM) only once the current
+     * transaction has committed.
+     */
     private void queueWorkerJobAlert(Worker worker, Booking booking) {
         String serviceName = booking.getService() != null ? booking.getService().getName() : "Home Service";
         String customerName = booking.getRecipientName() != null && !booking.getRecipientName().isBlank()
@@ -1262,7 +1500,8 @@ public class BookingAssignmentService {
         payload.put("userLat", booking.getUserLat());
         payload.put("userLng", booking.getUserLng());
         payload.put("status", booking.getStatus() != null ? booking.getStatus().name() : "SEARCHING");
-        payload.put("createdAt", booking.getCreatedAt() != null ? booking.getCreatedAt().toString() : Instant.now().toString());
+        payload.put("createdAt",
+                booking.getCreatedAt() != null ? booking.getCreatedAt().toString() : Instant.now().toString());
 
         WorkerJobAlert alert = new WorkerJobAlert(booking.getBookingId(), worker.getWorkerId(),
                 worker.getUser() != null ? worker.getUser().getUserId() : null, serviceName, payload);
@@ -1271,7 +1510,8 @@ public class BookingAssignmentService {
     }
 
     private void deliverWorkerJobAlert(WorkerJobAlert alert, Booking booking, Worker worker) {
-        logger.info("[WORKER_NOTIFICATION_SENT] bookingId={}, workerId={}, channel=WS_AND_FCM", alert.bookingId(), alert.workerId());
+        logger.info("[WORKER_NOTIFICATION_SENT] bookingId={}, workerId={}, channel=WS_AND_FCM", alert.bookingId(),
+                alert.workerId());
         logger.info("PARTNER_OFFERED: bookingId={}, partnerId={}", alert.bookingId(), alert.workerId());
 
         // 1. WebSocket topic dispatch
@@ -1279,10 +1519,12 @@ public class BookingAssignmentService {
             messagingTemplate.convertAndSend("/topic/worker/" + alert.workerId() + "/requests", alert.payload());
             messagingTemplate.convertAndSend("/topic/worker/" + alert.workerId() + "/stream", alert.payload());
             if (alert.workerUserId() != null) {
-                messagingTemplate.convertAndSend("/topic/worker/" + alert.workerUserId() + "/requests", alert.payload());
+                messagingTemplate.convertAndSend("/topic/worker/" + alert.workerUserId() + "/requests",
+                        alert.payload());
                 messagingTemplate.convertAndSend("/topic/worker/" + alert.workerUserId() + "/stream", alert.payload());
             }
-            recordNotificationDelivery(booking, null, worker, DeliveryChannel.WS, "/topic/worker/" + alert.workerId() + "/requests", DeliveryStatus.SENT);
+            recordNotificationDelivery(booking, null, worker, DeliveryChannel.WS,
+                    "/topic/worker/" + alert.workerId() + "/requests", DeliveryStatus.SENT);
         } catch (Exception e) {
             logger.debug("WebSocket alert dispatch failed: {}", e.getMessage());
         }
@@ -1293,8 +1535,7 @@ public class BookingAssignmentService {
                 fcmNotificationService.sendPushNotification(
                         alert.workerUserId(),
                         "New Nearby Job Request!",
-                        "A customer requested " + alert.serviceName() + " near your location. Tap to accept!"
-                );
+                        "A customer requested " + alert.serviceName() + " near your location. Tap to accept!");
                 recordNotificationDelivery(booking, null, worker, DeliveryChannel.FCM, "FCM_PUSH", DeliveryStatus.SENT);
             } catch (Exception e) {
                 logger.debug("FCM alert dispatch failed: {}", e.getMessage());
@@ -1302,9 +1543,13 @@ public class BookingAssignmentService {
         }
     }
 
-    /** Tells the customer a partner accepted. Delivered only after the acceptance has been committed. */
+    /**
+     * Tells the customer a partner accepted. Delivered only after the acceptance
+     * has been committed.
+     */
     private void notifyCustomerWorkerAssigned(Booking booking, Worker worker, String pinCode) {
-        if (booking.getUser() == null) return;
+        if (booking.getUser() == null)
+            return;
         UUID bookingId = booking.getBookingId();
         User customer = booking.getUser();
         UUID customerId = customer.getUserId();
@@ -1324,7 +1569,8 @@ public class BookingAssignmentService {
             try {
                 messagingTemplate.convertAndSend("/topic/booking/" + bookingId, payload);
                 messagingTemplate.convertAndSend("/topic/customer/" + customerId + "/booking", payload);
-                recordNotificationDelivery(booking, customer, worker, DeliveryChannel.WS, "/topic/booking/" + bookingId, DeliveryStatus.SENT);
+                recordNotificationDelivery(booking, customer, worker, DeliveryChannel.WS, "/topic/booking/" + bookingId,
+                        DeliveryStatus.SENT);
             } catch (Exception e) {
                 logger.debug("WebSocket notify error: {}", e.getMessage());
             }
@@ -1334,18 +1580,22 @@ public class BookingAssignmentService {
                 fcmNotificationService.sendPushNotification(
                         customerId,
                         "Partner Assigned!",
-                        workerName + " has accepted your booking and is preparing for your service."
-                );
-                recordNotificationDelivery(booking, customer, worker, DeliveryChannel.FCM, "FCM_PUSH", DeliveryStatus.SENT);
+                        workerName + " has accepted your booking and is preparing for your service.");
+                recordNotificationDelivery(booking, customer, worker, DeliveryChannel.FCM, "FCM_PUSH",
+                        DeliveryStatus.SENT);
             } catch (Exception e) {
                 logger.debug("FCM notify error: {}", e.getMessage());
             }
         });
     }
 
-    /** Tells the customer no partner could be found. Delivered only after that outcome has been committed. */
+    /**
+     * Tells the customer no partner could be found. Delivered only after that
+     * outcome has been committed.
+     */
     private void notifyCustomerWorkerNotFound(Booking booking) {
-        if (booking.getUser() == null) return;
+        if (booking.getUser() == null)
+            return;
         UUID customerId = booking.getUser().getUserId();
         UUID bookingId = booking.getBookingId();
 
@@ -1359,15 +1609,16 @@ public class BookingAssignmentService {
 
                 messagingTemplate.convertAndSend("/topic/booking/" + bookingId, payload);
                 messagingTemplate.convertAndSend("/topic/customer/" + customerId + "/booking", payload);
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+            }
 
             try {
                 fcmNotificationService.sendPushNotification(
                         customerId,
                         "Booking Update",
-                        "We are sorry, all partners in your area are currently occupied. Please try again shortly."
-                );
-            } catch (Exception ignored) {}
+                        "We are sorry, all partners in your area are currently occupied. Please try again shortly.");
+            } catch (Exception ignored) {
+            }
         });
     }
 
@@ -1379,9 +1630,11 @@ public class BookingAssignmentService {
             payload.put("status", booking.getStatus().name());
             messagingTemplate.convertAndSend("/topic/booking/" + booking.getBookingId(), payload);
             if (booking.getUser() != null) {
-                messagingTemplate.convertAndSend("/topic/customer/" + booking.getUser().getUserId() + "/booking", payload);
+                messagingTemplate.convertAndSend("/topic/customer/" + booking.getUser().getUserId() + "/booking",
+                        payload);
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
     }
 
     private void cacheTrackingAssignment(Booking booking, Worker worker, String pinCode) {
@@ -1401,15 +1654,18 @@ public class BookingAssignmentService {
             }
 
             String json = objectMapper.writeValueAsString(assignment);
-            redisTemplate.opsForValue().set("tracking:assignment:" + booking.getBookingId(), json, Duration.ofHours(24));
+            redisTemplate.opsForValue().set("tracking:assignment:" + booking.getBookingId(), json,
+                    Duration.ofHours(24));
         } catch (Exception e) {
             logger.warn("Redis tracking assignment cache error: {}", e.getMessage());
         }
     }
 
     /**
-     * Clears the previous partner's live assignment and location cache entries on reassignment
-     * so stale coordinates disappear immediately and the old partner cannot continue publishing.
+     * Clears the previous partner's live assignment and location cache entries on
+     * reassignment
+     * so stale coordinates disappear immediately and the old partner cannot
+     * continue publishing.
      */
     public void clearTrackingStateForReassignment(UUID bookingId) {
         if (bookingId == null) {
@@ -1426,7 +1682,7 @@ public class BookingAssignmentService {
     }
 
     private void recordNotificationDelivery(Booking booking, User user, Worker worker,
-                                            DeliveryChannel channel, String dest, DeliveryStatus status) {
+            DeliveryChannel channel, String dest, DeliveryStatus status) {
         try {
             NotificationDelivery delivery = NotificationDelivery.builder()
                     .booking(booking)
@@ -1440,20 +1696,27 @@ public class BookingAssignmentService {
                     .deliveredAt(Instant.now())
                     .build();
             deliveryRepository.save(delivery);
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
     }
 
     private void recordDispatchAuditLog(Booking booking, UUID serviceId, double radiusMeters,
-                                        int eligibleCount, Map<String, String> rejectionReasons,
-                                        UUID selectedWorkerId, String kafkaStatus,
-                                        String wsStatus, String fcmStatus, String assignmentStatus) {
-        if (booking == null) return;
+            int eligibleCount, Map<String, String> rejectionReasons,
+            UUID selectedWorkerId, String kafkaStatus,
+            String wsStatus, String fcmStatus, String assignmentStatus) {
+        if (booking == null)
+            return;
 
         // Structured Section 6 Diagnostics Logging (17 standard fields)
         try {
             String bookingIdStr = booking.getBookingId() != null ? booking.getBookingId().toString() : "N/A";
-            String customerIdStr = booking.getUser() != null && booking.getUser().getUserId() != null ? booking.getUser().getUserId().toString() : "N/A";
-            String serviceIdStr = serviceId != null ? serviceId.toString() : (booking.getService() != null && booking.getService().getServiceId() != null ? booking.getService().getServiceId().toString() : "N/A");
+            String customerIdStr = booking.getUser() != null && booking.getUser().getUserId() != null
+                    ? booking.getUser().getUserId().toString()
+                    : "N/A";
+            String serviceIdStr = serviceId != null ? serviceId.toString()
+                    : (booking.getService() != null && booking.getService().getServiceId() != null
+                            ? booking.getService().getServiceId().toString()
+                            : "N/A");
             String subServiceIdStr = "N/A";
             String bookingTypeStr = booking.getBookingType() != null ? booking.getBookingType().name() : "INSTANT";
             Double customerLat = booking.getUserLat();
@@ -1465,11 +1728,14 @@ public class BookingAssignmentService {
             int eligibleWorkerCount = eligibleCount;
             int rejectedWorkerCount = rejectedCount;
             String workerIdStr = selectedWorkerId != null ? selectedWorkerId.toString() : "NONE";
-            String primaryRejectionReason = (rejectionReasons != null && !rejectionReasons.isEmpty()) ? rejectionReasons.values().iterator().next() : "NONE";
+            String primaryRejectionReason = (rejectionReasons != null && !rejectionReasons.isEmpty())
+                    ? rejectionReasons.values().iterator().next()
+                    : "NONE";
             String dispatchStatus = eligibleCount > 0 ? "SUCCESS" : "NO_ELIGIBLE_WORKERS";
             String kafkaEventStatus = kafkaStatus != null ? kafkaStatus : "SENT";
 
-            logger.info("[DISPATCH_DIAGNOSTICS] bookingId={} customerId={} serviceId={} subServiceId={} bookingType={} customerLatitude={} customerLongitude={} customerPincode={} redisGeoKey={} redisCandidateCount={} eligibleWorkerCount={} rejectedWorkerCount={} workerId={} rejectionReason={} dispatchStatus={} kafkaEventStatus={} assignmentStatus={}",
+            logger.info(
+                    "[DISPATCH_DIAGNOSTICS] bookingId={} customerId={} serviceId={} subServiceId={} bookingType={} customerLatitude={} customerLongitude={} customerPincode={} redisGeoKey={} redisCandidateCount={} eligibleWorkerCount={} rejectedWorkerCount={} workerId={} rejectionReason={} dispatchStatus={} kafkaEventStatus={} assignmentStatus={}",
                     bookingIdStr, customerIdStr, serviceIdStr, subServiceIdStr, bookingTypeStr,
                     customerLat, customerLng, customerPincode,
                     redisGeoKey, redisCandidateCount, eligibleWorkerCount, rejectedWorkerCount,
@@ -1485,7 +1751,8 @@ public class BookingAssignmentService {
             logger.debug("Diagnostics log error: {}", ex.getMessage());
         }
 
-        if (auditLogRepository == null) return;
+        if (auditLogRepository == null)
+            return;
         try {
             String reasonsJson = rejectionReasons != null && !rejectionReasons.isEmpty()
                     ? objectMapper.writeValueAsString(rejectionReasons)
@@ -1518,7 +1785,7 @@ public class BookingAssignmentService {
         double dLon = Math.toRadians(lon2 - lon1);
         double a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
                 Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
-                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+                        Math.sin(dLon / 2) * Math.sin(dLon / 2);
         double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
         return r * c;
     }

@@ -221,9 +221,10 @@ public class ScheduledBookingService {
             Instant scheduledEndInstant = scheduledStartInstant.plus(Math.max(60, totalEstimatedMins), ChronoUnit.MINUTES);
             LocalTime slotEndTime = scheduledEndInstant.atZone(IST_ZONE).toLocalTime();
 
-            // 7. Find available worker for this slot
+            // 7. Find available worker matching pincode/geography for this slot
             Worker assignedWorker = findBestAvailableWorkerForSlot(
-                    firstSubServiceId, scheduledDate, scheduledStartInstant, scheduledEndInstant);
+                    firstSubServiceId, scheduledDate, scheduledStartInstant, scheduledEndInstant,
+                    resolvedPincode, resolvedLat, resolvedLng);
 
             String pinCode = String.format("%04d", new SecureRandom().nextInt(10000));
             Point userLocation = geometryFactory.createPoint(new Coordinate(resolvedLng, resolvedLat));
@@ -339,28 +340,58 @@ public class ScheduledBookingService {
     }
 
     private Worker findBestAvailableWorkerForSlot(UUID subServiceId, LocalDate date,
-                                                  Instant start, Instant end) {
+                                                  Instant start, Instant end,
+                                                  String servicePincode, Double userLat, Double userLng) {
         List<Worker> eligibleWorkers = new ArrayList<>();
         if (subServiceId != null) {
             var links = workerServiceLinkRepository.findById_SubServiceId(subServiceId);
             for (var link : links) {
                 Worker w = link.getWorker();
-                if (Boolean.TRUE.equals(w.getIsVerified())) {
+                if (w != null && Boolean.TRUE.equals(w.getIsVerified())
+                        && (w.getBlockedUntil() == null || !w.getBlockedUntil().isAfter(Instant.now()))) {
                     eligibleWorkers.add(w);
                 }
             }
         } else {
             eligibleWorkers = workerRepository.findAll().stream()
-                    .filter(w -> Boolean.TRUE.equals(w.getIsVerified()))
+                    .filter(w -> Boolean.TRUE.equals(w.getIsVerified())
+                            && (w.getBlockedUntil() == null || !w.getBlockedUntil().isAfter(Instant.now())))
                     .toList();
         }
 
-        for (Worker worker : eligibleWorkers) {
-            if (availabilityService.isWorkerAvailableForWindow(worker.getWorkerId(), start, end)) {
-                return worker; // Best available match
+        String cleanPin = servicePincode != null ? servicePincode.replaceAll("\\D", "") : "";
+        List<Worker> exactPincodeMatches = new ArrayList<>();
+        List<Worker> unconstrainedNearbyMatches = new ArrayList<>();
+
+        for (Worker w : eligibleWorkers) {
+            if (!availabilityService.isWorkerAvailableForWindow(w.getWorkerId(), start, end)) {
+                continue;
+            }
+            if (w.getWorkingPincodes() != null && !w.getWorkingPincodes().isBlank()) {
+                if (cleanPin.length() == 6) {
+                    List<String> pins = Arrays.stream(w.getWorkingPincodes().split("[,;|\\s]+"))
+                            .map(s -> s.replaceAll("\\D", ""))
+                            .filter(s -> !s.isBlank())
+                            .toList();
+                    if (pins.contains(cleanPin)) {
+                        exactPincodeMatches.add(w);
+                    }
+                }
+            } else if (userLat != null && userLng != null && w.getCurrentLat() != null && w.getCurrentLng() != null) {
+                double dist = BookingAssignmentService.calculateHaversineDistance(
+                        userLat, userLng, w.getCurrentLat(), w.getCurrentLng());
+                if (dist <= 20_000.0) {
+                    unconstrainedNearbyMatches.add(w);
+                }
+            } else {
+                unconstrainedNearbyMatches.add(w);
             }
         }
-        return null; // Will await assignment
+
+        if (!exactPincodeMatches.isEmpty()) {
+            return exactPincodeMatches.get(0);
+        }
+        return unconstrainedNearbyMatches.isEmpty() ? null : unconstrainedNearbyMatches.get(0);
     }
 
     private LocalTime parseSlotStartTime(String timeSlot) {

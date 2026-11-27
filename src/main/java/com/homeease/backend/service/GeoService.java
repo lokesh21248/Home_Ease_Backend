@@ -70,6 +70,67 @@ public class GeoService {
             }
     );
 
+    private final Map<String, GeoCacheEntry> pincodeCoordCache = Collections.synchronizedMap(
+            new LinkedHashMap<>(256, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, GeoCacheEntry> eldest) {
+                    return size() > 250;
+                }
+            }
+    );
+
+    /**
+     * Resolves an Indian 6-digit pincode to centroid [lat, lng] using Google Geocoding API (24h cached).
+     * Returns null when unavailable or invalid so callers never substitute hardcoded coordinates.
+     */
+    public double[] geocodePincode(String pincode) {
+        if (pincode == null) return null;
+        String cleanPin = pincode.replaceAll("\\D", "");
+        if (cleanPin.length() != 6) return null;
+
+        GeoCacheEntry cached = pincodeCoordCache.get(cleanPin);
+        if (cached != null && !cached.isExpired()) {
+            Object latObj = cached.data.get("lat");
+            Object lngObj = cached.data.get("lon");
+            if (latObj instanceof Number && lngObj instanceof Number) {
+                return new double[]{((Number) latObj).doubleValue(), ((Number) lngObj).doubleValue()};
+            }
+            return null;
+        }
+
+        String googleKey = getEffectiveGoogleMapsKey();
+        if (googleKey.isBlank()) {
+            return null;
+        }
+
+        try {
+            URI uri = UriComponentsBuilder.fromHttpUrl("https://maps.googleapis.com/maps/api/geocode/json")
+                    .queryParam("address", cleanPin + ", India")
+                    .queryParam("components", "country:in|postal_code:" + cleanPin)
+                    .queryParam("key", googleKey)
+                    .build()
+                    .toUri();
+            ResponseEntity<String> response = restTemplate.getForEntity(uri, String.class);
+            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                JsonNode root = objectMapper.readTree(response.getBody());
+                if ("OK".equalsIgnoreCase(root.path("status").asText(""))) {
+                    JsonNode loc = root.path("results").path(0).path("geometry").path("location");
+                    if (!loc.isMissingNode() && loc.has("lat") && loc.has("lng")) {
+                        double lat = loc.path("lat").asDouble();
+                        double lng = loc.path("lng").asDouble();
+                        if (Math.abs(lat) <= 90.0 && Math.abs(lng) <= 180.0 && !(lat == 0.0 && lng == 0.0)) {
+                            pincodeCoordCache.put(cleanPin, new GeoCacheEntry(Map.of("lat", lat, "lon", lng), 86_400_000L));
+                            return new double[]{lat, lng};
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            logger.debug("Pincode geocode lookup failed for {}: {}", cleanPin, e.getMessage());
+        }
+        return null;
+    }
+
     public GeoService(ObjectMapper objectMapper) {
         this.restTemplate = new RestTemplate();
         this.objectMapper = objectMapper;

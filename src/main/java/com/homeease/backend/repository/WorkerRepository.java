@@ -23,6 +23,8 @@ public interface WorkerRepository extends JpaRepository<Worker, UUID> {
 
     List<Worker> findByIsOnlineTrueAndIsVerifiedTrue();
 
+    List<Worker> findByWorkingPincodesContaining(String pincode);
+
     /**
      * Transaction-scoped Postgres advisory lock (released automatically on commit/rollback). Serialises concurrent
      * acceptances by the SAME worker across all API instances; used only by WorkerAcceptanceGuard. Must be called

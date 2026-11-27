@@ -120,6 +120,7 @@ public class WorkerDto {
         private String gender;
         private LocalDate dob;
         private Integer experienceYears;
+        private List<String> serviceIds;
         private List<String> subServiceIds;
         private Double currentLat;
         private Double currentLng;
@@ -246,8 +247,8 @@ public class WorkerDto {
     @Builder
     public static class UpdateWorkerServicesRequest {
         private UUID userId;
-        private List<String> subServiceIds;
         private List<String> serviceIds;
+        private List<String> subServiceIds;
         private String workingPincodes;
     }
 
