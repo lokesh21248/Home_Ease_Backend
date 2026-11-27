@@ -5,14 +5,14 @@
 #
 # Usage:  sudo ./deploy/verify-upstash-egress.sh          (reads /etc/homeease/*.env)
 set -u
-ENV_DIR=/etc/homeease
+ENV_DIR="${ENV_DIR:-/etc/homeease}"
 fail=0
 ok()   { printf '  [ OK ] %s\n' "$*"; }
 bad()  { printf '  [FAIL] %s\n' "$*"; fail=1; }
 note() { printf '  [INFO] %s\n' "$*"; }
 
 echo "== 1. Environment files (permissions and required keys; values are never printed) =="
-for svc in backend dispatch tracking; do
+for svc in backend tracking; do
   f="$ENV_DIR/$svc.env"
   if [ ! -f "$f" ]; then bad "$f missing"; continue; fi
   mode=$(stat -c '%a' "$f"); owner=$(stat -c '%U:%G' "$f")
@@ -22,9 +22,10 @@ for svc in backend dispatch tracking; do
 done
 # the three services must share one REDIS_URL: compare hashes, not values
 h() { grep '^REDIS_URL=' "$ENV_DIR/$1.env" 2>/dev/null | sha256sum | cut -c1-16; }
-if [ "$(h backend)" = "$(h dispatch)" ] && [ "$(h backend)" = "$(h tracking)" ]; then ok "REDIS_URL identical across backend/dispatch/tracking"; else bad "REDIS_URL differs between services"; fi
+if [ -n "$(grep '^REDIS_URL=' "$ENV_DIR/backend.env" 2>/dev/null)" ] && [ -n "$(grep '^REDIS_URL=' "$ENV_DIR/tracking.env" 2>/dev/null)" ] && [ "$(h backend)" = "$(h tracking)" ]; then ok "REDIS_URL identical on core/tracking"; else bad "REDIS_URL missing or different on core/tracking"; fi
+note "Dispatch is not deployed by deploy.yml; dispatch Redis connectivity remains NOT VERIFIED"
 j() { grep '^JWT_SECRET=' "$ENV_DIR/$1.env" 2>/dev/null | sha256sum | cut -c1-16; }
-[ "$(j backend)" = "$(j tracking)" ] && ok "JWT_SECRET identical on backend and tracking" || bad "JWT_SECRET differs between backend and tracking"
+[ -n "$(grep '^JWT_SECRET=' "$ENV_DIR/backend.env" 2>/dev/null)" ] && [ -n "$(grep '^JWT_SECRET=' "$ENV_DIR/tracking.env" 2>/dev/null)" ] && [ "$(j backend)" = "$(j tracking)" ] && ok "JWT_SECRET identical on backend and tracking" || bad "JWT_SECRET missing or differs between backend and tracking"
 
 URL=$(grep '^REDIS_URL=' "$ENV_DIR/backend.env" 2>/dev/null | cut -d= -f2-)
 HOST=$(printf '%s' "$URL" | sed -E 's#^rediss?://([^@]*@)?([^:/]+).*#\2#')
@@ -48,18 +49,23 @@ if command -v redis-cli >/dev/null 2>&1; then
   r=$(REDISCLI_AUTH="$PASS" timeout 8 redis-cli --tls -h "$HOST" -p "$PORT" --user default PING 2>&1)
   [ "$r" = "PONG" ] && ok "PING -> PONG (authenticated, TLS)" || bad "PING failed: $(printf "%s" "${r//"$PASS"/***}" | head -c 120)"
 else
-  note "redis-cli not installed: skipping (install redis-tools, or rely on the app's /actuator/health redisPing)"
+  bad "redis-cli missing: cannot verify authenticated Upstash PING (install redis-tools)"
 fi
 
 echo "== 6. Inbound exposure =="
 ss -ltn 2>/dev/null | awk '$4 ~ /:6379$/ {print "  [FAIL] something is LISTENING on 6379 locally: " $4; f=1} END{ if(!f) print "  [ OK ] nothing listens on 6379 locally (no inbound Redis port)"}'
 
-echo "== 7. systemd =="
-for svc in backend dispatch tracking; do
-  u=homeease-$svc
+echo "== 7. systemd (actual deployed units) =="
+for svc in backend tracking; do
+  if [ "$svc" = backend ]; then
+    u=homeease-core
+    systemctl cat "$u" >/dev/null 2>&1 || u=homeease-backend
+  else
+    u=homeease-tracking
+  fi
   if systemctl cat "$u" >/dev/null 2>&1; then
     systemctl show "$u" -p EnvironmentFiles --value | grep -q "/etc/homeease/$svc.env" && ok "$u uses EnvironmentFile=/etc/homeease/$svc.env" || bad "$u EnvironmentFile mismatch"
     systemctl cat "$u" | grep -q 'Requires=redis.service' && bad "$u still Requires=redis.service" || ok "$u has no dependency on a local redis.service"
-  else note "$u not installed yet"; fi
+  else bad "$u not installed: service is not verified"; fi
 done
 exit $fail
