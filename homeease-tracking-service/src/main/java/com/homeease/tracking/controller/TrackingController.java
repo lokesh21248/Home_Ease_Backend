@@ -2,6 +2,9 @@ package com.homeease.tracking.controller;
 
 import com.homeease.tracking.dto.LocationPayload;
 import com.homeease.tracking.exception.RateLimitExceededException;
+import com.homeease.tracking.exception.TrackingAuthorizationUnavailableException;
+import com.homeease.tracking.exception.TrackingNotActiveException;
+import com.homeease.tracking.exception.TrackingPersistenceUnavailableException;
 import com.homeease.tracking.security.JwtTokenValidator;
 import com.homeease.tracking.security.TrackingAccessGuard;
 import com.homeease.tracking.service.LiveTrackingService;
@@ -11,6 +14,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 
@@ -70,15 +75,19 @@ public class TrackingController {
                     "error", "bookingId is required"));
         }
 
-        String authenticatedUserId = caller.isAdmin() && headerUserId != null && !headerUserId.isBlank()
+        String authenticatedUserId = (caller.isAdmin() && headerUserId != null && !headerUserId.isBlank())
                 ? headerUserId.trim()
                 : caller.userId();
-        payload.setWorkerId(authenticatedUserId);
-        payload.setPartnerId(authenticatedUserId);
+        String scrubbedWorkerId = (authenticatedUserId != null && !authenticatedUserId.isBlank())
+                ? authenticatedUserId.trim()
+                : null;
+        // Never trust client-supplied workerId/partnerId: always overwrite from verified JWT.
+        payload.setWorkerId(scrubbedWorkerId);
+        payload.setPartnerId(scrubbedWorkerId);
 
         try {
             LocationPayload saved = trackingService.processLocationUpdate(
-                    payload.getBookingId(), payload, authenticatedUserId);
+                    payload.getBookingId(), payload, scrubbedWorkerId);
 
             return ResponseEntity.ok(Map.of(
                     "status", "SUCCESS",
@@ -86,31 +95,58 @@ public class TrackingController {
                     "data", saved));
         } catch (IllegalArgumentException e) {
             logger.warn("Validation error in tracking update: {}", e.getMessage());
-            return ResponseEntity.badRequest().body(Map.of(
-                    "status", "ERROR",
-                    "error", e.getMessage()));
+            return errorResponse(HttpStatus.BAD_REQUEST, "ERROR", "BAD_REQUEST", false, e.getMessage());
         } catch (SecurityException e) {
             logger.warn("Security violation in tracking update: {}", e.getMessage());
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of(
-                    "status", "ERROR",
-                    "error", e.getMessage()));
+            return errorResponse(HttpStatus.FORBIDDEN, "ERROR", "FORBIDDEN", false, e.getMessage());
+        } catch (TrackingNotActiveException e) {
+            logger.info("Tracking not active for booking {} (status={}): {}", payload.getBookingId(), e.getBookingStatus(), e.getMessage());
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("status", "INACTIVE");
+            body.put("code", "TRACKING_NOT_ACTIVE");
+            body.put("trackingActive", false);
+            body.put("bookingStatus", e.getBookingStatus());
+            body.put("retryable", false);
+            body.put("timestamp", Instant.now().toString());
+            body.put("error", e.getMessage());
+            body.put("message", e.getMessage());
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
         } catch (IllegalStateException e) {
             logger.info("Tracking closed for booking {}: {}", payload.getBookingId(), e.getMessage());
-            return ResponseEntity.status(HttpStatus.GONE).body(Map.of(
-                    "status", "INACTIVE",
-                    "trackingActive", false,
-                    "message", e.getMessage()));
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("status", "INACTIVE");
+            body.put("code", "TRACKING_CLOSED");
+            body.put("trackingActive", false);
+            body.put("retryable", false);
+            body.put("timestamp", Instant.now().toString());
+            body.put("error", e.getMessage());
+            body.put("message", e.getMessage());
+            return ResponseEntity.status(HttpStatus.GONE).body(body);
+        } catch (TrackingAuthorizationUnavailableException e) {
+            logger.error("Tracking authorization unavailable for booking {}: {}", payload.getBookingId(), e.getMessage());
+            return errorResponse(HttpStatus.SERVICE_UNAVAILABLE, "ERROR", "TRACKING_AUTH_UNAVAILABLE", true, e.getMessage());
+        } catch (TrackingPersistenceUnavailableException e) {
+            logger.error("Tracking Redis persistence unavailable for booking {}: {}", payload.getBookingId(), e.getMessage());
+            return errorResponse(HttpStatus.SERVICE_UNAVAILABLE, "ERROR", "TRACKING_PERSISTENCE_UNAVAILABLE", true, e.getMessage());
         } catch (RateLimitExceededException e) {
             logger.warn("Rate limit throttled for booking {}: {}", payload.getBookingId(), e.getMessage());
-            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(Map.of(
-                    "status", "RATE_LIMITED",
-                    "error", e.getMessage()));
+            return errorResponse(HttpStatus.TOO_MANY_REQUESTS, "RATE_LIMITED", "RATE_LIMITED", true, e.getMessage());
         } catch (Exception e) {
             logger.error("Unexpected error in tracking update: {}", e.getMessage(), e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
-                    "status", "ERROR",
-                    "error", "Internal server error processing live tracking update"));
+            return errorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "ERROR", "INTERNAL_ERROR", true,
+                    "Internal server error processing live tracking update");
         }
+    }
+
+    private static ResponseEntity<Map<String, Object>> errorResponse(
+            HttpStatus status, String bodyStatus, String code, boolean retryable, String message) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("status", bodyStatus);
+        body.put("code", code);
+        body.put("retryable", retryable);
+        body.put("timestamp", Instant.now().toString());
+        body.put("error", message);
+        return ResponseEntity.status(status).body(body);
     }
 
     /**

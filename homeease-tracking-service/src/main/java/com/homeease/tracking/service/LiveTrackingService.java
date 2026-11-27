@@ -1,9 +1,13 @@
 package com.homeease.tracking.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.homeease.tracking.dto.LocationPayload;
 import com.homeease.tracking.exception.RateLimitExceededException;
+import com.homeease.tracking.exception.TrackingAuthorizationUnavailableException;
+import com.homeease.tracking.exception.TrackingNotActiveException;
+import com.homeease.tracking.exception.TrackingPersistenceUnavailableException;
 import com.homeease.tracking.util.GeohashUtils;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -47,9 +51,12 @@ public class LiveTrackingService {
     private String googleMapsApiKey;
 
     /**
-     * When true (default) a GPS update is only accepted for a booking that has an assignment record
-     * (tracking:assignment:{id}, written by the core on acceptance). Set TRACKING_REQUIRE_ASSIGNMENT=false only as
-     * an emergency rollback or for local simulator testing against unassigned booking ids.
+     * When true (default) a GPS update is only accepted for a booking that has an
+     * assignment record
+     * (tracking:assignment:{id}, written by the core on acceptance). Set
+     * TRACKING_REQUIRE_ASSIGNMENT=false only as
+     * an emergency rollback or for local simulator testing against unassigned
+     * booking ids.
      */
     @Value("${homeease.tracking.require-assignment:true}")
     private boolean requireAssignment = true;
@@ -67,7 +74,10 @@ public class LiveTrackingService {
     @Value("${homeease.tracking.rate-limit.movement-threshold-meters:15.0}")
     private double movementThresholdMeters;
 
-    /** Absolute per-partner ceiling, movement or not (default 60/min = one per second; the app sends every 3-10 s). */
+    /**
+     * Absolute per-partner ceiling, movement or not (default 60/min = one per
+     * second; the app sends every 3-10 s).
+     */
     @Value("${homeease.tracking.rate-limit.hard-max-updates-per-minute:60}")
     private int hardMaxUpdatesPerMinute = 60;
 
@@ -98,14 +108,16 @@ public class LiveTrackingService {
     private static final int MAX_L1_CAPACITY = 5000;
 
     // =========================================================================
-    // DSA 1: In-Memory L1 Hash Table (ConcurrentHashMap) for ultra-low latency O(1) reads
+    // DSA 1: In-Memory L1 Hash Table (ConcurrentHashMap) for ultra-low latency O(1)
+    // reads
     // =========================================================================
     private final ConcurrentMap<String, LocationPayload> activeLocationsMap = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Long> locationLastAccessMap = new ConcurrentHashMap<>();
 
     // =========================================================================
     // DSA 2: Per-booking monotonic sequence counter (AtomicLong, O(1))
-    // Backed by Redis to preserve monotonicity across restarts & multi-node instances.
+    // Backed by Redis to preserve monotonicity across restarts & multi-node
+    // instances.
     // =========================================================================
     private final ConcurrentMap<String, AtomicLong> sequenceCounters = new ConcurrentHashMap<>();
 
@@ -124,30 +136,41 @@ public class LiveTrackingService {
                 protected boolean removeEldestEntry(Map.Entry<String, Long> eldest) {
                     return size() > 2000;
                 }
-            }
-    );
+            });
 
     // =========================================================================
-    // DSA 5: Bounded Ring Buffer / Queue with Backpressure (ArrayBlockingQueue)
+    // DSA 5: Per-Booking Serialization + Async Coalescing Redis GEO Queue
     // =========================================================================
-    public record TrackingTask(String bookingId, LocationPayload payload, String effectiveWorkerId) {}
-    private final BlockingQueue<TrackingTask> eventQueue = new ArrayBlockingQueue<>(5000);
-    private final AtomicLong droppedEventsCount = new AtomicLong(0L);
-    private final AtomicLong processedEventsCount = new AtomicLong(0L);
+    public record TrackingTask(String bookingId, LocationPayload payload, String effectiveWorkerId) {
+    }
 
-    // =========================================================================
-    // DSA 6: PriorityQueue for Scheduled Retry Processing (Exponential Backoff)
-    // =========================================================================
-    public record RetryTask(TrackingTask task, long scheduledAtMs, int attempt) implements Comparable<RetryTask> {
+    public record GeoWriteTask(String key, String bookingId, String effectiveWorkerId,
+            double lat, double lng, long sequenceNumber, long createdAtMs) {
+    }
+
+    private record GeoRetryTask(GeoWriteTask task, long scheduledAtMs, int attempt)
+            implements Comparable<GeoRetryTask> {
         @Override
-        public int compareTo(RetryTask o) {
+        public int compareTo(GeoRetryTask o) {
             return Long.compare(this.scheduledAtMs, o.scheduledAtMs);
         }
     }
-    private final PriorityQueue<RetryTask> retryQueue = new PriorityQueue<>();
+
+    private static final int MAX_DURABLE_PERSIST_ATTEMPTS = 3;
+    private static final long[] DURABLE_RETRY_BACKOFF_MS = { 25L, 50L };
+    private static final Set<String> TERMINAL_BOOKING_STATUSES = Set.of(
+            "COMPLETED", "CANCELLED", "CANCELED", "ARRIVED", "IN_PROGRESS", "EXPIRED", "REJECTED", "FAILED");
+
+    private final ConcurrentMap<String, Object> bookingLocks = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, GeoWriteTask> pendingGeoWrites = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Long> lastPersistedGeoSeq = new ConcurrentHashMap<>();
+    private final BlockingQueue<String> geoSignalQueue = new ArrayBlockingQueue<>(5000);
+    private final PriorityQueue<GeoRetryTask> geoRetryQueue = new PriorityQueue<>();
+    private final AtomicLong droppedEventsCount = new AtomicLong(0L);
+    private final AtomicLong processedEventsCount = new AtomicLong(0L);
 
     private final ExecutorService queueExecutor = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "LiveTracking-EventWorker");
+        Thread t = new Thread(r, "LiveTracking-GeoWorker");
         t.setDaemon(true);
         return t;
     });
@@ -186,12 +209,11 @@ public class LiveTrackingService {
                 protected boolean removeEldestEntry(Map.Entry<String, RouteCacheEntry> eldest) {
                     return size() > 100;
                 }
-            }
-    );
+            });
 
     public LiveTrackingService(StringRedisTemplate redisTemplate,
-                               ObjectMapper objectMapper,
-                               SimpMessagingTemplate messagingTemplate) {
+            ObjectMapper objectMapper,
+            SimpMessagingTemplate messagingTemplate) {
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
         this.messagingTemplate = messagingTemplate;
@@ -200,8 +222,9 @@ public class LiveTrackingService {
 
     @PostConstruct
     public void init() {
-        queueExecutor.submit(this::processQueuedEvents);
-        logger.info("LiveTrackingService initialized with advanced DSA: L1 Map, Atomic Sequences, Bounded Deque, Dedup LRU, Ring Buffer, PriorityQueue Retry, Geohash Index & Redis GEO");
+        queueExecutor.submit(this::processQueuedGeoEvents);
+        logger.info(
+                "LiveTrackingService initialized: fail-closed assignment validation, durable Redis write-before-publish, monotonic sequence, and coalescing async GEO index");
     }
 
     @PreDestroy
@@ -216,95 +239,162 @@ public class LiveTrackingService {
             queueExecutor.shutdownNow();
             Thread.currentThread().interrupt();
         }
-        logger.info("LiveTrackingService gracefully shut down event buffer");
+        logger.info("LiveTrackingService gracefully shut down async GEO worker");
     }
 
     /**
-     * Background consumer thread for asynchronous Redis persistence, Geospatial indexing,
-     * and PriorityQueue retry processing.
+     * Synchronously persists the latest authoritative booking GPS snapshot and
+     * monotonic sequence
+     * to Redis before any L1 update, WebSocket broadcast, Pub/Sub relay, or HTTP
+     * 200 acknowledgement.
      */
-    private void processQueuedEvents() {
+    private void persistLatestLocationDurable(String bookingId, long seq, String serializedJson) {
+        Exception lastError = null;
+        String trackingKey = "tracking:booking:" + bookingId;
+        String sharedLocationKey = "homeease:tracking:" + bookingId + ":location";
+        String seqKey = "tracking:seq:" + bookingId;
+
+        for (int attempt = 1; attempt <= MAX_DURABLE_PERSIST_ATTEMPTS; attempt++) {
+            try {
+                redisTemplate.opsForValue().set(trackingKey, serializedJson, TRACKING_TTL);
+                redisTemplate.opsForValue().set(sharedLocationKey, serializedJson, Duration.ofSeconds(120));
+                redisTemplate.opsForValue().set(seqKey, String.valueOf(seq), TRACKING_TTL);
+                return;
+            } catch (Exception e) {
+                lastError = e;
+                logger.warn("[TRACKING_DIAG] stage=REDIS_PERSIST_RETRY bookingId={} seq={} attempt={}/{} error={}",
+                        bookingId, seq, attempt, MAX_DURABLE_PERSIST_ATTEMPTS, e.getMessage());
+                if (attempt < MAX_DURABLE_PERSIST_ATTEMPTS) {
+                    try {
+                        Thread.sleep(DURABLE_RETRY_BACKOFF_MS[attempt - 1]);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new TrackingPersistenceUnavailableException(
+                                "Interrupted while persisting GPS location for booking " + bookingId, ie);
+                    }
+                }
+            }
+        }
+
+        throw new TrackingPersistenceUnavailableException(
+                "Unable to durably persist GPS location in Redis for booking " + bookingId, lastError);
+    }
+
+    /**
+     * Queues a coalesced Redis GEO index update for the worker so stale queued
+     * writes or retries
+     * can never overwrite newer coordinates or block booking-specific tracking
+     * delivery.
+     */
+    private void enqueueCoalescedGeoWrite(String bookingId, String effectiveWorkerId, LocationPayload payload) {
+        if (effectiveWorkerId == null || effectiveWorkerId.isBlank()
+                || payload.getLat() == null || payload.getLng() == null) {
+            return;
+        }
+        long seq = payload.getSequenceNumber() != null ? payload.getSequenceNumber() : 0L;
+        String key = effectiveWorkerId.trim();
+        GeoWriteTask candidate = new GeoWriteTask(
+                key, bookingId, effectiveWorkerId.trim(),
+                payload.getLat(), payload.getLng(), seq, System.currentTimeMillis());
+
+        GeoWriteTask activeTask = pendingGeoWrites.compute(key, (k, existing) -> {
+            if (existing == null) {
+                return candidate;
+            }
+            if (Objects.equals(existing.bookingId(), bookingId)) {
+                return seq >= existing.sequenceNumber() ? candidate : existing;
+            }
+            return candidate.createdAtMs() >= existing.createdAtMs() ? candidate : existing;
+        });
+
+        if (activeTask == candidate && !geoSignalQueue.offer(key)) {
+            droppedEventsCount.incrementAndGet();
+            logger.warn("[TRACKING_DIAG] stage=GEO_BACKPRESSURE bookingId={} note=latest_fix_coalesced", bookingId);
+        }
+    }
+
+    /**
+     * Background consumer thread for coalesced Redis GEO updates and bounded
+     * backoff retries.
+     */
+    private void processQueuedGeoEvents() {
         while (running) {
             try {
-                // 1. Process any pending scheduled retries whose backoff has expired
-                processPendingRetries();
+                processPendingGeoRetries();
 
-                // 2. Poll event ring buffer
-                TrackingTask task = eventQueue.poll(200, TimeUnit.MILLISECONDS);
-                if (task != null) {
-                    boolean success = persistToRedisAndGeo(task);
-                    if (!success) {
-                        scheduleRetry(task, 1);
-                    } else {
-                        processedEventsCount.incrementAndGet();
+                String key = geoSignalQueue.poll(200, TimeUnit.MILLISECONDS);
+                if (key != null) {
+                    GeoWriteTask task = pendingGeoWrites.remove(key);
+                    if (task != null && !persistGeoOnly(task)) {
+                        scheduleGeoRetry(task, 1);
                     }
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
             } catch (Exception e) {
-                logger.warn("Unexpected error in tracking background worker: {}", e.getMessage());
+                logger.warn("[TRACKING_DIAG] stage=GEO_WORKER_ERROR error={}", e.getMessage());
             }
         }
     }
 
-    private void scheduleRetry(TrackingTask task, int attempt) {
+    private void scheduleGeoRetry(GeoWriteTask task, int attempt) {
         if (attempt > 3) {
-            logger.error("Redis persistence dropped after 3 attempts for booking {}", task.bookingId());
+            droppedEventsCount.incrementAndGet();
+            logger.warn("[TRACKING_DIAG] stage=GEO_RETRY_EXHAUSTED bookingId={} seq={}",
+                    task.bookingId(), task.sequenceNumber());
             return;
         }
-        long backoffMs = (long) (1000 * Math.pow(2, attempt - 1));
+        GeoWriteTask newerPending = pendingGeoWrites.get(task.key());
+        if (newerPending != null && Objects.equals(newerPending.bookingId(), task.bookingId())
+                && newerPending.sequenceNumber() > task.sequenceNumber()) {
+            return;
+        }
+        long backoffMs = (long) (500 * Math.pow(2, attempt - 1));
         long scheduledAt = System.currentTimeMillis() + backoffMs;
-        synchronized (retryQueue) {
-            if (retryQueue.size() < 1000) {
-                retryQueue.offer(new RetryTask(task, scheduledAt, attempt));
-                logger.debug("Scheduled Redis persistence retry attempt {} for booking {} in {}ms", attempt, task.bookingId(), backoffMs);
+        synchronized (geoRetryQueue) {
+            if (geoRetryQueue.size() < 1000) {
+                geoRetryQueue.offer(new GeoRetryTask(task, scheduledAt, attempt));
             } else {
-                logger.warn("Retry queue full, discarding retry for booking {}", task.bookingId());
+                droppedEventsCount.incrementAndGet();
+                logger.warn("[TRACKING_DIAG] stage=GEO_RETRY_QUEUE_FULL bookingId={}", task.bookingId());
             }
         }
     }
 
-    private void processPendingRetries() {
+    private void processPendingGeoRetries() {
         long now = System.currentTimeMillis();
-        synchronized (retryQueue) {
-            while (!retryQueue.isEmpty() && retryQueue.peek().scheduledAtMs() <= now) {
-                RetryTask retry = retryQueue.poll();
-                boolean success = persistToRedisAndGeo(retry.task());
-                if (!success) {
-                    scheduleRetry(retry.task(), retry.attempt() + 1);
-                } else {
-                    processedEventsCount.incrementAndGet();
+        synchronized (geoRetryQueue) {
+            while (!geoRetryQueue.isEmpty() && geoRetryQueue.peek().scheduledAtMs() <= now) {
+                GeoRetryTask retry = geoRetryQueue.poll();
+                if (!persistGeoOnly(retry.task())) {
+                    scheduleGeoRetry(retry.task(), retry.attempt() + 1);
                 }
             }
         }
     }
 
-    private boolean persistToRedisAndGeo(TrackingTask task) {
+    private boolean persistGeoOnly(GeoWriteTask task) {
         try {
-            String json = objectMapper.writeValueAsString(task.payload());
-            String trackingKey = "tracking:booking:" + task.bookingId();
-            redisTemplate.opsForValue().set(trackingKey, json, TRACKING_TTL);
-
-            // Requirement 3: Explicit key homeease:tracking:{bookingId}:location with 120s TTL
-            try {
-                redisTemplate.opsForValue().set("homeease:tracking:" + task.bookingId() + ":location", json, Duration.ofSeconds(120));
-            } catch (Exception ignored) {}
-
-            // Synchronize distributed sequence counter in Redis
-            if (task.payload().getSequenceNumber() != null) {
-                redisTemplate.opsForValue().set("tracking:seq:" + task.bookingId(),
-                        String.valueOf(task.payload().getSequenceNumber()), TRACKING_TTL);
+            GeoWriteTask newerPending = pendingGeoWrites.get(task.key());
+            if (newerPending != null && Objects.equals(newerPending.bookingId(), task.bookingId())
+                    && newerPending.sequenceNumber() > task.sequenceNumber()) {
+                return true;
             }
-
-            if (task.payload().getLat() != null && task.payload().getLng() != null) {
-                redisTemplate.opsForGeo().add(GEO_WORKERS_KEY,
-                        new Point(task.payload().getLng(), task.payload().getLat()),
-                        task.effectiveWorkerId());
+            Long lastSeq = lastPersistedGeoSeq.get(task.key());
+            if (lastSeq != null && task.sequenceNumber() > 0 && task.sequenceNumber() < lastSeq) {
+                return true;
+            }
+            redisTemplate.opsForGeo().add(GEO_WORKERS_KEY,
+                    new Point(task.lng(), task.lat()),
+                    task.effectiveWorkerId());
+            if (task.sequenceNumber() > 0) {
+                lastPersistedGeoSeq.put(task.key(), task.sequenceNumber());
             }
             return true;
         } catch (Exception e) {
-            logger.warn("Async Redis persistence failed for booking {}: {}", task.bookingId(), e.getMessage());
+            logger.warn("[TRACKING_DIAG] stage=GEO_PERSIST_FAIL bookingId={} seq={} error={}",
+                    task.bookingId(), task.sequenceNumber(), e.getMessage());
             return false;
         }
     }
@@ -330,7 +420,8 @@ public class LiveTrackingService {
     /**
      * Direct processing of location updates.
      */
-    public LocationPayload processLocationUpdateDirect(String bookingId, LocationPayload payload, String authenticatedUserId) {
+    public LocationPayload processLocationUpdateDirect(String bookingId, LocationPayload payload,
+            String authenticatedUserId) {
         return processLocationUpdate(bookingId, payload, authenticatedUserId);
     }
 
@@ -343,14 +434,18 @@ public class LiveTrackingService {
      * 2. Bearing (0..360) and Speed sanity (0..160 km/h)
      * 3. Teleportation anomaly filter (rejects impossible speeds > 200 km/h)
      * 4. Deduplication filter (drops duplicate cellular retransmissions)
-     * 5. Assignment & booking state in Redis (rejects if completed/cancelled or unauthorized)
-     * 6. Sliding-window rate limit (throttles spam while permitting legitimate movement)
+     * 5. Assignment & booking state in Redis (rejects if completed/cancelled or
+     * unauthorized)
+     * 6. Sliding-window rate limit (throttles spam while permitting legitimate
+     * movement)
      * 7. Timestamp ordering (rejects stale updates, clamps future timestamps)
-     * 8. Stationary duplicate suppression (avoids redundant broadcasts when stopped)
+     * 8. Stationary duplicate suppression (avoids redundant broadcasts when
+     * stopped)
      * 9. Geohash spatial bucketing & Monotonic atomic sequence generation
      * 10. Bounded breadcrumb history deque
      */
-    public LocationPayload processLocationUpdate(String bookingId, LocationPayload payload, String authenticatedUserId) {
+    public LocationPayload processLocationUpdate(String bookingId, LocationPayload payload,
+            String authenticatedUserId) {
         if (payload == null) {
             throw new IllegalArgumentException("Payload cannot be null");
         }
@@ -376,9 +471,12 @@ public class LiveTrackingService {
                     "Invalid GPS coordinates: lat=%s, lng=%s (Must be between -90..90 and -180..180)", lat, lng));
         }
 
-        // 1b. Validate GPS accuracy – reject fixes with excessive positional uncertainty or negative values
-        if (payload.getAccuracy() != null && (payload.getAccuracy() < 0.0 || payload.getAccuracy() > maxAccuracyMeters)) {
-            logger.warn("[tracking] Rejected invalid/poor-accuracy GPS fix for booking {}: accuracy={}m (threshold={}m)",
+        // 1b. Validate GPS accuracy – reject fixes with excessive positional
+        // uncertainty or negative values
+        if (payload.getAccuracy() != null
+                && (payload.getAccuracy() < 0.0 || payload.getAccuracy() > maxAccuracyMeters)) {
+            logger.warn(
+                    "[tracking] Rejected invalid/poor-accuracy GPS fix for booking {}: accuracy={}m (threshold={}m)",
                     bookingId, payload.getAccuracy(), maxAccuracyMeters);
             throw new IllegalArgumentException(String.format(
                     "GPS accuracy %.1fm is invalid or exceeds maximum allowed %.1fm — fix rejected",
@@ -392,7 +490,8 @@ public class LiveTrackingService {
                 payload.setBearing(0.0);
             } else {
                 b = b % 360.0;
-                if (b < 0.0) b += 360.0;
+                if (b < 0.0)
+                    b += 360.0;
                 payload.setBearing(Math.round(b * 10.0) / 10.0);
             }
         }
@@ -408,215 +507,291 @@ public class LiveTrackingService {
             }
         }
 
-        // 2. Validate booking assignment & status in Redis if assignment metadata exists
+        // 2. Fail-closed booking assignment, identity & status validation in Redis
+        String effectiveWorkerId;
+        if (authenticatedUserId != null && !authenticatedUserId.isBlank()) {
+            effectiveWorkerId = authenticatedUserId.trim();
+            // Never trust client-supplied workerId/partnerId: always overwrite with
+            // authenticated identity.
+            payload.setWorkerId(effectiveWorkerId);
+            payload.setPartnerId(effectiveWorkerId);
+        } else {
+            effectiveWorkerId = payload.getEffectiveId();
+        }
+
         String assignmentKey = "tracking:assignment:" + bookingId;
-        Double customerLat = null;
-        Double customerLng = null;
         try {
             String assignmentJson = redisTemplate.opsForValue().get(assignmentKey);
             if (assignmentJson != null && !assignmentJson.isBlank()) {
                 JsonNode assignmentNode = objectMapper.readTree(assignmentJson);
-                String bookingStatus = assignmentNode.path("status").asText("");
+                if (assignmentNode == null || !assignmentNode.isObject()) {
+                    throw new SecurityException("Invalid booking assignment metadata for booking " + bookingId);
+                }
+
+                // Require an explicit worker/user identity in the assignment record
+                String assignedUserId = assignmentNode.path("userId").asText("").trim();
+                String assignedWorkerId = assignmentNode.path("workerId").asText("").trim();
+                if (assignedUserId.isBlank() && assignedWorkerId.isBlank()) {
+                    logger.warn("[TRACKING_DIAG] stage=ASSIGNMENT_NO_WORKER bookingId={}", bookingId);
+                    throw new SecurityException(
+                            "Invalid booking assignment metadata: missing worker identity for booking " + bookingId);
+                }
+
+                // Verify caller identity BEFORE revealing booking status
+                if (authenticatedUserId == null || authenticatedUserId.isBlank()) {
+                    throw new SecurityException(
+                            "Authentication required: unauthenticated location update rejected for assigned booking "
+                                    + bookingId);
+                }
+                String callerId = authenticatedUserId.trim();
+                boolean isAssigned = (!assignedUserId.isBlank() && assignedUserId.equalsIgnoreCase(callerId))
+                        || (!assignedWorkerId.isBlank() && assignedWorkerId.equalsIgnoreCase(callerId));
+                if (!isAssigned) {
+                    logger.warn("[TRACKING_DIAG] stage=ASSIGNMENT_WRONG_WORKER bookingId={} caller={}", bookingId,
+                            callerId);
+                    throw new SecurityException("Authenticated user is not assigned to booking " + bookingId);
+                }
+
+                String bookingStatus = assignmentNode.path("status").asText("").trim();
+                String normalizedStatus = bookingStatus.toUpperCase(Locale.ROOT);
                 boolean trackingActiveFlag = assignmentNode.has("trackingActive")
                         ? assignmentNode.path("trackingActive").asBoolean(true)
                         : true;
 
-                boolean isClosed = "COMPLETED".equalsIgnoreCase(bookingStatus) ||
-                        "CANCELLED".equalsIgnoreCase(bookingStatus) ||
-                        "ARRIVED".equalsIgnoreCase(bookingStatus) ||
-                        "IN_PROGRESS".equalsIgnoreCase(bookingStatus) ||
-                        !trackingActiveFlag;
-
-                if (isClosed) {
-                    // Evict from active locations & history
-                    activeLocationsMap.remove(bookingId);
-                    locationLastAccessMap.remove(bookingId);
-                    locationHistoryMap.remove(bookingId);
-                    sequenceCounters.remove(bookingId);
-                    throw new IllegalStateException("Live tracking has ended: booking " + bookingId + " is " +
-                            (bookingStatus.isBlank() ? "INACTIVE" : bookingStatus));
+                if (TERMINAL_BOOKING_STATUSES.contains(normalizedStatus)) {
+                    evictBookingState(bookingId);
+                    logger.info("[TRACKING_DIAG] stage=BOOKING_TERMINAL bookingId={} status={}", bookingId,
+                            normalizedStatus);
+                    throw new IllegalStateException(
+                            "Live tracking has ended: booking " + bookingId + " is " + normalizedStatus);
                 }
 
-                // If assignment has an assigned worker, verify caller identity strictly
-                String assignedUserId = assignmentNode.path("userId").asText("");
-                String assignedWorkerId = assignmentNode.path("workerId").asText("");
-                boolean hasAssignedWorker = !assignedUserId.isBlank() || !assignedWorkerId.isBlank();
-
-                if (hasAssignedWorker) {
-                    if (authenticatedUserId == null || authenticatedUserId.isBlank()) {
-                        throw new SecurityException("Authentication required: unauthenticated location update rejected for assigned booking " + bookingId);
+                if (!"ON_THE_WAY".equals(normalizedStatus) || !trackingActiveFlag) {
+                    if (!trackingActiveFlag && normalizedStatus.isBlank()) {
+                        evictBookingState(bookingId);
+                        throw new IllegalStateException(
+                                "Live tracking has ended: booking " + bookingId + " is INACTIVE");
                     }
-                    // Either the assigned User ID OR the Worker entity ID may match.
-                    // The old && check silently allowed any JWT when one ID was missing.
-                    boolean isAssigned = (!assignedUserId.isBlank() && assignedUserId.equalsIgnoreCase(authenticatedUserId))
-                            || (!assignedWorkerId.isBlank() && assignedWorkerId.equalsIgnoreCase(authenticatedUserId));
-                    if (!isAssigned) {
-                        throw new SecurityException("Authenticated user is not assigned to booking " + bookingId);
-                    }
-                }
-
-                if (assignmentNode.has("customerLat") && assignmentNode.has("customerLng")) {
-                    customerLat = assignmentNode.path("customerLat").asDouble();
-                    customerLng = assignmentNode.path("customerLng").asDouble();
+                    String statusLabel = normalizedStatus.isBlank() ? "UNKNOWN" : normalizedStatus;
+                    logger.info("[TRACKING_DIAG] stage=BOOKING_NOT_ON_THE_WAY bookingId={} status={} trackingActive={}",
+                            bookingId, statusLabel, trackingActiveFlag);
+                    throw new TrackingNotActiveException(statusLabel,
+                            "Live tracking requires ON_THE_WAY status for booking " + bookingId
+                                    + " (status=" + statusLabel + ", trackingActive=" + trackingActiveFlag + ")");
                 }
             } else if (requireAssignment) {
-                // Fail closed. Without an assignment record nobody can be verified as the booking's worker, so
-                // anyone who knew a bookingId could publish fake positions that are broadcast to the customer.
+                // Fail closed: without an active Redis assignment record, updates are never
+                // accepted or broadcast.
+                logger.warn("[TRACKING_DIAG] stage=ASSIGNMENT_MISSING bookingId={}", bookingId);
                 throw new SecurityException("No active assignment for booking " + bookingId
                         + ": location update rejected");
             }
-        } catch (IllegalArgumentException | IllegalStateException | SecurityException e) {
+        } catch (IllegalArgumentException | IllegalStateException | SecurityException
+                | TrackingAuthorizationUnavailableException e) {
             throw e;
+        } catch (JsonProcessingException e) {
+            logger.warn("[TRACKING_DIAG] stage=ASSIGNMENT_PARSE_FAIL bookingId={} error={}", bookingId, e.getMessage());
+            throw new SecurityException("Invalid booking assignment metadata for booking " + bookingId);
         } catch (Exception e) {
-            logger.warn("Could not check assignment cache for booking {}: {}", bookingId, e.getMessage());
+            logger.error("[TRACKING_DIAG] stage=ASSIGNMENT_REDIS_FAIL bookingId={} error={}", bookingId,
+                    e.getMessage());
+            throw new TrackingAuthorizationUnavailableException(
+                    "Unable to validate booking assignment in Redis for booking " + bookingId, e);
         }
 
-        // 3. Stale update protection & Monotonic Timestamp Clamping
-        long now = System.currentTimeMillis();
-        long clientTimestamp = payload.getTimestamp() != null ? payload.getTimestamp() : now;
-        long effectiveTimestamp = Math.min(clientTimestamp, now + 5000); // Clamp future timestamps
-        payload.setTimestamp(effectiveTimestamp);
+        // 3-7. Serialize per-booking ordering so concurrent pings or retries never
+        // overwrite newer coordinates.
+        Object bookingLock = bookingLocks.computeIfAbsent(bookingId, k -> new Object());
+        LocationPayload broadcastPayload;
+        long broadcastStartMs;
+        long seq;
 
-        // 3b. DSA 4: Bounded Expiring Deduplication Check (Exact packet retransmissions)
-        String dedupFingerprint = String.format(Locale.US, "%s:%.6f:%.6f:%d", bookingId, lat, lng, effectiveTimestamp);
-        Long prevSeen = deduplicationCache.put(dedupFingerprint, now);
-        if (prevSeen != null && (now - prevSeen) < 60_000) {
-            logger.debug("[tracking] Duplicate GPS packet dropped by dedup cache for booking {}", bookingId);
-            LocationPayload cached = activeLocationsMap.get(bookingId);
-            return cached != null ? cached : payload;
-        }
+        synchronized (bookingLock) {
+            long now = System.currentTimeMillis();
+            long clientTimestamp = payload.getTimestamp() != null ? payload.getTimestamp() : now;
+            long effectiveTimestamp = Math.min(clientTimestamp, now + 5000);
+            payload.setTimestamp(effectiveTimestamp);
 
-        LocationPayload latestExisting = getLatestLocation(bookingId);
-        if (latestExisting != null && latestExisting.getTimestamp() != null) {
-            if (effectiveTimestamp <= latestExisting.getTimestamp()) {
-                logger.warn("[tracking] Stale GPS rejected for booking {}: incomingTs={} <= cachedTs={}",
-                        bookingId, effectiveTimestamp, latestExisting.getTimestamp());
-                return latestExisting;
+            // 3b. Bounded Expiring Deduplication Check (check before persisting; commit
+            // only after durable save)
+            String dedupFingerprint = String.format(Locale.US, "%s:%.6f:%.6f:%d", bookingId, lat, lng,
+                    effectiveTimestamp);
+            Long prevSeen;
+            synchronized (deduplicationCache) {
+                prevSeen = deduplicationCache.get(dedupFingerprint);
+            }
+            if (prevSeen != null && (now - prevSeen) < 60_000) {
+                logger.debug("[TRACKING_DIAG] stage=DEDUP_DROP bookingId={}", bookingId);
+                LocationPayload cached = activeLocationsMap.get(bookingId);
+                return cached != null ? cached : payload;
             }
 
-            // 3c. Teleportation Anomaly Filter
-            long dtMs = effectiveTimestamp - latestExisting.getTimestamp();
-            if (dtMs > 0 && dtMs < 300_000) { // within last 5 minutes
-                double distanceMeters = haversine(latestExisting.getLat(), latestExisting.getLng(), lat, lng) * 1000.0;
-                double speedMps = distanceMeters / (dtMs / 1000.0);
-                if (distanceMeters > 300.0 && speedMps > 55.0) { // > 200 km/h impossible vehicle speed
-                    logger.warn("[tracking] Teleportation anomaly rejected for booking {}: moved {}m in {}ms ({} km/h)",
-                            bookingId, Math.round(distanceMeters), dtMs, Math.round(speedMps * 3.6));
+            LocationPayload latestExisting = loadLatestLocationFromCacheOrRedis(bookingId);
+            if (latestExisting != null && latestExisting.getTimestamp() != null) {
+                if (effectiveTimestamp <= latestExisting.getTimestamp()) {
+                    logger.warn("[TRACKING_DIAG] stage=STALE_TS_REJECT bookingId={} incomingTs={} cachedTs={}",
+                            bookingId, effectiveTimestamp, latestExisting.getTimestamp());
+                    return latestExisting;
+                }
+
+                // 3c. Teleportation Anomaly Filter
+                long dtMs = effectiveTimestamp - latestExisting.getTimestamp();
+                if (dtMs > 0 && dtMs < 300_000) {
+                    double distanceMeters = haversine(latestExisting.getLat(), latestExisting.getLng(), lat, lng)
+                            * 1000.0;
+                    double speedMps = distanceMeters / (dtMs / 1000.0);
+                    if (distanceMeters > 300.0 && speedMps > 55.0) {
+                        logger.warn("[TRACKING_DIAG] stage=TELEPORT_REJECT bookingId={} movedMeters={} dtMs={} kmh={}",
+                                bookingId, Math.round(distanceMeters), dtMs, Math.round(speedMps * 3.6));
+                        return latestExisting;
+                    }
+                }
+
+                // 3d. Stationary noise suppression: threshold 1.5m
+                double movedDistMeters = haversine(latestExisting.getLat(), latestExisting.getLng(), lat, lng) * 1000.0;
+                boolean bearingSame = Objects.equals(latestExisting.getBearing(), payload.getBearing());
+                if (movedDistMeters < STATIONARY_NOISE_THRESHOLD_METERS && bearingSame &&
+                        (effectiveTimestamp - latestExisting.getTimestamp() < 3000)) {
+                    latestExisting.setTimestamp(effectiveTimestamp);
+                    activeLocationsMap.put(bookingId, latestExisting);
+                    locationLastAccessMap.put(bookingId, now);
+                    logger.debug("[TRACKING_DIAG] stage=STATIONARY_SUPPRESS bookingId={}", bookingId);
                     return latestExisting;
                 }
             }
 
-            // 3d. Stationary noise suppression: threshold 1.5m
-            double movedDistMeters = haversine(latestExisting.getLat(), latestExisting.getLng(), lat, lng) * 1000.0;
-            boolean bearingSame = Objects.equals(latestExisting.getBearing(), payload.getBearing());
-            if (movedDistMeters < STATIONARY_NOISE_THRESHOLD_METERS && bearingSame &&
-                    (effectiveTimestamp - latestExisting.getTimestamp() < 3000)) {
-                latestExisting.setTimestamp(effectiveTimestamp);
-                activeLocationsMap.put(bookingId, latestExisting);
-                locationLastAccessMap.put(bookingId, now);
-                logger.debug("[tracking] Stationary duplicate suppressed for booking {} (moved={}m, <{}m threshold)",
-                        bookingId, String.format("%.2f", movedDistMeters), STATIONARY_NOISE_THRESHOLD_METERS);
-                return latestExisting;
+            // 4. Sliding-Window Rate Limiting (DSA 8)
+            String rateLimitKey = (effectiveWorkerId != null && !effectiveWorkerId.isBlank()) ? effectiveWorkerId
+                    : bookingId;
+            checkSlidingWindowRateLimit(rateLimitKey, lat, lng, latestExisting);
+
+            // 5. Never invent straight-line distance or ETA on GPS frames; routes come from
+            // Core Google Routes v2.
+            payload.setDistanceKm(null);
+            payload.setEtaMinutes(null);
+            payload.setTrackingActive(true);
+            payload.setStatus("TRACKING");
+
+            // 5b. Compute Geohash Spatial Key (~153m street block precision)
+            String geohash = GeohashUtils.encode(lat, lng, 7);
+            payload.setGeohash(geohash);
+
+            // 5c. Assign monotonic sequence number strictly above both local counter &
+            // persisted Redis state
+            AtomicLong counter = sequenceCounters.computeIfAbsent(bookingId, k -> new AtomicLong(0L));
+            long floor = 0L;
+            if (latestExisting != null && latestExisting.getSequenceNumber() != null) {
+                floor = Math.max(floor, latestExisting.getSequenceNumber());
             }
-        }
+            try {
+                String redisSeqRaw = redisTemplate.opsForValue().get("tracking:seq:" + bookingId);
+                if (redisSeqRaw != null && !redisSeqRaw.isBlank()) {
+                    floor = Math.max(floor, Long.parseLong(redisSeqRaw.trim()));
+                }
+            } catch (Exception ignored) {
+            }
+            final long seqFloor = floor;
+            counter.updateAndGet(cur -> Math.max(cur, seqFloor));
+            seq = counter.incrementAndGet();
+            payload.setSequenceNumber(seq);
 
-        // 4. Sliding-Window Rate Limiting (DSA 8)
-        String effectiveWorkerId = (authenticatedUserId != null && !authenticatedUserId.isBlank())
-                ? authenticatedUserId
-                : payload.getEffectiveId();
-        String rateLimitKey = effectiveWorkerId != null ? effectiveWorkerId : bookingId;
-        checkSlidingWindowRateLimit(rateLimitKey, lat, lng, latestExisting);
+            String serializedPayload;
+            try {
+                serializedPayload = objectMapper.writeValueAsString(payload);
+            } catch (JsonProcessingException e) {
+                throw new IllegalArgumentException("Failed to serialize GPS payload", e);
+            }
 
-        // 5. No distance/ETA is attached to a GPS frame. This used to broadcast a straight-line distance with an ETA
-        //    computed from an assumed 25 km/h plus 2 minutes: an invented number. Road distance and traffic-aware
-        //    duration come only from the provider-backed route (core: GET /api/v1/tracking/{bookingId}/route).
-        payload.setDistanceKm(null);
-        payload.setEtaMinutes(null);
+            // 6. Durable Synchronous Redis Persistence BEFORE L1 cache mutation, WebSocket
+            // broadcast, or HTTP 200.
+            // On Redis outage this throws TrackingPersistenceUnavailableException (HTTP
+            // 503) so the worker retains
+            // its newest GPS fix and no customer receives an unpersisted broadcast.
+            long persistStartMs = System.currentTimeMillis();
+            persistLatestLocationDurable(bookingId, seq, serializedPayload);
+            long persistLatencyMs = System.currentTimeMillis() - persistStartMs;
 
-        payload.setTrackingActive(true);
-        payload.setStatus("TRACKING");
+            // Record deduplication only after durable persistence succeeds so 503 retries
+            // are never suppressed.
+            synchronized (deduplicationCache) {
+                deduplicationCache.put(dedupFingerprint, now);
+            }
 
-        // 5b. DSA 7: Compute Geohash Spatial Key (~153m street block precision)
-        String geohash = GeohashUtils.encode(lat, lng, 7);
-        payload.setGeohash(geohash);
-        spatialGeohashIndex.computeIfAbsent(geohash, k -> ConcurrentHashMap.newKeySet()).add(bookingId);
-        if (latestExisting != null && latestExisting.getGeohash() != null && !latestExisting.getGeohash().equals(geohash)) {
-            Set<String> oldBucket = spatialGeohashIndex.get(latestExisting.getGeohash());
-            if (oldBucket != null) {
-                oldBucket.remove(bookingId);
-                if (oldBucket.isEmpty()) {
-                    spatialGeohashIndex.remove(latestExisting.getGeohash());
+            // Update Spatial Geohash Index & L1 Cache (DSA 1 & DSA 3) only after durable
+            // persistence
+            spatialGeohashIndex.computeIfAbsent(geohash, k -> ConcurrentHashMap.newKeySet()).add(bookingId);
+            if (latestExisting != null && latestExisting.getGeohash() != null
+                    && !latestExisting.getGeohash().equals(geohash)) {
+                Set<String> oldBucket = spatialGeohashIndex.get(latestExisting.getGeohash());
+                if (oldBucket != null) {
+                    oldBucket.remove(bookingId);
+                    if (oldBucket.isEmpty()) {
+                        spatialGeohashIndex.remove(latestExisting.getGeohash());
+                    }
                 }
             }
-        }
 
-        // 5c. DSA 2: Assign monotonic sequence number (AtomicLong synchronized from Redis)
-        AtomicLong counter = sequenceCounters.computeIfAbsent(bookingId, k -> {
-            long initial = 0L;
-            try {
-                String redisSeq = redisTemplate.opsForValue().get("tracking:seq:" + k);
-                if (redisSeq != null && !redisSeq.isBlank()) {
-                    initial = Long.parseLong(redisSeq.trim());
-                }
-            } catch (Exception ignored) {}
-            return new AtomicLong(initial);
-        });
-        long seq = counter.incrementAndGet();
-        payload.setSequenceNumber(seq);
+            activeLocationsMap.put(bookingId, payload);
+            locationLastAccessMap.put(bookingId, now);
 
-        // 6. DSA 1: In-Memory L1 Cache update (O(1) Instant Access)
-        activeLocationsMap.put(bookingId, payload);
-        locationLastAccessMap.put(bookingId, now);
-
-        // 6b. DSA 3: Bounded GPS history deque (Breadcrumb trail, max 20 fixes)
-        Deque<LocationPayload> history = locationHistoryMap.computeIfAbsent(bookingId, k -> new ConcurrentLinkedDeque<>());
-        history.addLast(payload);
-        while (history.size() > MAX_HISTORY_ENTRIES) {
-            history.pollFirst();
-        }
-
-        // 6c. Memory Safeguard: prune L1 cache if exceeding capacity
-        if (activeLocationsMap.size() > MAX_L1_CAPACITY) {
-            pruneStaleL1Entries(now);
-        }
-
-        // 7. Push to WebSocket Topics immediately: /topic/tracking/{bookingId} & /topic/track/{bookingId}
-        long broadcastStartMs = System.currentTimeMillis();
-        try {
-            messagingTemplate.convertAndSend("/topic/tracking/" + bookingId, payload);
-            messagingTemplate.convertAndSend("/topic/track/" + bookingId, payload);
-            messagingTemplate.convertAndSend("/topic/tracking/booking/" + bookingId, payload);
-
-            // Distributed WebSocket Relay: publish to Redis pub/sub channel
-            // so homeease-core (port 8080) can forward to clients connected to its STOMP broker
-            try {
-                Map<String, Object> bridgeMsg = new HashMap<>();
-                bridgeMsg.put("destination", "/topic/tracking/" + bookingId);
-                bridgeMsg.put("bookingId", bookingId);
-                bridgeMsg.put("payload", payload);
-                redisTemplate.convertAndSend("ws:broadcast:tracking", objectMapper.writeValueAsString(bridgeMsg));
-            } catch (Exception redisEx) {
-                logger.debug("Redis pub/sub tracking relay notice: {}", redisEx.getMessage());
+            Deque<LocationPayload> history = locationHistoryMap.computeIfAbsent(bookingId,
+                    k -> new ConcurrentLinkedDeque<>());
+            history.addLast(payload);
+            while (history.size() > MAX_HISTORY_ENTRIES) {
+                history.pollFirst();
             }
 
-            long broadcastLatencyMs = System.currentTimeMillis() - broadcastStartMs;
-            long e2eLatencyMs = System.currentTimeMillis() - receiptMs;
-            logger.debug("[tracking] Broadcast seq={} for booking {} to /topic/tracking/{}: [{}, {}] bearing={} geohash={} "
-                            + "broadcastLatency={}ms e2eLatency={}ms",
-                    seq, bookingId, bookingId, payload.getLat(), payload.getLng(), payload.getBearing(),
-                    geohash, broadcastLatencyMs, e2eLatencyMs);
-        } catch (Exception e) {
-            logger.warn("[tracking] WebSocket broadcast failed for booking {}: {}", bookingId, e.getMessage());
+            if (activeLocationsMap.size() > MAX_L1_CAPACITY) {
+                pruneStaleL1Entries(now);
+            }
+
+            processedEventsCount.incrementAndGet();
+            broadcastPayload = payload;
+
+            // 7. Broadcast to booking-specific STOMP topics and Redis Pub/Sub bridge AFTER
+            // Redis persist
+            broadcastStartMs = System.currentTimeMillis();
+            try {
+                messagingTemplate.convertAndSend("/topic/tracking/" + bookingId, broadcastPayload);
+                messagingTemplate.convertAndSend("/topic/track/" + bookingId, broadcastPayload);
+                messagingTemplate.convertAndSend("/topic/tracking/booking/" + bookingId, broadcastPayload);
+
+                // Distributed WebSocket Relay: publish to Redis pub/sub channel so
+                // homeease-core (:8080) forwards
+                try {
+                    Map<String, Object> bridgeMsg = new HashMap<>();
+                    bridgeMsg.put("destination", "/topic/tracking/" + bookingId);
+                    bridgeMsg.put("bookingId", bookingId);
+                    bridgeMsg.put("payload", broadcastPayload);
+                    redisTemplate.convertAndSend("ws:broadcast:tracking", objectMapper.writeValueAsString(bridgeMsg));
+                } catch (Exception redisEx) {
+                    logger.warn("[TRACKING_DIAG] stage=PUBSUB_RELAY_WARN bookingId={} seq={} error={}",
+                            bookingId, seq, redisEx.getMessage());
+                }
+
+                long broadcastLatencyMs = System.currentTimeMillis() - broadcastStartMs;
+                long e2eLatencyMs = System.currentTimeMillis() - receiptMs;
+                logger.debug(
+                        "[TRACKING_DIAG] stage=PERSIST_AND_BROADCAST bookingId={} seq={} persistMs={} broadcastMs={} e2eMs={}",
+                        bookingId, seq, persistLatencyMs, broadcastLatencyMs, e2eLatencyMs);
+            } catch (Exception e) {
+                logger.warn("[TRACKING_DIAG] stage=STOMP_BROADCAST_WARN bookingId={} seq={} error={}",
+                        bookingId, seq, e.getMessage());
+            }
+
+            // 8. Coalesced Async Redis GEO Update (separate from critical booking location
+            // path)
+            enqueueCoalescedGeoWrite(bookingId, effectiveWorkerId, broadcastPayload);
         }
 
-        // 8. DSA 5: Bounded Ring Buffer Event Queue for Redis & GEO persistence
-        boolean queued = eventQueue.offer(new TrackingTask(bookingId, payload, effectiveWorkerId));
-        if (!queued) {
-            droppedEventsCount.incrementAndGet();
-            logger.warn("Tracking event queue capacity reached (5000), applying backpressure drop for background write on booking {}", bookingId);
-        }
+        return broadcastPayload;
+    }
 
-        return payload;
+    private void evictBookingState(String bookingId) {
+        activeLocationsMap.remove(bookingId);
+        locationLastAccessMap.remove(bookingId);
+        locationHistoryMap.remove(bookingId);
+        sequenceCounters.remove(bookingId);
     }
 
     private void pruneStaleL1Entries(long now) {
@@ -637,8 +812,6 @@ public class LiveTrackingService {
      * Sliding-Window Rate Limiter (DSA 8)
      */
     private void checkSlidingWindowRateLimit(String rateLimitKey, double lat, double lng, LocationPayload previous) {
-        // Hard ceiling that movement can NOT bypass. Before, any update that moved >= 15 m skipped the limiter
-        // entirely, so a client "moving" 20 m per message could post without limit.
         long nowHard = System.currentTimeMillis();
         Deque<Long> hard = partnerHardWindows.computeIfAbsent(rateLimitKey, k -> new ConcurrentLinkedDeque<>());
         synchronized (hard) {
@@ -656,7 +829,6 @@ public class LiveTrackingService {
         if (previous != null && previous.getLat() != null && previous.getLng() != null) {
             double distanceMovedMeters = haversine(previous.getLat(), previous.getLng(), lat, lng) * 1000.0;
             if (distanceMovedMeters >= movementThresholdMeters) {
-                // Legitimate vehicle/rider movement: exempt from rate limiting
                 return;
             }
         }
@@ -682,42 +854,43 @@ public class LiveTrackingService {
 
     /**
      * Retrieves the latest known location for a booking.
-     * Uses in-memory L1 cache (O(1)) with Redis L2 fallback.
+     * Uses in-memory L1 cache (O(1)) with Redis L2 fallback after verifying active
+     * assignment state.
      */
     public LocationPayload getLatestLocation(String bookingId) {
         if (bookingId == null || bookingId.isBlank()) {
             return null;
         }
 
-        // 0. Proactively verify against Redis assignment to prevent stale L1 cache after completion/arrival
         String assignmentKey = "tracking:assignment:" + bookingId;
         try {
             String assignmentJson = redisTemplate.opsForValue().get(assignmentKey);
             if (assignmentJson != null && !assignmentJson.isBlank()) {
                 JsonNode assignmentNode = objectMapper.readTree(assignmentJson);
-                String status = assignmentNode.path("status").asText("");
+                String status = assignmentNode.path("status").asText("").trim();
+                String normalizedStatus = status.toUpperCase(Locale.ROOT);
                 boolean trackingActive = assignmentNode.has("trackingActive")
                         ? assignmentNode.path("trackingActive").asBoolean(true)
                         : true;
-                if ("COMPLETED".equalsIgnoreCase(status) || "CANCELLED".equalsIgnoreCase(status) ||
-                        "ARRIVED".equalsIgnoreCase(status) || "IN_PROGRESS".equalsIgnoreCase(status) || !trackingActive) {
-                    activeLocationsMap.remove(bookingId);
-                    locationLastAccessMap.remove(bookingId);
-                    locationHistoryMap.remove(bookingId);
-                    sequenceCounters.remove(bookingId);
-
+                if (TERMINAL_BOOKING_STATUSES.contains(normalizedStatus) || !trackingActive) {
+                    evictBookingState(bookingId);
                     return LocationPayload.builder()
                             .bookingId(bookingId)
                             .trackingActive(false)
-                            .status(status != null && !status.isBlank() ? status : "CLOSED")
-                            .message("Tracking ended: booking status is " + status)
+                            .status(!status.isBlank() ? status : "CLOSED")
+                            .message("Tracking ended: booking status is " + (!status.isBlank() ? status : "INACTIVE"))
                             .build();
                 }
             }
         } catch (Exception e) {
-            logger.warn("Could not check assignment state in getLatestLocation for booking {}: {}", bookingId, e.getMessage());
+            logger.warn("Could not check assignment state in getLatestLocation for booking {}: {}", bookingId,
+                    e.getMessage());
         }
 
+        return loadLatestLocationFromCacheOrRedis(bookingId);
+    }
+
+    private LocationPayload loadLatestLocationFromCacheOrRedis(String bookingId) {
         // 1. Check in-memory L1 cache (DSA 1)
         LocationPayload cached = activeLocationsMap.get(bookingId);
         if (cached != null) {
@@ -731,12 +904,12 @@ public class LiveTrackingService {
             }
         }
 
-        // 2. Check Redis L2 storage: check homeease:tracking:{bookingId}:location first, fallback to tracking:booking:{bookingId}
+        // 2. Check Redis L2 storage: homeease:tracking:{bookingId}:location first,
+        // fallback to tracking:booking:{bookingId}
         try {
             String raw = redisTemplate.opsForValue().get("homeease:tracking:" + bookingId + ":location");
             if (raw == null || raw.isBlank()) {
-                String trackingKey = "tracking:booking:" + bookingId;
-                raw = redisTemplate.opsForValue().get(trackingKey);
+                raw = redisTemplate.opsForValue().get("tracking:booking:" + bookingId);
             }
             if (raw != null && !raw.isBlank()) {
                 String trimmed = raw.trim();
@@ -796,9 +969,11 @@ public class LiveTrackingService {
                     .sortAscending()
                     .limit(limit > 0 ? limit : 10);
 
-            GeoResults<RedisGeoCommands.GeoLocation<String>> geoResults = redisTemplate.opsForGeo().radius(GEO_WORKERS_KEY, circle, args);
+            GeoResults<RedisGeoCommands.GeoLocation<String>> geoResults = redisTemplate.opsForGeo()
+                    .radius(GEO_WORKERS_KEY, circle, args);
             if (geoResults != null) {
-                // GEO members never expire: keep only workers with a live worker:heartbeat:<id> key
+                // GEO members never expire: keep only workers with a live worker:heartbeat:<id>
+                // key
                 // (written by the core with the configured TTL). One MGET for all candidates.
                 Set<String> alive = null;
                 if (enforcePresence) {
@@ -841,7 +1016,8 @@ public class LiveTrackingService {
     }
 
     /**
-     * Calculates distance (Haversine formula in KM) and estimated time of arrival (ETA in minutes).
+     * Calculates distance (Haversine formula in KM) and estimated time of arrival
+     * (ETA in minutes).
      */
     public Map<String, Object> calculateDistanceAndEta(String bookingId, double customerLat, double customerLng) {
         Map<String, Object> response = new HashMap<>();
@@ -894,16 +1070,16 @@ public class LiveTrackingService {
      * Explicitly stops tracking for a booking and evicts cached entries.
      */
     public void stopTracking(String bookingId, String reason) {
-        if (bookingId == null || bookingId.isBlank()) return;
-        activeLocationsMap.remove(bookingId);
-        locationLastAccessMap.remove(bookingId);
-        locationHistoryMap.remove(bookingId);
-        sequenceCounters.remove(bookingId);
+        if (bookingId == null || bookingId.isBlank())
+            return;
+        evictBookingState(bookingId);
+        bookingLocks.remove(bookingId);
 
         try {
             redisTemplate.delete("homeease:tracking:" + bookingId + ":location");
             redisTemplate.delete("tracking:booking:" + bookingId);
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
 
         LocationPayload closed = LocationPayload.builder()
                 .bookingId(bookingId)
@@ -916,15 +1092,28 @@ public class LiveTrackingService {
             messagingTemplate.convertAndSend("/topic/tracking/" + bookingId, closed);
             messagingTemplate.convertAndSend("/topic/track/" + bookingId, closed);
             messagingTemplate.convertAndSend("/topic/tracking/booking/" + bookingId, closed);
-        } catch (Exception ignored) {}
+
+            try {
+                Map<String, Object> bridgeMsg = new HashMap<>();
+                bridgeMsg.put("destination", "/topic/tracking/" + bookingId);
+                bridgeMsg.put("bookingId", bookingId);
+                bridgeMsg.put("payload", closed);
+                redisTemplate.convertAndSend("ws:broadcast:tracking", objectMapper.writeValueAsString(bridgeMsg));
+            } catch (Exception ignored) {
+            }
+        } catch (Exception ignored) {
+        }
     }
 
-    // REMOVED getBookingRoute(): it accepted the destination from the client and had no booking authorization.
-    // The authoritative booking route is served by the core service (BookingRouteService).
+    // REMOVED getBookingRoute(): it accepted the destination from the client and
+    // had no booking authorization.
+    // The authoritative booking route is served by the core service
+    // (BookingRouteService).
 
     /**
      * Computes driving route using Google Maps with LRU Cache (DSA 9).
-     * Quantizes coordinates to ~100m grid bucket to avoid repeated API requests for slight movements.
+     * Quantizes coordinates to ~100m grid bucket to avoid repeated API requests for
+     * slight movements.
      */
     public Map<String, Object> getDrivingRoute(double startLat, double startLng, double destLat, double destLng) {
         if (Double.isNaN(startLat) || Double.isNaN(startLng) || Double.isNaN(destLat) || Double.isNaN(destLng) ||
@@ -933,8 +1122,7 @@ public class LiveTrackingService {
             return Map.of(
                     "found", false,
                     "provider", "google",
-                    "message", "Invalid coordinate bounds provided for routing"
-            );
+                    "message", "Invalid coordinate bounds provided for routing");
         }
 
         String cacheKey = String.format(Locale.US, "%.3f,%.3f->%.3f,%.3f", startLat, startLng, destLat, destLng);
@@ -965,14 +1153,16 @@ public class LiveTrackingService {
         return Map.of("found", false, "provider", "google", "message", "No road route found for specified coordinates");
     }
 
-    private Map<String, Object> getGoogleRoutesV2(double startLat, double startLng, double destLat, double destLng, String key) {
+    private Map<String, Object> getGoogleRoutesV2(double startLat, double startLng, double destLat, double destLng,
+            String key) {
         try {
             String url = "https://routes.googleapis.com/directions/v2:computeRoutes";
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
             headers.set("X-Goog-Api-Key", key);
-            headers.set("X-Goog-FieldMask", "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.legs");
+            headers.set("X-Goog-FieldMask",
+                    "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.legs");
 
             Map<String, Object> originLatLng = Map.of("latitude", startLat, "longitude", startLng);
             Map<String, Object> originLocation = Map.of("latLng", originLatLng);
@@ -1039,7 +1229,8 @@ public class LiveTrackingService {
         return Collections.emptyMap();
     }
 
-    private Map<String, Object> getGoogleRoadRoute(double startLat, double startLng, double destLat, double destLng, String key) {
+    private Map<String, Object> getGoogleRoadRoute(double startLat, double startLng, double destLat, double destLng,
+            String key) {
         try {
             URI uri = UriComponentsBuilder.fromHttpUrl("https://maps.googleapis.com/maps/api/directions/json")
                     .queryParam("origin", startLat + "," + startLng)
@@ -1152,7 +1343,7 @@ public class LiveTrackingService {
     }
 
     public int getEventQueueSize() {
-        return eventQueue.size();
+        return geoSignalQueue.size() + pendingGeoWrites.size();
     }
 
     public int getActiveSessionsCount() {

@@ -31,7 +31,7 @@ public class TrackingStompSecurityInterceptor implements ChannelInterceptor {
 
     private static final Logger logger = LoggerFactory.getLogger(TrackingStompSecurityInterceptor.class);
 
-    static final String ATTR_VERIFIED = "tracking.jwtVerified";
+    public static final String ATTR_VERIFIED = "tracking.jwtVerified";
     static final String ATTR_ROLE = "tracking.role";
 
     private static final String[] BOOKING_TOPIC_PREFIXES = {
