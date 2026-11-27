@@ -47,7 +47,12 @@ public class TrackingController {
             @PathVariable(value = "bookingId", required = false) String pathBookingId,
             @RequestHeader(value = "Authorization", required = false) String authHeader,
             @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
-            @RequestBody LocationPayload payload) {
+            @RequestBody(required = false) LocationPayload payload) {
+
+        // Identity ONLY from a verified JWT. Check auth before validating body so
+        // unauthenticated calls with an empty body still receive 401 JWT_REQUIRED.
+        // If an administrator is orchestrating or testing, allow acting on behalf of the assigned worker.
+        var caller = accessGuard.requireVerifiedJwt(authHeader);
 
         if (payload == null) {
             return ResponseEntity.badRequest().body(Map.of(
@@ -65,9 +70,6 @@ public class TrackingController {
                     "error", "bookingId is required"));
         }
 
-        // Identity ONLY from a verified JWT. Missing/invalid token -> 401 JWT_REQUIRED.
-        // If an administrator is orchestrating or testing, allow acting on behalf of the assigned worker.
-        var caller = accessGuard.requireVerifiedJwt(authHeader);
         String authenticatedUserId = caller.isAdmin() && headerUserId != null && !headerUserId.isBlank()
                 ? headerUserId.trim()
                 : caller.userId();

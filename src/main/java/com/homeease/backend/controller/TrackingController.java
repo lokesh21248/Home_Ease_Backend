@@ -194,6 +194,9 @@ public class TrackingController {
     public ResponseEntity<TrackingSessionDto> stopTracking(
             @PathVariable("bookingId") UUID bookingId,
             @RequestParam(value = "reason", defaultValue = "STOPPED") String reason) {
+        if (snapshotService != null) {
+            snapshotService.requireAssignedWorker(bookingId, VerifiedCaller.current());
+        }
         TrackingSessionDto session = trackingService.stopTracking(bookingId, reason);
         return ResponseEntity.ok(session);
     }

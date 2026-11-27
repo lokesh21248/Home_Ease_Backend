@@ -126,16 +126,19 @@ public class BookingCancellationService {
             logger.warn("Standard cancellation save hit conflict for booking {}, executing direct atomic update: {}", bookingId, ex.getMessage());
             int retried = bookingRepository.directCancelBooking(bookingId, cancellationReason, caller, now);
             Booking refreshed = bookingRepository.findById(bookingId).orElse(booking);
-            if (retried == 0 && refreshed.getStatus() == BookingStage.COMPLETED) {
-                throw new IllegalStateException("Completed bookings cannot be cancelled.");
-            }
-            if (retried == 0 && refreshed.getStatus() == BookingStage.IN_PROGRESS) {
-                throw new IllegalStateException("Service is already in progress and cannot be cancelled directly. Please contact support.");
+            if (retried == 0) {
+                if (refreshed.getStatus() == BookingStage.COMPLETED) {
+                    throw new IllegalStateException("Completed bookings cannot be cancelled.");
+                }
+                if (refreshed.getStatus() == BookingStage.IN_PROGRESS) {
+                    throw new IllegalStateException("Service is already in progress and cannot be cancelled directly. Please contact support.");
+                }
+                if (refreshed.getStatus() == BookingStage.CANCELLED) {
+                    return mapToResponse(refreshed);
+                }
+                throw new IllegalStateException("Booking cannot be cancelled while in status: " + refreshed.getStatus());
             }
             booking = refreshed;
-            booking.setStatus(BookingStage.CANCELLED);
-            booking.setCancellationReason(cancellationReason);
-            booking.setCancelledAt(now);
         }
 
         // Release slot if booking was scheduled

@@ -219,4 +219,20 @@ class TrackingControllerSecurityTest {
                         .header("Authorization", TestJwt.bearer(CUSTOMER, "CUSTOMER")))
                 .andExpect(status().isNotFound());
     }
+
+    @Test
+    void emptyOrMalformedLocationBodyReturns401Or400Never500() throws Exception {
+        mvc.perform(post("/api/v1/tracking/{id}/location", BOOKING)
+                        .contentType("application/json"))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/tracking/{id}/location", BOOKING)
+                        .header("Authorization", TestJwt.bearer(WORKER, "WORKER"))
+                        .contentType("application/json"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/v1/tracking/{id}/location", BOOKING)
+                        .header("Authorization", TestJwt.bearer(WORKER, "WORKER"))
+                        .contentType("application/json")
+                        .content("{not-json"))
+                .andExpect(status().isBadRequest());
+    }
 }

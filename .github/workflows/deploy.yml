@@ -36,7 +36,11 @@ jobs:
             fi
             git remote set-url origin https://github.com/lokesh21248/Home_Ease_Backend.git 2>/dev/null || true
             echo "📥 Syncing latest changes from GitHub (Home_Ease_Backend)..."
+            # Reclaim any root-owned build or git metadata files from prior manual sudo runs so git checkout/clean never abort
+            sudo chown -R "$(id -un):$(id -gn)" .
+            rm -f .git/index.lock .git/HEAD.lock
             git fetch origin main
+            git checkout -B main origin/main
             git reset --hard origin/main
             git clean -fd
 
